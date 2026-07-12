@@ -1,0 +1,229 @@
+name: Multiplayer transport spike
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - multiplayer/main
+    paths:
+      - '.github/workflows/multiplayer-transport-spike.yml'
+      - 'tools/multiplayer/transport_spike/**'
+  pull_request:
+    branches:
+      - multiplayer/main
+    paths:
+      - '.github/workflows/multiplayer-transport-spike.yml'
+      - 'tools/multiplayer/transport_spike/**'
+
+concurrency:
+  group: multiplayer-transport-spike-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ASIO_VERSION: 1.38.1
+  ASIO_TAG: asio-1-38-1
+  ASIO_COMMIT: dfd7b3e3145bac5d0e91a99fde69c6ae1442f971
+  ASIO_SHA256: 2827b229972be80cdb14e5497962fa393d1adf036b5869e2b9c99f644daadacc
+
+jobs:
+  linux:
+    name: Linux GCC 13 and Clang 18 loopback
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install CMake 3
+        uses: lukka/get-cmake@f176ccd3f28bda569c43aae4894f06b2435a3375
+        with:
+          cmakeVersion: 3.31.6
+
+      - name: Install compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 g++-13
+
+      - name: Build and run with GCC 13
+        run: |
+          cmake \
+            -S tools/multiplayer/transport_spike \
+            -B build/transport-spike-gcc \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-13
+          cmake --build build/transport-spike-gcc --parallel
+          ctest --test-dir build/transport-spike-gcc --output-on-failure
+          mkdir -p artifacts
+          build/transport-spike-gcc/multiplayer_transport_spike | tee artifacts/gcc-loopback.txt
+
+      - name: Build and run with Clang 18
+        run: |
+          cmake \
+            -S tools/multiplayer/transport_spike \
+            -B build/transport-spike-clang \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18
+          cmake --build build/transport-spike-clang --parallel
+          ctest --test-dir build/transport-spike-clang --output-on-failure
+          build/transport-spike-clang/multiplayer_transport_spike | tee artifacts/clang-loopback.txt
+
+      - name: Record provenance
+        run: |
+          cp build/transport-spike-gcc/multiplayer_transport_spike artifacts/transport-spike-linux-gcc13
+          cp build/transport-spike-clang/multiplayer_transport_spike artifacts/transport-spike-linux-clang18
+          cp build/transport-spike-gcc/_deps/multiplayer_asio-src/LICENSE_1_0.txt artifacts/LICENSE-Asio.txt
+          {
+            echo "source_commit=$GITHUB_SHA"
+            echo "runner_image=ubuntu-24.04"
+            echo "asio_version=$ASIO_VERSION"
+            echo "asio_tag=$ASIO_TAG"
+            echo "asio_commit=$ASIO_COMMIT"
+            echo "asio_archive_sha256=$ASIO_SHA256"
+            echo "gcc=$(g++-13 --version | head -n 1)"
+            echo "clang=$(clang++-18 --version | head -n 1)"
+            echo "gcc_binary_sha256=$(sha256sum artifacts/transport-spike-linux-gcc13 | cut -d' ' -f1)"
+            echo "clang_binary_sha256=$(sha256sum artifacts/transport-spike-linux-clang18 | cut -d' ' -f1)"
+          } > artifacts/linux-transport-manifest.txt
+
+      - name: Upload Linux evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: multiplayer-transport-linux-${{ github.sha }}
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows x64 MSVC loopback
+    runs-on: windows-2022
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
+
+      - name: Install CMake 3
+        uses: lukka/get-cmake@f176ccd3f28bda569c43aae4894f06b2435a3375
+        with:
+          cmakeVersion: 3.31.6
+
+      - name: Build and run with MSVC
+        shell: pwsh
+        run: |
+          cmake `
+            -S tools/multiplayer/transport_spike `
+            -B build/transport-spike-msvc `
+            -G "Visual Studio 17 2022" `
+            -A x64
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC transport configure failed' }
+          cmake --build build/transport-spike-msvc --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC transport build failed' }
+          ctest --test-dir build/transport-spike-msvc -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC transport loopback test failed' }
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          & build/transport-spike-msvc/Release/multiplayer_transport_spike.exe |
+            Tee-Object artifacts/msvc-loopback.txt
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC transport executable failed' }
+
+      - name: Record provenance
+        shell: pwsh
+        run: |
+          $binary = 'build/transport-spike-msvc/Release/multiplayer_transport_spike.exe'
+          Copy-Item $binary artifacts/transport-spike-windows-msvc.exe
+          Copy-Item build/transport-spike-msvc/_deps/multiplayer_asio-src/LICENSE_1_0.txt artifacts/LICENSE-Asio.txt
+          $hash = (Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+          $msbuildVersion = (msbuild -version -nologo | Select-Object -Last 1).Trim()
+          @(
+            'source_commit=${{ github.sha }}'
+            'runner_image=windows-2022'
+            'asio_version=${{ env.ASIO_VERSION }}'
+            'asio_tag=${{ env.ASIO_TAG }}'
+            'asio_commit=${{ env.ASIO_COMMIT }}'
+            'asio_archive_sha256=${{ env.ASIO_SHA256 }}'
+            "msbuild=$msbuildVersion"
+            "binary_sha256=$hash"
+          ) | Set-Content -Encoding ascii artifacts/windows-transport-manifest.txt
+
+      - name: Upload Windows evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: multiplayer-transport-windows-${{ github.sha }}
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    name: Android NDK arm64 compile
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Android NDK toolchain
+        run: |
+          sdkmanager_path="$(command -v sdkmanager || find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          test -n "$sdkmanager_path"
+          yes | "$sdkmanager_path" --licenses >/dev/null || true
+          "$sdkmanager_path" \
+            'platforms;android-35' \
+            'cmake;3.22.1' \
+            'ndk;28.1.13356709'
+
+      - name: Cross-compile arm64 spike
+        run: |
+          cmake_path="$ANDROID_HOME/cmake/3.22.1/bin/cmake"
+          ninja_path="$ANDROID_HOME/cmake/3.22.1/bin/ninja"
+          ndk_path="$ANDROID_HOME/ndk/28.1.13356709"
+          "$cmake_path" \
+            -S tools/multiplayer/transport_spike \
+            -B build/transport-spike-android-arm64 \
+            -G Ninja \
+            -DCMAKE_MAKE_PROGRAM="$ninja_path" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$ndk_path/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-35 \
+            -DANDROID_STL=c++_static
+          "$cmake_path" --build build/transport-spike-android-arm64 --parallel
+
+      - name: Inspect and record provenance
+        run: |
+          mkdir -p artifacts
+          binary=build/transport-spike-android-arm64/multiplayer_transport_spike
+          ndk_path="$ANDROID_HOME/ndk/28.1.13356709"
+          file "$binary" | tee artifacts/android-file.txt
+          grep -q 'ARM aarch64' artifacts/android-file.txt
+          "$ndk_path/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h "$binary" \
+            | tee artifacts/android-elf-header.txt
+          grep -q 'Machine:.*AArch64' artifacts/android-elf-header.txt
+          cp "$binary" artifacts/transport-spike-android-arm64
+          cp build/transport-spike-android-arm64/_deps/multiplayer_asio-src/LICENSE_1_0.txt artifacts/LICENSE-Asio.txt
+          {
+            echo "source_commit=$GITHUB_SHA"
+            echo "runner_image=ubuntu-24.04"
+            echo "asio_version=$ASIO_VERSION"
+            echo "asio_tag=$ASIO_TAG"
+            echo "asio_commit=$ASIO_COMMIT"
+            echo "asio_archive_sha256=$ASIO_SHA256"
+            echo "android_platform=35"
+            echo "android_ndk=28.1.13356709"
+            echo "android_abi=arm64-v8a"
+            echo "binary_sha256=$(sha256sum "$binary" | cut -d' ' -f1)"
+          } > artifacts/android-transport-manifest.txt
+
+      - name: Upload Android evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: multiplayer-transport-android-${{ github.sha }}
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 14

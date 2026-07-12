@@ -520,6 +520,8 @@ jobs:
           aapt_path="$ANDROID_HOME/build-tools/34.0.0/aapt"
           test -x "$aapt_path"
           "$aapt_path" dump badging artifacts/cdda-android-arm64-baseline-unsigned.apk | tee artifacts/android-badging.txt
+          "$aapt_path" dump permissions artifacts/cdda-android-arm64-baseline-unsigned.apk | tee artifacts/android-permissions.txt
+          grep -q "android.permission.INTERNET" artifacts/android-permissions.txt
           {
             echo "artifact=cdda-android-arm64-baseline-unsigned.apk"
             echo "sha256=$(sha256sum artifacts/cdda-android-arm64-baseline-unsigned.apk | cut -d' ' -f1)"
