@@ -63,33 +63,34 @@ See the plan sections on authority, threading, state scope, scheduling, action/U
 
 ## Current Phase
 
-The project is in **Phase 0: baseline, ADRs, and feasibility validation**. Do not treat the repository as already being in protocol production work.
+Phase 0 closed with recorded evidence on 2026-07-12. The project is now in **Phase 1: headless runtime and protocol
+skeleton**. Do not skip ahead to remote gameplay executors or describe the existing transport spike as production
+networking.
 
-Completed baseline work:
+Completed Phase 0 gates:
 
-- Local branch: `multiplayer/main`.
-- Baseline tag: `multiplayer-upstream-baseline-d84b90d`.
-- Fork remote: `https://github.com/wsdx233/Cataclysm-DDA-Multiplayer.git`.
-- Linux curses package builds and passes archive, `--version`, and dynamic-library smoke checks.
-- Android arm64 debug and unsigned release APKs build and pass ZIP, ABI, badging, and signing-state checks.
-- The first hosted Windows job compiled and packaged successfully, but a PowerShell GUI-process exit-code
-  false negative stopped the version smoke step before artifact upload. The local workflow fix still requires
-  a clean `windows-2022` rerun.
-- Full compiled translations are taken from the hash-pinned official baseline release package, without requiring a fork Transifex secret.
-- Multiplayer documentation is consolidated under `doc/multiplayer/`, with a current handoff snapshot in `STATUS.md`.
-- Nine Phase 0 ADRs now record authority, time, transport/TLS, protocol, player bridge, rendering, saves, character policy, and bubble policy. Transport/TLS and player bridge remain validation-gated.
-- The stable-avatar/shared-owner bridge, human-player registry, and `player_runtime` sidecar compile under GCC 13
-  release/curses and joint ASan/UBSan/LSan. They pass the 10,000-switch identity/runtime matrix while retaining
-  full-swap as a failing reference-identity comparison; see `STATUS.md` for exact evidence.
+- Local branch: `multiplayer/main`; baseline tag: `multiplayer-upstream-baseline-d84b90d`; fork remote:
+  `https://github.com/wsdx233/Cataclysm-DDA-Multiplayer.git`.
+- Hosted baseline run `29205262759` produced verified Linux curses, Android arm64 and Windows x64 MSVC artifacts.
+  The Windows executable reports exact `+tiles, +sound`; the Android APK is arm64-only and requests `INTERNET`.
+- Hosted transport run `29205262750` passed standalone Asio/TCP framing and shutdown contracts on GCC 13,
+  Clang 18 and MSVC, plus the Android NDK arm64 compile gate. ADR-0003 is accepted with no embedded TLS:
+  plaintext defaults to loopback, trusted-LAN use is explicit, and WAN requires an external authenticated tunnel.
+- The stable-avatar bridge, runtime registry, player snapshots, movement/map-shift, mount, vehicle, grab and remote
+  control matrix pass 274 release and sanitizer assertions. Full avatar move-swap retains three expected identity
+  failures. ADR-0005 is accepted.
+- `game::do_turn()` has five observable phase boundaries and a source audit for world-phase active-player getters;
+  see `doc/multiplayer/DO_TURN_PHASE_AUDIT.md` and `STATUS.md` for exact evidence.
 
-The remaining Phase 0 work, in order, is:
+The active Phase 1 work, in order, is:
 
-1. Rerun the baseline workflow with the corrected Windows GUI-process smoke check and record the Windows artifact
-   evidence before marking the three-platform baseline complete.
-2. Extend the stable-avatar/runtime matrix through movement/map-shift, mount, vehicle, grab, remote-control, and
-   two-player save/load boundaries; compile it with Android NDK and MSVC, then make the player-bridge go/no-go decision.
-3. Build the standalone Asio/TCP transport spike on Linux, MSVC, and Android NDK; validate the TLS packaging decision.
-4. Enter Phase 1 only after the player-bridge decision and three-platform transport compile gate pass.
+1. Add a testable `runtime_mode`, strict versioned server config, and CLI operations with loopback-safe defaults.
+2. Add a dedicated-server startup path that loads required data but never initializes curses, SDL, ImGui, sound,
+   popups or the main menu; add graceful signal-driven shutdown.
+3. Integrate a production transport boundary separate from the `tools/` spike, with bounded immutable queues,
+   framing, rate/size limits and in-process loopback tests.
+4. Add the pinned FlatBuffers schema/generation check, version/capability handshake, incompatibility rejection,
+   content manifest and structured server logs.
 
 Linux curses is only the current non-SDL build baseline. It is not a multiplayer server and must not be described or shipped as one.
 
@@ -119,6 +120,8 @@ Pinned build values include:
 | Android Build Tools | `34.0.0` |
 | Android CMake | `3.22.1` |
 | Android NDK | `28.1.13356709` |
+| standalone Asio | `1.38.1` / `asio-1-38-1` |
+| Asio archive SHA-256 | `2827b229972be80cdb14e5497962fa393d1adf036b5869e2b9c99f644daadacc` |
 
 Do not casually update pinned versions. Change them intentionally, verify all affected platforms, and update the baseline document in the same change.
 
@@ -208,7 +211,7 @@ Outputs are under:
 
 The local debug APK is signed with the Android debug key. The baseline release APK is intentionally unsigned. Production signing and AAB publication belong to the later release/operations phase.
 
-The original baseline manifest does not yet include `android.permission.INTERNET`; add it with the Android transport spike, not as an unrelated baseline change.
+The Android manifest includes `android.permission.INTERNET`; the baseline workflow verifies it in the packaged APK.
 
 ## Windows Build
 

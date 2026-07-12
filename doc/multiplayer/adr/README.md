@@ -15,9 +15,9 @@
 | --- | --- | --- |
 | [0001](0001-server-authoritative-simulation.md) | 服务器权威与单模拟线程 | 已接受 |
 | [0002](0002-shared-turn-barrier.md) | 共享回合屏障与公平调度 | 已接受 |
-| [0003](0003-asio-tcp-and-tls-policy.md) | standalone Asio/TCP 与 TLS 发布策略 | 待验证 |
+| [0003](0003-asio-tcp-and-tls-policy.md) | standalone Asio/TCP 与 TLS 发布策略 | 已接受 |
 | [0004](0004-semantic-flatbuffers-protocol.md) | 语义命令、可见状态与 FlatBuffers 协议 | 已接受 |
-| [0005](0005-active-avatar-player-bridge.md) | 稳定 avatar 地址与活动玩家上下文 | 待验证 |
+| [0005](0005-active-avatar-player-bridge.md) | 稳定 avatar 地址与活动玩家上下文 | 已接受 |
 | [0006](0006-visibility-filtered-remote-scene.md) | 可见性过滤的远程场景与客户端本地渲染 | 已接受 |
 | [0007](0007-server-canonical-generation-saves.md) | 服务器 canonical generation 存档 | 已接受 |
 | [0008](0008-portable-character-policy.md) | Portable Character 与人物所有权策略 | 已接受 |

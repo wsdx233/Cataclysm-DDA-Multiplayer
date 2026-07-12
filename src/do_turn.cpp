@@ -52,6 +52,7 @@
 #include "messages.h"
 #include "mission.h"
 #include "monster.h"
+#include "multiplayer_turn_phase.h"
 #include "mtype.h"
 #include "music.h"
 #include "npc.h"
@@ -525,6 +526,8 @@ bool game::do_turn()
         return turn_handler::cleanup_at_end();
     }
 
+    multiplayer_turn_phase_trace phase_trace( multiplayer_turn_phase::turn_begin );
+
     drain_renderer_recovery();
 
     weather_manager &weather = get_weather();
@@ -554,6 +557,7 @@ bool game::do_turn()
     timed_events.process();
     get_item_wakeups().process( calendar::turn );
     mission::process_all();
+    phase_trace.enter( multiplayer_turn_phase::player_begin );
     avatar &u = get_avatar();
     map &m = get_map();
     // If controlling a vehicle that is owned by someone else
@@ -627,6 +631,7 @@ bool game::do_turn()
         sfx::do_hearing_loss();
     }
 
+    phase_trace.enter( multiplayer_turn_phase::player_input );
     // avatar processes human input through handle_action()
     if( !u.has_effect( effect_sleep ) || uquit == QUIT_WATCH ) {
         if( u.get_moves() > 0 || uquit == QUIT_WATCH ) {
@@ -712,6 +717,7 @@ bool game::do_turn()
         calc_driving_offset( veh );
     }
 
+    phase_trace.enter( multiplayer_turn_phase::world );
     scent_map &scent = get_scent();
     // No-scent debug mutation has to be processed here or else it takes time to start working
     if( !u.has_flag( json_flag_NO_SCENT ) ) {
@@ -747,6 +753,7 @@ bool game::do_turn()
     // required after monsters move and fields emit
     mon_info_update();
 
+    phase_trace.enter( multiplayer_turn_phase::player_end );
     // replenish avatar moves
     u.process_turn();
 

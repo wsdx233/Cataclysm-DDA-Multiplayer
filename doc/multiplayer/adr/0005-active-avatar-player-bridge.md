@@ -1,6 +1,6 @@
 # ADR-0005：稳定 avatar 地址与活动玩家上下文
 
-- 状态：待验证
+- 状态：已接受
 - 日期：2026-07-12
 - 关联计划：第 6、7、9、20 节
 
@@ -50,18 +50,32 @@
 - 在过渡期内，现有玩法代码仍可通过 `get_avatar()`/`get_player_character()` 访问当前执行者，减少首批改动。
 - `game` 内直接使用固定成员 `u` 的路径必须由编译器和 phase audit 分批迁移；Phase 0 guard 不能被描述为已完成的多人执行环境。
 - active guard 成为高风险边界，需要调试上下文、嵌套规则和异常/提前返回安全性。
-- Phase 0 sidecar 已迁出消息、stats、achievements 和 safe-mode 状态；map memory、diary、recipes、其他自动化规则和 UI 状态仍需逐步分类迁移。
+- Phase 0 sidecar 已迁出消息、stats、achievements、safe-mode 和 per-player remote-vehicle cache；map
+  memory、diary、recipes 及 avatar 本体中的 missions、bionics、mutations 已完成双玩家切换和 snapshot
+  证据。后续仍须按 action/phase 审计分类其他自动化规则和纯客户端 UI 状态。
 - Phase 0 POC 已把当前活动 runtime/avatar shared owner 与活动裸指针成对切换；registry 为额外 avatar 提供真实 shared ownership，并让 `shared_from()` 返回同一控制块。legacy `u_shared_ptr` 的 null-deleter alias 只保留给 `game` 自身拥有的单人 backing avatar。
 - 稳定地址不等于持久引用永远有效；物品在 inventory、wielded、ground、vehicle 之间正常移动时仍需按 UID 重新验证。
 
-## 当前 Phase 0 证据
+## Phase 0 验证结果
 
-- GCC 13 release/curses 正向测试对两个地址稳定 avatar 完成 10,000 次切换，覆盖 registry ownership、活动/非活动 `creature_at()`、`critter_by_id()`、`shared_from()` control block、`all_creatures()`/`all_npcs()` 隔离、位置刷新、inventory/worn/wielded/nested item owner 与 UID、activity 序列化、item-location 反序列化、嵌套、提前返回、异常恢复和注销生命周期；130 个 assertion 全部通过。
-- `player_runtime` 已实现 RFC 4122 v4 UUID `player_id`、递增 session generation、`importing/active/offline/dead` 状态，以及独立 messages、stats、achievements 和 safe-mode 状态。`player_id` 尚未持久化到 server save/schema。
-- session 转换只能经 registry/game 执行；活动上下文深度阻止 guard 存续期间的 registry 生命周期转换，当前活动玩家不能断线或标死，任何仍为 `active` 的 session 都不能直接注销。公开入口在 debug/sanitizer 下断言模拟线程，并在 release 下显式拒绝非模拟线程调用。
-- 旧单人存档字段与 JSON 结构保持不变，stats/achievements/safe-mode 数据源已改为当前 runtime；stats、messages、save 和 force-load 回归通过。双玩家 avatar/world save/load 仍未实现。
-- 联合 ASan/UBSan/LeakSanitizer（含 stack-use-after-return 检查）下正向矩阵 130/130 通过；完整隐藏组为 152 个通过、3 个 full-swap identity assertion 按预期失败，未产生 sanitizer 报告。
-- 统一 movement/map-shift、载具/mount/grab/remote control、missions/map memory、双玩家 save/load 和 Android/MSVC 编译仍是未完成门禁，因此本 ADR 保持 `待验证`。
+- GCC 13 release/curses 正向测试对两个地址稳定 avatar 完成 10,000 次切换，覆盖 registry ownership、
+  活动/非活动 human-player 查询、真实 shared control block、位置索引、inventory/worn/wielded/nested item
+  owner 与 UID、activity、严格 LIFO guard、提前返回、异常恢复、session 生命周期和模拟线程边界；274/274
+  assertions 通过。
+- movement 和 `map::shift()` 会更新所有 human runtime 的绝对/泡内位置、route 和 remote-control 坐标；
+  vehicle cache rebuild 后按每玩家稳定上下文重新解析 remote vehicle。mount、vehicle passenger/driver、grab、
+  missions、map memory、diary、recipes、bionics 和 mutations 均完成双玩家 round-trip。
+- `player_runtime` 使用 RFC 4122 v4 `player_id`、持久化 session generation 和
+  `importing/active/offline/dead` 状态。schema version 1 的严格 player snapshot 可恢复两个独立 runtime 的
+  avatar、装备、messages、stats、safe mode 和稳定 ID；反序列化保持 `importing`，registry 完成唯一性验证后
+  才开始新 session。该 snapshot 是玩家边界证据，不冒充 ADR-0007 的 canonical generation world save。
+- 旧单人存档字段和 JSON 结构保持不变；stats 261、messages 27、save 26，以及 map/teleport/vehicle/load
+  139,624 个回归 assertions 均通过。
+- 联合 ASan/UBSan/LSan（含 leak 和 stack-use-after-return）正向 274/274 通过，无 sanitizer finding；
+  full-avatar move-swap 继续保留恰好 3 个 `!mayfail` identity assertion 失败作为负面对照。
+- 本地 Android NDK `28.1.13356709` arm64 debug APK 编译通过。hosted baseline run `29205262759` 在同一
+  提交上完成 Linux Clang、Android NDK 和 Windows MSVC 17.14 构建；Windows artifact 实际 `--version`
+  输出逐行精确包含 `+tiles, +sound`。
 
 ## Phase 0 go/no-go 门禁
 
@@ -70,6 +84,8 @@
 - guard 支持严格 LIFO 嵌套、提前返回和异常恢复；非模拟线程使用在 debug/sanitizer 下触发断言，在 release 下不进入活动上下文。
 - mounted、vehicle passenger、grab、remote control、missions、map memory、diary、recipes、bionics 和 mutations 完成上下文切换 round-trip。
 - `creature_at()`、`shared_from()` 和 `critter_by_id()` 对活动与非活动 human player 始终返回稳定且正确的身份。
-- 保存/加载后两个玩家和世界状态一致。
+- player snapshot 保存/加载后两个玩家身份和玩家级状态一致，且不复制或修改共享 world/map/vehicle 状态；
+  完整 world restart 与 generation fallback 属于 ADR-0007 和 Phase 5 门禁。
 - ASan、UBSan、LSan 无错误，且显式 identity assertion 无逻辑失败。
-- 完成后更新本 ADR 为 `已接受`，记录 registry ownership、持久 handle 规则和 sanitizer 证据。
+- 上述门禁已经完成。后续生产扩展仍必须保持 registry ownership、持久 handle 和单模拟线程规则；若
+  Phase 1 至 Phase 3 的真实 command loop 暴露地址或引用不变量失败，应立即重新打开或取代本 ADR。

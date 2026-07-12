@@ -1,6 +1,6 @@
 # ADR-0003：standalone Asio/TCP 与 TLS 发布策略
 
-- 状态：待验证
+- 状态：已接受
 - 日期：2026-07-12
 - 关联计划：第 12、15、19、20 节
 
@@ -19,9 +19,16 @@ Phase 0 transport spike 采用 standalone Asio + TCP，并通过抽象 transport
 - 默认只绑定 loopback。plaintext 只能由管理员显式启用，用于开发或受信 LAN。
 - 面向公网的发布必须使用 TLS 1.3，或明确要求 WireGuard、Tailscale 等外部加密隧道。
 - 不设计自定义加密、密钥交换或证书协议。
-- Asio 与 TLS 依赖必须固定版本、校验值和许可证，并按仓库现有第三方依赖方式打包。
+- standalone Asio 固定为 `1.38.1`（tag `asio-1-38-1`、commit
+  `dfd7b3e3145bac5d0e91a99fde69c6ae1442f971`、archive SHA-256
+  `2827b229972be80cdb14e5497962fa393d1adf036b5869e2b9c99f644daadacc`），许可证为
+  Boost Software License 1.0。生产依赖仍须以独立于 spike 的构建边界接入。
 
-TLS 后端的最终选择由三平台 spike 决定。如果嵌入式 TLS 在 Android、MSVC 或发布打包门禁失败，首个可用版本必须明确限制为 loopback/LAN/VPN，不能悄悄降级为默认明文公网监听。
+本次 spike 没有选择或打包嵌入式 TLS 后端，因此首个可用版本采用明确的
+`loopback / 显式受信 LAN / 外部认证加密隧道` 策略：默认 plaintext 监听只能是 loopback；非 loopback
+plaintext 必须由管理员显式启用并只用于受信 LAN；WAN 部署必须使用 WireGuard、Tailscale 等外部认证加密
+隧道。未来若引入嵌入式 TLS，必须另行完成 TLS 1.3、证书验证、Android/MSVC/Linux 打包和依赖更新门禁，
+不能把本 ADR 的接受状态解释为已经验证 TLS。
 
 ## 替代方案
 
@@ -36,11 +43,22 @@ TLS 后端的最终选择由三平台 spike 决定。如果嵌入式 TLS 在 And
 - frame 大小、解压后大小、速率、pending request 和发送队列都必须有硬上限。
 - Android manifest 的 `INTERNET` 权限与网络生命周期处理应随 transport spike 一起加入，而不是作为无关基线改动。
 - TLS 证书、私钥和 session token 必须由平台私有存储处理，日志不得记录秘密。
+- `tools/multiplayer/transport_spike/` 是冻结的可行性和回归工具，不链接游戏目标，也不能逐步演变为生产协议实现。
+- Android 交叉构建只证明编译和 ABI；原生 loopback 行为合同由 Linux 和 Windows 执行。
 
-## Phase 0 验证门禁
+## Phase 0 验证结果
 
-- 同一最小 Asio/TCP echo/frame 程序在 Linux GCC/Clang、Windows MSVC 和 Android NDK arm64 编译通过。
-- loopback 测试覆盖 frame 分片、粘包、半关闭、连接取消、队列满和有序 shutdown。
-- TLS 候选后端在三平台完成握手、证书校验和发布产物打包验证，或形成明确的 LAN/VPN 限制决定。
-- Android APK 只包含请求的 ABI，新增权限和原生库均通过 APK 检查。
-- 通过门禁后更新本 ADR 为 `已接受`，记录 Asio/TLS 版本、构建方式和验证证据。
+- GitHub Actions run `29205262750`（提交
+  `a39e06eb8620b377f515b6a8a7c8731b30543ebe`）的 Linux GCC 13、Linux Clang 18、Windows
+  MSVC 17.14 和 Android NDK `28.1.13356709` arm64 三个 job 全部成功。
+- Linux GCC/Clang 和 Windows MSVC 原生 loopback 均通过 one-byte fragmentation、coalesced frames、
+  1 MiB 边界及超长拒绝、半关闭、accept cancellation、有界队列饱和/FIFO 和有序 shutdown；同一 harness
+  本地连续运行 100 次无失败。
+- Android artifact 是 ELF64 AArch64，内部 binary SHA-256 为
+  `5065fdb41b6ec45f18d165d28bf5e36d75b6e7bc4c58e10980a3c669bc380b46`。完整 baseline run
+  `29205262759` 的 APK 所有原生库均只位于 `arm64-v8a/`，包含 `libmain.so`，并声明
+  `android.permission.INTERNET`。
+- 三个 transport artifacts 的 ID 分别为 Linux `8263559175`、Android `8263560332`、Windows
+  `8263560944`；GitHub artifact digest、内部 binary hash、provenance 和 Asio 许可证均已独立下载核对。
+- 未验证嵌入式 TLS；门禁按上述 LAN/VPN 限制分支关闭。生产实现若违反默认 loopback 或允许隐式明文公网
+  监听，即违反本 ADR。

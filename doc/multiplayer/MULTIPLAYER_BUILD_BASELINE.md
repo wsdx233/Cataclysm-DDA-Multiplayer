@@ -24,6 +24,10 @@ Linux curses 包不是服务器，也不能作为多人服务运行。它只验�
 
 完整 `.po` 不在 Git 仓库中，而是在上游发布时从 Transifex 拉取。基线 workflow 不依赖 fork 私有的 Transifex token；它会校验并从固定的官方基线包提取已编译 `.mo`，供三端打包使用。
 
+独立的 `.github/workflows/multiplayer-transport-spike.yml` 只构建
+`tools/multiplayer/transport_spike/`：Linux 原生 GCC/Clang、Windows 原生 MSVC 执行 loopback CTest，
+Android NDK arm64 执行交叉编译和 ELF/ABI 检查。它不链接游戏目标，也不构成生产 transport 或 TLS。
+
 ## 3. 固定依赖
 
 | 依赖 | 固定值 |
@@ -40,6 +44,9 @@ Linux curses 包不是服务器，也不能作为多人服务运行。它只验�
 | Android platform | `35` |
 | Android Build Tools | `34.0.0` |
 | Android NDK | `28.1.13356709` |
+| standalone Asio | `1.38.1` / `asio-1-38-1` |
+| Asio commit | `dfd7b3e3145bac5d0e91a99fde69c6ae1442f971` |
+| Asio archive SHA-256 | `2827b229972be80cdb14e5497962fa393d1adf036b5869e2b9c99f644daadacc` |
 
 SDL3 Android AAR 的版本与 SHA-256 继续由 `android/app/build.gradle` 固定。桌面 shader compiler 继续复用 `.github/actions/build-sdl3-shaders` 中固定的 SDL_shadercross 提交。
 
@@ -67,7 +74,8 @@ CI 会执行打包目录中的 `cataclysm-tiles.exe --version`，并使用 `7z t
 - `android-build-manifest.txt`
 - `android-badging.txt`
 
-该 APK 是 release 配置但未签名，适合验证构建内容，不用于安装或发布。CI 会检查 APK 完整性、包信息、`arm64-v8a/libmain.so`，并确认没有混入 32 位 ARM 库。
+该 APK 是 release 配置但未签名，适合验证构建内容，不用于安装或发布。CI 会检查 APK 完整性、包信息、
+`arm64-v8a/libmain.so`、`android.permission.INTERNET`，并确认没有混入 32 位 ARM 或 x86 库。
 
 ## 5. 本地 Linux 环境
 
@@ -180,21 +188,36 @@ git remote set-url --push upstream DISABLED
 
 ## 9. 当前验证状态
 
-2026-07-12 在基线提交 `d84b90d` 上完成：
+完整 hosted baseline run `29205262759`（run number `#5`，提交
+`a39e06eb8620b377f515b6a8a7c8731b30543ebe`）于 2026-07-12 成功，三个最终产物均已下载到仓库外核对：
 
-- Linux x64 curses `bindist` 构建、tar 完整性、`cataclysm --version` 和 `ldd` 检查通过。
-- Android arm64 debug APK 构建、ZIP 完整性、ABI、badging 和 debug v2 签名检查通过。
-- Android arm64 unsigned release APK 构建、ZIP 完整性、ABI、badging 和未签名状态检查通过。
-- 本机不是 Windows，Windows 结果必须以 `windows-2022` hosted runner 为准。
+| 平台 | Artifact ID | GitHub artifact digest | 内部包 SHA-256 |
+| --- | ---: | --- | --- |
+| Linux curses x64 | `8263767548` | `4359fd56ddcb6948da9fffc38a5e37bf2a2457b748715aad30cdfebe5797235e` | `48f804153aa611350da3cbefaa474ce8e954b07a210184d480560180af3cde02` |
+| Android arm64 | `8263779993` | `414789e43381505c3dbcca5efe5b5f4acca21ccdce6cf989fe7a29a4470cc14a` | `9b806ffab240500efd0776dcfab1954f9ce5ea611648ac36337c6415fecf0b99` |
+| Windows client x64 | `8263854364` | `dc9ee8104ee91c6195ad6a566961a4a97010f6fa4b6527f6bca74476c0c91d97` | `09eab6ee7c4e74dcbfa0d201d9d46d438485706ba3fc34fb58df1ca8aa1f984c` |
 
-2026-07-12 的首个 hosted baseline run `29177657248`（提交 `0955d865ea170c26511a789ce9d37334ac530953`）中：
+- Linux tar 有 9,291 个 entries，archive、manifest SHA、`--version` 和动态库 smoke 均通过；输出为
+  `-tiles, -sound`，因此仍只表示 curses 构建前身，不是 headless server。
+- Android APK 的 ZIP 和内部 manifest SHA 通过；所有 6 个原生库均位于 `arm64-v8a/`，其中
+  `libmain.so` 为 ELF64 AArch64。
+  APK 声明 `android.permission.INTERNET`，且 `apksigner verify` 按预期报告 unsigned。
+- Windows 内层 ZIP 的 `7z`/ZIP 完整性和 manifest SHA 通过，包含 9,048 个 files；
+  `cataclysm-tiles.exe` 是 PE32+ x86-64 GUI executable。hosted 原生执行的 `windows-version.txt` 在 CRLF
+  归一化后逐行精确包含 `+tiles, +sound`，不是仅凭工程配置推断 capability。
+- translations、tileset、soundpack 和 shaders 的固定准备 jobs 同 run 全部成功。首个 Windows smoke 的
+  GUI-process `$LASTEXITCODE` 假失败以及后续 CRLF regex 假失败均已被当前证据取代。
 
-- 固定 translations、tileset、soundpack 和 shaders 的准备作业成功。
-- Linux x64 curses job 成功并上传 artifact `cdda-linux-curses-x64-baseline`。
-- Android arm64 job 成功并上传 artifact `cdda-android-arm64-baseline`。
-- Windows MSVC job 以 `0 Error(s)` 完成编译并由 `windist.ps1 -SDL3` 完成打包；随后 version smoke 因 PowerShell 直接调用 GUI subsystem exe 后 `$LASTEXITCODE` 为 null 被误判失败，未执行 artifact upload。
-- workflow 已改为通过 `Start-Process -Wait -PassThru` 取得显式进程退出码并验证版本输出；该修复通过 actionlint 1.7.12，但尚未在 hosted runner 重跑。
+Transport spike run `29205262750`（同一提交）也全部成功：
 
-因此 Linux/Android hosted artifacts 已有成功证据，Windows compile/package 已有成功证据，但完整三平台 artifact 基线仍未关闭。必须取得新 run 的 Windows version smoke、ZIP 完整性、provenance 和 artifact upload 成功结果后，才能把 Windows 和完整基线标为通过。
+| 平台 | Artifact ID | GitHub artifact digest |
+| --- | ---: | --- |
+| Linux GCC 13 + Clang 18 | `8263559175` | `f4d6e90086264b4989f0b6d21f4156caff15b7eb862cfa18dcbd025771e0cce4` |
+| Android NDK arm64 | `8263560332` | `bbbba83a2053e4cc2a49ea43abba6b9306d70f19900553cf086bc1b659c9c197` |
+| Windows MSVC | `8263560944` | `f9dd8750b4543f39d24e1efc1da327fc77afc71db7856f1423956d0996a04aa1` |
+
+Linux 和 Windows 原生 artifacts 的 loopback 输出、所有内部 binary hash、Android ELF64 AArch64 header、
+Asio pin 和 BSL-1.0 license 已核对。Android 是交叉编译门禁，不宣称在 hosted Android 设备上运行。该
+spike 没有 TLS backend；发布安全限制见 ADR-0003。
 
 本地生成物位于仓库默认的忽略目录中，不作为源码提交。规范产物和 hash 以 fork 上的 `multiplayer-baseline` workflow 为准。

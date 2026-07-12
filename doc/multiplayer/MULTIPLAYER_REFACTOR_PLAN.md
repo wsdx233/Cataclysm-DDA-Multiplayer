@@ -279,7 +279,11 @@ sidecar 继续用于把当前散落在 `game` 或进程级单例中的玩家状�
 - 地图 shift 时同步移动所有玩家的 bubble 坐标。
 - 同一 tile 的骑乘等合法叠放规则，其他情况拒绝重复占位。
 
-Phase 0 的可行性实现可以先用 `character_id` 加绝对坐标的按查询刷新索引验证稳定地址和查询边界；这不是生产协议或持久身份模型。进入 Phase 1 前，registry 必须替换为包含随机 UUID `player_id`、session generation 和状态机的 `player_runtime` ownership，并在统一移动/map-shift 边界维护位置索引，明确同格叠放规则。
+Phase 0 最初用 `character_id` 加绝对坐标的按查询刷新索引验证稳定地址和查询边界；随后已经替换为包含
+RFC 4122 v4 `player_id`、session generation、状态机和严格 snapshot schema 的 `player_runtime`
+ownership。普通移动由 registry 在查询边界验证位置快照，`map::shift()` 显式同步全部 human runtime 的
+位置、route 和 remote-control 坐标；同格查询优先稳定 human identity，human avatar 不进入 NPC AI。
+这些是进 Phase 1 的运行时身份基础，但仍不是网络协议或 canonical generation world save。
 
 ## 8. 回合与时间模型
 
@@ -543,9 +547,15 @@ CDDA 是回合制，首版不需要 movement prediction。客户端可以显示�
 - 开发和 LAN 模式可显式允许 plaintext。
 - 默认只绑定 loopback，除非配置了 TLS 或管理员明确启用不安全监听。
 - WAN 发布必须使用 TLS 1.3，或明确要求通过 WireGuard/Tailscale 等外部加密隧道。
-- 不自行设计加密算法。TLS 后端和 Android 打包必须在早期 spike 中验证。
+- 不自行设计加密算法。Phase 0 没有选择或打包嵌入式 TLS，因此首个实现明确采用
+  `loopback / 显式受信 LAN / 外部认证加密隧道` 限制；不能默认明文监听公网。
 
-依赖应固定版本和校验值，并按仓库现有第三方依赖方式管理许可证。网络接口应抽象为 transport，使 TLS 后端不影响协议和模拟代码。
+Phase 0 验证使用 standalone Asio `1.38.1`，固定 tag `asio-1-38-1`、commit
+`dfd7b3e3145bac5d0e91a99fde69c6ae1442f971`、archive SHA-256
+`2827b229972be80cdb14e5497962fa393d1adf036b5869e2b9c99f644daadacc` 和 Boost Software
+License 1.0。Linux GCC/Clang、Windows MSVC 和 Android NDK arm64 编译门禁已经通过。生产依赖仍须按
+仓库第三方依赖方式接入，且不能链接或扩展 `tools/multiplayer/transport_spike/` 的测试程序。网络接口应
+抽象为 transport，使未来 TLS 后端不影响协议和模拟代码。
 
 ### 12.2 协议编码
 
@@ -757,10 +767,9 @@ cataclysm-tiles --connect example.org:27999
     "spawn_policy": "shared_start"
   },
   "network": {
-    "listen": "[::]:27999",
-    "tls": "required",
-    "certificate": "server.crt",
-    "private_key": "server.key"
+    "listen": "127.0.0.1:27999",
+    "tls": "disabled",
+    "allow_insecure_lan": false
   },
   "players": {
     "max": 4,
@@ -779,6 +788,10 @@ cataclysm-tiles --connect example.org:27999
   }
 }
 ```
+
+这是未内嵌 TLS 时的安全默认值。非 loopback 地址只有在管理员显式设置受信 LAN 例外，或将
+`tls` 设为 `external_tunnel` 后才可接受。`tls: required` 只有在后续嵌入式 TLS 三平台门禁完成后才允许；
+当前 parser 必须拒绝它，而不是静默降级。证书和私钥字段也不得在没有对应 backend 时伪装为生效。
 
 配置加载必须：
 
@@ -1029,7 +1042,8 @@ world_runtime
 - missions、map memory、diary、recipes、bionics、mutations 保持。
 - `creature_at`、`shared_from` 和 `critter_by_id` 始终返回正确身份。
 - ASan、UBSan、LSan 下无错误。
-- 保存后加载，两个角色与世界状态一致。
+- Phase 0 player snapshot 保存/加载后，两个角色身份与玩家级状态一致，且不复制或修改共享
+  world/map/vehicle 状态。完整 world restart、RNG 和 generation fallback 由 ADR-0007/Phase 5 验证。
 
 完整 avatar move-swap 的引用失败测试作为对照保留。稳定地址方案若仍有核心不变量失败，先停止生产扩展并更新 ADR，不通过分散的 cache 修复掩盖问题。
 
@@ -1135,6 +1149,12 @@ TCP 不会乱序交付同一连接中的字节，但业务测试仍要覆盖重�
 - 验证 TLS 方案或明确 LAN/VPN 限制。
 
 退出标准：角色桥接方案作出 go/no-go 决策；Android/Windows/Linux 的 transport spike 通过；没有把 POC 代码直接当生产架构。
+
+Phase 0 已于 2026-07-12 按证据关闭：稳定地址 bridge 在 GCC release 和 ASan/UBSan/LSan 下完成
+274/274 正向 assertions，完整 move-swap 保留 3 个预期失败对照；hosted baseline run `29205262759`
+验证 Linux、Android arm64 和 Windows MSVC artifacts；transport run `29205262750` 验证 GCC 13、
+Clang 18、MSVC 和 Android NDK arm64。ADR-0003 与 ADR-0005 已接受。嵌入式 TLS、生产 transport、
+canonical generation save 和实际远程命令均未被 Phase 0 spike 冒充完成，项目现已进入 Phase 1。
 
 ### Phase 1：Headless 运行模式与协议骨架（3 至 5 周）
 

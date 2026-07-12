@@ -11,6 +11,8 @@
 3. [`MULTIPLAYER_REFACTOR_PLAN.md`](MULTIPLAYER_REFACTOR_PLAN.md)：完整产品范围、目标架构、阶段路线和测试策略。
 4. [`adr/README.md`](adr/README.md)：与当前任务相关的已接受或待验证决策。
 5. [`MULTIPLAYER_BUILD_BASELINE.md`](MULTIPLAYER_BUILD_BASELINE.md)：涉及构建、CI、依赖或发布产物时必读。
+6. [`DO_TURN_PHASE_AUDIT.md`](DO_TURN_PHASE_AUDIT.md)：涉及 turn loop、scheduler、world phase 或
+   活动玩家 getter 时必读。
 
 ## 文档职责
 
@@ -21,6 +23,7 @@
 | 重构计划 | 产品范围、总体架构、阶段和退出标准 | 临时构建输出、单次调试过程 |
 | ADR | 单项决策、替代方案、后果、go/no-go 门禁 | 每日进度、未经验证的实现宣称 |
 | 构建基线 | 固定版本、构建命令、产物契约、已验证平台 | 多人玩法设计和协议细节 |
+| turn phase 审计 | `do_turn()` 阶段边界、基线 profiling 和 world-phase getter 迁移清单 | 临时性能结论、已完成多人 scheduler 的宣称 |
 
 ## 更新规则
 
