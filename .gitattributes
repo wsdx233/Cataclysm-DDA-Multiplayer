@@ -21,7 +21,7 @@
 *.filters -text
 *.sln     -text
 *.user    -text
-*.vcxproj -text
+*.vcxproj -text whitespace=cr-at-eol
 
 # Generated translation text, don't mess with them.
 *.mo      binary

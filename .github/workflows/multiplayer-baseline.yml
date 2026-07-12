@@ -396,7 +396,9 @@ jobs:
           if ($versionProcess.ExitCode -ne 0) {
             throw "Windows version smoke test failed with exit code $($versionProcess.ExitCode): $versionText"
           }
-          if ([string]::IsNullOrWhiteSpace($versionText) -or $versionText -notmatch 'Cataclysm') {
+          if ([string]::IsNullOrWhiteSpace($versionText) -or
+              $versionText -notmatch 'Cataclysm' -or
+              $versionText -notmatch '(?m)^\+tiles, \+sound$') {
             throw "Windows version smoke test produced unexpected output: $versionText"
           }
           $versionText | Set-Content artifacts\windows-version.txt
