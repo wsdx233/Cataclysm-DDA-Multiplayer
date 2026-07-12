@@ -1,5 +1,6 @@
 #include "multiplayer_player_runtime.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <limits>
@@ -51,6 +52,25 @@ std::string random_uuid_v4()
     return result;
 }
 
+bool is_uuid_v4( const std::string &value )
+{
+    if( value.size() != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' ||
+        value[23] != '-' || value[14] != '4' ||
+        std::string( "89ab" ).find( value[19] ) == std::string::npos ) {
+        return false;
+    }
+    static constexpr char hex[] = "0123456789abcdef";
+    for( std::size_t i = 0; i < value.size(); ++i ) {
+        if( i == 8 || i == 13 || i == 18 || i == 23 ) {
+            continue;
+        }
+        if( std::find( std::begin( hex ), std::end( hex ) - 1, value[i] ) == std::end( hex ) - 1 ) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 multiplayer_player_id::multiplayer_player_id( std::string value ) :
@@ -61,6 +81,12 @@ multiplayer_player_id::multiplayer_player_id( std::string value ) :
 multiplayer_player_id multiplayer_player_id::random()
 {
     return multiplayer_player_id( random_uuid_v4() );
+}
+
+multiplayer_player_id multiplayer_player_id::from_string( std::string value )
+{
+    return is_uuid_v4( value ) ? multiplayer_player_id( std::move( value ) ) :
+           multiplayer_player_id();
 }
 
 bool multiplayer_player_id::is_valid() const
@@ -79,15 +105,19 @@ class multiplayer_player_runtime::impl
         impl( const shared_ptr_fast<avatar> &player,
               const achievement_callback &achievement_attained,
               const achievement_callback &achievement_failed,
-              const bool adopt_current_messages ) :
+              const bool adopt_current_messages,
+              const multiplayer_player_id &id,
+              const std::uint64_t session_generation ) :
+            id( id ),
+            session_generation( session_generation ),
             player_owner( player ),
             messages( adopt_current_messages ? Messages::current_message_log() :
                       Messages::make_message_log() ),
             achievements( stats, achievement_attained, achievement_failed, true ) {
         }
 
-        multiplayer_player_id id = multiplayer_player_id::random();
-        std::uint64_t session_generation = 0;
+        multiplayer_player_id id;
+        std::uint64_t session_generation;
         multiplayer_player_status status = multiplayer_player_status::importing;
         shared_ptr_fast<avatar> player_owner;
         shared_ptr_fast<Messages::message_log> messages;
@@ -97,6 +127,8 @@ class multiplayer_player_runtime::impl
         int most_seen = 0;
         time_duration turns_since_last_monster = 0_turns;
         bool safe_mode_warning_logged = false;
+        time_point remote_vehicle_cache_time = calendar::before_time_starts;
+        vehicle *remote_vehicle_cache = nullptr;
 };
 
 multiplayer_player_runtime::multiplayer_player_runtime(
@@ -105,7 +137,20 @@ multiplayer_player_runtime::multiplayer_player_runtime(
     const achievement_callback &achievement_failed,
     const bool adopt_current_messages ) :
     impl_( std::make_unique<impl>( player, achievement_attained, achievement_failed,
-                                   adopt_current_messages ) )
+                                   adopt_current_messages, multiplayer_player_id::random(), 0 ) )
+{
+    cata_assert( player != nullptr );
+    cata_assert( impl_->messages != nullptr );
+}
+
+multiplayer_player_runtime::multiplayer_player_runtime(
+    const shared_ptr_fast<avatar> &player,
+    const achievement_callback &achievement_attained,
+    const achievement_callback &achievement_failed,
+    const multiplayer_player_id &player_id,
+    const std::uint64_t session_generation ) :
+    impl_( std::make_unique<impl>( player, achievement_attained, achievement_failed,
+                                   false, player_id, session_generation ) )
 {
     cata_assert( player != nullptr );
     cata_assert( impl_->messages != nullptr );
@@ -134,7 +179,8 @@ bool multiplayer_player_runtime::begin_session()
         impl_->status != multiplayer_player_status::offline ) {
         return false;
     }
-    if( impl_->session_generation == std::numeric_limits<std::uint64_t>::max() ) {
+    if( impl_->session_generation >=
+        static_cast<std::uint64_t>( std::numeric_limits<std::int64_t>::max() ) ) {
         return false;
     }
     ++impl_->session_generation;
@@ -208,6 +254,11 @@ bool multiplayer_player_runtime::messages_are_active() const
     return Messages::current_message_log() == impl_->messages;
 }
 
+const shared_ptr_fast<Messages::message_log> &multiplayer_player_runtime::message_log() const
+{
+    return impl_->messages;
+}
+
 safe_mode_type multiplayer_player_runtime::safe_mode() const
 {
     return impl_->safe_mode;
@@ -246,4 +297,26 @@ bool multiplayer_player_runtime::safe_mode_warning_logged() const
 void multiplayer_player_runtime::set_safe_mode_warning_logged( const bool value )
 {
     impl_->safe_mode_warning_logged = value;
+}
+
+bool multiplayer_player_runtime::remote_vehicle_cache_is_current( const time_point &now ) const
+{
+    return impl_->remote_vehicle_cache_time == now;
+}
+
+vehicle *multiplayer_player_runtime::remote_vehicle_cache() const
+{
+    return impl_->remote_vehicle_cache;
+}
+
+void multiplayer_player_runtime::set_remote_vehicle_cache( const time_point &now, vehicle *value )
+{
+    impl_->remote_vehicle_cache_time = now;
+    impl_->remote_vehicle_cache = value;
+}
+
+void multiplayer_player_runtime::invalidate_remote_vehicle_cache()
+{
+    impl_->remote_vehicle_cache_time = calendar::before_time_starts;
+    impl_->remote_vehicle_cache = nullptr;
 }

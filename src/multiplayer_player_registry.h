@@ -34,6 +34,8 @@ class multiplayer_player_registry
         bool begin_session( const multiplayer_player_id &id );
         bool disconnect( const multiplayer_player_id &id );
         bool mark_dead( const multiplayer_player_id &id );
+        void update_position( const avatar &player, const tripoint_abs_ms &old_position,
+                              const tripoint_abs_ms &new_position );
 
         shared_ptr_fast<avatar> find_by_id( const character_id &id ) const;
         shared_ptr_fast<multiplayer_player_runtime> find_by_player_id(

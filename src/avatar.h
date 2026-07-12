@@ -431,6 +431,8 @@ class avatar : public Character
         bool is_waiting_to_change_mode_mode();
 
     private:
+        void on_move( const tripoint_abs_ms &old_pos ) override;
+
         npc &get_shadow_npc();
 
         // The name used to generate save filenames for this avatar. Not serialized in json.

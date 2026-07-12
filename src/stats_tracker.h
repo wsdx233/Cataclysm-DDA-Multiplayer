@@ -217,6 +217,7 @@ class stats_tracker : public event_subscriber
 
         void serialize( JsonOut & ) const;
         void deserialize( const JsonObject &jo );
+        void deserialize_multiplayer_snapshot( const JsonObject &jo );
     private:
         void unwatch_all();
 

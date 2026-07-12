@@ -470,7 +470,6 @@ game::game() :
     next_npc_id( 1 ),
     next_mission_id( 1 ),
     next_item_uid( 1 ),
-    remoteveh_cache_time( calendar::before_time_starts ),
     last_mouse_edge_scroll( std::chrono::steady_clock::now() )
 {
     multiplayer_player_registry_ptr = std::make_unique<multiplayer_player_registry>();
@@ -639,6 +638,64 @@ void game::set_active_player( const shared_ptr_fast<multiplayer_player_runtime> 
 
     events().subscribe( &next->stats() );
     events().subscribe( &next->achievements() );
+}
+
+void game::update_multiplayer_player_position( const avatar &player,
+        const tripoint_abs_ms &old_position, const tripoint_abs_ms &new_position )
+{
+    cata_assert( is_simulation_thread() );
+    if( is_simulation_thread() ) {
+        multiplayer_player_registry_ptr->update_position( player, old_position, new_position );
+    }
+}
+
+void game::shift_multiplayer_player_map_contexts( const point_rel_sm &shift )
+{
+    cata_assert( is_simulation_thread() );
+    if( !is_simulation_thread() || shift == point_rel_sm::zero ) {
+        return;
+    }
+
+    const point_rel_ms shift_ms = coords::project_to<coords::ms>( shift );
+    for( const shared_ptr_fast<multiplayer_player_runtime> &runtime : multiplayer_players().all() ) {
+        avatar &player = runtime->player();
+        player.shift_destination( -shift_ms );
+        if( const diag_value *remote_position = player.maybe_get_value(
+                "remote_controlling_vehicle" ) ) {
+            const tripoint_abs_ms shifted_position( remote_position->tripoint().raw() - shift_ms.raw() );
+            player.set_value( "remote_controlling_vehicle", shifted_position );
+        }
+        runtime->invalidate_remote_vehicle_cache();
+    }
+}
+
+vehicle *game::find_remote_vehicle( const avatar &player )
+{
+    const diag_value *remote_position = player.maybe_get_value( "remote_controlling_vehicle" );
+    if( remote_position == nullptr ||
+        ( !player.has_active_bionic( bio_remote ) &&
+          !player.has_active_item( itype_remotevehcontrol ) ) ) {
+        return nullptr;
+    }
+
+    // FIXME: migrate the stored coordinate to a real absolute coordinate.
+    const tripoint_bub_ms vehicle_position( remote_position->tripoint().raw() );
+    map &here = get_map();
+    vehicle *candidate = veh_pointer_or_null( here.veh_at( vehicle_position ) );
+    return candidate != nullptr && candidate->fuel_left( here, itype_battery ) > 0 ?
+           candidate : nullptr;
+}
+
+void game::refresh_multiplayer_remote_vehicle_caches()
+{
+    cata_assert( is_simulation_thread() );
+    if( !is_simulation_thread() ) {
+        return;
+    }
+    for( const shared_ptr_fast<multiplayer_player_runtime> &runtime : multiplayer_players().all() ) {
+        runtime->set_remote_vehicle_cache( calendar::turn,
+                                           find_remote_vehicle( runtime->player() ) );
+    }
 }
 
 #if defined(TUI)
@@ -873,8 +930,9 @@ void game::setup()
     scent.reset();
     effect_on_conditions::clear( u );
     u.character_mood_face( true );
-    remoteveh_cache_time = calendar::before_time_starts;
-    remoteveh_cache = nullptr;
+    for( const shared_ptr_fast<multiplayer_player_runtime> &runtime : multiplayer_players().all() ) {
+        runtime->invalidate_remote_vehicle_cache();
+    }
     global_variables &globvars = get_globals();
     globvars.clear_global_values();
     unique_npcs.clear();
@@ -2848,48 +2906,36 @@ input_context get_default_mode_input_context()
 
 vehicle *game::remoteveh()
 {
-    map &here = get_map();
+    avatar &player = active_avatar();
+    multiplayer_player_runtime &runtime = active_player_runtime();
 
-    if( calendar::turn == remoteveh_cache_time ) {
-        return remoteveh_cache;
+    if( runtime.remote_vehicle_cache_is_current( calendar::turn ) ) {
+        return runtime.remote_vehicle_cache();
     }
-    remoteveh_cache_time = calendar::turn;
-    diag_value const *remote_controlling_vehicle = u.maybe_get_value( "remote_controlling_vehicle" );
-    if( !remote_controlling_vehicle ||
-        ( !u.has_active_bionic( bio_remote ) && !u.has_active_item( itype_remotevehcontrol ) ) ) {
-        remoteveh_cache = nullptr;
-    } else {
-        // FIXME: migrate to abs
-        tripoint_bub_ms vp( remote_controlling_vehicle->tripoint().raw() );
-        vehicle *veh = veh_pointer_or_null( here.veh_at( vp ) );
-        if( veh && veh->fuel_left( here, itype_battery ) > 0 ) {
-            remoteveh_cache = veh;
-        } else {
-            remoteveh_cache = nullptr;
-        }
-    }
-    return remoteveh_cache;
+    vehicle *remote_vehicle = find_remote_vehicle( player );
+    runtime.set_remote_vehicle_cache( calendar::turn, remote_vehicle );
+    return remote_vehicle;
 }
 
 void game::setremoteveh( vehicle *veh )
 {
     map &here = get_map();
+    avatar &player = active_avatar();
 
-    remoteveh_cache_time = calendar::turn;
-    remoteveh_cache = veh;
-    if( veh != nullptr && !u.has_active_bionic( bio_remote ) &&
-        !u.has_active_item( itype_remotevehcontrol ) ) {
+    if( veh != nullptr && !player.has_active_bionic( bio_remote ) &&
+        !player.has_active_item( itype_remotevehcontrol ) ) {
         debugmsg( "Tried to set remote vehicle without bio_remote or remotevehcontrol" );
         veh = nullptr;
     }
+    active_player_runtime().set_remote_vehicle_cache( calendar::turn, veh );
 
     if( veh == nullptr ) {
-        u.remove_value( "remote_controlling_vehicle" );
+        player.remove_value( "remote_controlling_vehicle" );
         return;
     }
 
     // FIXME: migrate to abs
-    u.set_value( "remote_controlling_vehicle", tripoint_abs_ms{ veh->pos_bub( here ).raw() } );
+    player.set_value( "remote_controlling_vehicle", tripoint_abs_ms{ veh->pos_bub( here ).raw() } );
 }
 
 bool game::try_get_left_click_action( action_id &act, const tripoint_bub_ms &mouse_target )
@@ -8296,6 +8342,7 @@ static void autopulp_or_butcher( avatar &u )
 point_rel_sm game::place_player( const tripoint_bub_ms &dest_loc, bool quick )
 {
     map &here = get_map();
+    avatar &u = active_avatar();
     const optional_vpart_position vp1 = here.veh_at( dest_loc );
     if( const std::optional<std::string> label = vp1.get_label() ) {
         add_msg( m_info, _( "Label here: %s" ), *label );
@@ -10316,6 +10363,7 @@ std::optional<tripoint_bub_ms> game::find_or_make_stairs( map &mp, const int z_a
 bool game::vertical_shift( const int z_after )
 {
     map &here = get_map();
+    avatar &u = active_avatar();
 
     if( z_after < -OVERMAP_DEPTH || z_after > OVERMAP_HEIGHT ) {
         debugmsg( "Tried to get z-level %d outside allowed range of %d-%d",
@@ -10339,6 +10387,7 @@ bool game::vertical_shift( const int z_after )
 void game::vertical_notes( int z_before, int z_after )
 {
     map &here = get_map();
+    avatar &u = active_avatar();
 
     if( z_before == z_after || !get_option<bool>( "AUTO_NOTES" ) ||
         !get_option<bool>( "AUTO_NOTES_STAIRS" ) ) {
@@ -10381,10 +10430,15 @@ void game::vertical_notes( int z_before, int z_after )
 point_rel_sm game::update_map( Character &p, bool z_level_changed )
 {
     point_bub_ms p2( p.pos_bub().xy() );
-    return update_map( p2.x(), p2.y(), z_level_changed );
+    return update_map( p, p2.x(), p2.y(), z_level_changed );
 }
 
 point_rel_sm game::update_map( int &x, int &y, bool z_level_changed )
+{
+    return update_map( active_avatar(), x, y, z_level_changed );
+}
+
+point_rel_sm game::update_map( Character &p, int &x, int &y, bool z_level_changed )
 {
     map &here = get_map();
 
@@ -10409,7 +10463,7 @@ point_rel_sm game::update_map( int &x, int &y, bool z_level_changed )
 
     if( shift == point_rel_sm::zero ) {
         // adjust player position
-        u.setpos( here, tripoint_bub_ms( x, y, here.get_abs_sub().z() ) );
+        p.setpos( here, tripoint_bub_ms( x, y, here.get_abs_sub().z() ) );
         if( z_level_changed ) {
             // Update what parts of the world map we can see
             // We may be able to see farther now that the z-level has changed.
@@ -10422,6 +10476,7 @@ point_rel_sm game::update_map( int &x, int &y, bool z_level_changed )
     // this handles loading/unloading submaps that have scrolled on or off the viewport
     // NOLINTNEXTLINE(cata-use-named-point-constants)
     inclusive_rectangle<point_rel_sm> size_1( {-1, -1}, { 1, 1 } );
+    const point_rel_ms shift_ms = coords::project_to<coords::ms>( shift );
     point_rel_sm remaining_shift = shift;
     while( remaining_shift != point_rel_sm::zero ) {
         point_rel_sm this_shift = clamp( remaining_shift, size_1 );
@@ -10431,9 +10486,6 @@ point_rel_sm game::update_map( int &x, int &y, bool z_level_changed )
 
     // Shift monsters
     shift_monsters( { shift, 0 } );
-    const point_rel_ms shift_ms = coords::project_to<coords::ms>( shift );
-    u.shift_destination( -shift_ms );
-
     // Shift NPCs
     for( auto it = critter_tracker->active_npc.begin(); it != critter_tracker->active_npc.end(); ) {
         ( *it )->shift( shift );
@@ -10455,7 +10507,7 @@ point_rel_sm game::update_map( int &x, int &y, bool z_level_changed )
     // Also ensure the player is on current z-level
     // m.get_abs_sub().z should later be removed, when there is no longer such a thing
     // as "current z-level"
-    u.setpos( here, tripoint_bub_ms( x, y, here.get_abs_sub().z() ) );
+    p.setpos( here, tripoint_bub_ms( x, y, here.get_abs_sub().z() ) );
 
     // Only do the loading after all coordinates have been shifted.
 
@@ -10481,8 +10533,9 @@ point_rel_sm game::update_map( int &x, int &y, bool z_level_changed )
 
 void game::update_overmap_seen()
 {
-    const tripoint_abs_omt ompos = u.pos_abs_omt();
-    const int dist = u.overmap_modified_sight_range( light_level( u.posz() ) );
+    avatar &you = active_avatar();
+    const tripoint_abs_omt ompos = you.pos_abs_omt();
+    const int dist = you.overmap_modified_sight_range( light_level( you.posz() ) );
     const int dist_squared = dist * dist;
     // We can always see where we're standing
     overmap_buffer.set_seen( ompos, om_vision_level::full );

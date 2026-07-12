@@ -5,6 +5,7 @@
 
 #include "calendar.h"
 #include "coords_fwd.h"
+#include "json.h"
 #include "messages.h"
 
 class Creature;
@@ -56,6 +57,11 @@ std::vector<std::pair<std::string, std::string>> Messages::recent_messages( size
 {
     return active_messages->messages;
 }
+std::vector<std::pair<std::string, std::string>> Messages::recent_messages(
+            const shared_ptr_fast<message_log> &messages, size_t )
+{
+    return messages->messages;
+}
 bool Messages::has_debug_filter( debugmode::debug_filter )
 {
     return true;
@@ -86,8 +92,27 @@ bool Messages::has_undisplayed_messages()
 }
 void Messages::display_messages() {}
 void Messages::display_messages( const catacurses::window &, int, int, int, int ) {}
-void Messages::serialize( JsonOut & ) {}
-void Messages::deserialize( const JsonObject & ) {}
+void Messages::serialize( JsonOut &json )
+{
+    serialize( active_messages, json );
+}
+void Messages::serialize( const shared_ptr_fast<message_log> &messages, JsonOut &json )
+{
+    json.member( "player_messages" );
+    json.start_object();
+    json.member( "messages", messages->messages );
+    json.end_object();
+}
+void Messages::deserialize( const JsonObject &json )
+{
+    deserialize( active_messages, json );
+}
+void Messages::deserialize( const shared_ptr_fast<message_log> &messages, const JsonObject &json )
+{
+    if( json.has_object( "player_messages" ) ) {
+        json.get_object( "player_messages" ).read( "messages", messages->messages );
+    }
+}
 void add_msg( std::string m )
 {
     Messages::add_msg( std::move( m ) );

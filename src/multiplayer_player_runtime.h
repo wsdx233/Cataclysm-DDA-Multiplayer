@@ -14,7 +14,13 @@ class achievements_tracker;
 class avatar;
 class stats_tracker;
 class time_duration;
+class time_point;
+class vehicle;
 enum safe_mode_type : int;
+namespace Messages
+{
+class message_log;
+} // namespace Messages
 
 /** Stable protocol identity for one human player. */
 class multiplayer_player_id
@@ -23,6 +29,7 @@ class multiplayer_player_id
         multiplayer_player_id() = default;
 
         static multiplayer_player_id random();
+        static multiplayer_player_id from_string( std::string value );
 
         bool is_valid() const;
         const std::string &str() const;
@@ -64,6 +71,11 @@ class multiplayer_player_runtime
                                     const achievement_callback &achievement_attained,
                                     const achievement_callback &achievement_failed,
                                     bool adopt_current_messages );
+        multiplayer_player_runtime( const shared_ptr_fast<avatar> &player,
+                                    const achievement_callback &achievement_attained,
+                                    const achievement_callback &achievement_failed,
+                                    const multiplayer_player_id &player_id,
+                                    std::uint64_t session_generation );
         ~multiplayer_player_runtime();
 
         multiplayer_player_runtime( const multiplayer_player_runtime & ) = delete;
@@ -86,6 +98,7 @@ class multiplayer_player_runtime
 
         void activate_messages() const;
         bool messages_are_active() const;
+        const shared_ptr_fast<Messages::message_log> &message_log() const;
 
         safe_mode_type safe_mode() const;
         void set_safe_mode( safe_mode_type value );
@@ -95,6 +108,11 @@ class multiplayer_player_runtime
         void set_turns_since_last_monster( const time_duration &value );
         bool safe_mode_warning_logged() const;
         void set_safe_mode_warning_logged( bool value );
+
+        bool remote_vehicle_cache_is_current( const time_point &now ) const;
+        vehicle *remote_vehicle_cache() const;
+        void set_remote_vehicle_cache( const time_point &now, vehicle *value );
+        void invalidate_remote_vehicle_cache();
 
     private:
         bool begin_session();

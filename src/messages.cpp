@@ -469,7 +469,14 @@ void Messages::set_current_message_log( const shared_ptr_fast<message_log> &mess
 
 std::vector<std::pair<std::string, std::string>> Messages::recent_messages( const size_t count )
 {
-    return player_messages().recent_messages( count );
+    return recent_messages( active_player_messages, count );
+}
+
+std::vector<std::pair<std::string, std::string>> Messages::recent_messages(
+            const shared_ptr_fast<message_log> &messages, const size_t count )
+{
+    cata_assert( messages != nullptr );
+    return messages->messages.recent_messages( count );
 }
 
 bool Messages::has_debug_filter( debugmode::debug_filter type )
@@ -479,22 +486,35 @@ bool Messages::has_debug_filter( debugmode::debug_filter type )
 
 void Messages::serialize( JsonOut &json )
 {
+    serialize( active_player_messages, json );
+}
+
+void Messages::serialize( const shared_ptr_fast<message_log> &messages, JsonOut &json )
+{
+    cata_assert( messages != nullptr );
     json.member( "player_messages" );
     json.start_object();
-    json.member( "messages", player_messages().messages );
-    json.member( "curmes", player_messages().curmes );
+    json.member( "messages", messages->messages.messages );
+    json.member( "curmes", messages->messages.curmes );
     json.end_object();
 }
 
 void Messages::deserialize( const JsonObject &json )
 {
+    deserialize( active_player_messages, json );
+}
+
+void Messages::deserialize( const shared_ptr_fast<message_log> &messages,
+                            const JsonObject &json )
+{
+    cata_assert( messages != nullptr );
     if( !json.has_member( "player_messages" ) ) {
         return;
     }
 
     JsonObject obj = json.get_object( "player_messages" );
-    obj.read( "messages", player_messages().messages );
-    obj.read( "curmes", player_messages().curmes );
+    obj.read( "messages", messages->messages.messages );
+    obj.read( "curmes", messages->messages.curmes );
 }
 
 void Messages::add_msg( std::string msg )

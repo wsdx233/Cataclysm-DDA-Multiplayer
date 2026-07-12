@@ -2,6 +2,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include "achievement.h"
@@ -14,6 +15,7 @@
 #include "character_id.h"
 #include "coordinates.h"
 #include "creature_tracker.h"
+#include "diary.h"
 #include "enums.h"
 #include "event_bus.h"
 #include "game.h"
@@ -23,23 +25,45 @@
 #include "json_loader.h"
 #include "map.h"
 #include "map_helpers.h"
+#include "map_memory.h"
 #include "memory_fast.h"
 #include "messages.h"
 #include "multiplayer_player_context.h"
 #include "multiplayer_player_registry.h"
 #include "multiplayer_player_runtime.h"
+#include "multiplayer_player_save.h"
+#include "monster.h"
+#include "mission.h"
 #include "npc.h"
 #include "player_helpers.h"
 #include "pocket_type.h"
+#include "recipe.h"
 #include "skill.h"
 #include "stats_tracker.h"
 #include "type_id.h"
+#include "units.h"
+#include "veh_type.h"
+#include "vehicle.h"
 
+static const efftype_id effect_ridden( "ridden" );
+static const efftype_id effect_riding( "riding" );
+static const bionic_id bio_ears( "bio_ears" );
+static const bionic_id bio_faraday( "bio_faraday" );
 static const itype_id itype_2x4( "2x4" );
 static const itype_id itype_backpack( "backpack" );
 static const itype_id itype_jeans( "jeans" );
+static const itype_id itype_remotevehcontrol( "remotevehcontrol" );
 static const itype_id itype_tshirt( "tshirt" );
+static const mtype_id mon_horse( "mon_horse" );
+static const mission_type_id mission_context_alpha( "TEST_MISSION_GOAL_CONDITION1" );
+static const mission_type_id mission_context_beta( "TEST_MISSION_GOAL_CONDITION2" );
+static const recipe_id recipe_context_alpha( "test_soldering_iron" );
+static const recipe_id recipe_context_beta( "test_baseball" );
 static const skill_id skill_survival( "survival" );
+static const trait_id trait_context_alpha( "NIGHTVISION" );
+static const trait_id trait_context_beta( "MYOPIC" );
+static const vproto_id vehicle_prototype_bicycle( "bicycle" );
+static const vproto_id vehicle_prototype_car( "car" );
 
 static std::string serialize_avatar( const avatar &who )
 {
@@ -173,8 +197,6 @@ TEST_CASE( "stable_avatar_context_switch_preserves_player_and_item_identity",
 
     const avatar *const alpha_address = &alpha;
     const avatar *const beta_address = &beta;
-    const std::string alpha_before = serialize_avatar( alpha );
-    const std::string beta_before = serialize_avatar( beta );
     const std::string alpha_location_json = serialize_item_location( alpha_inventory );
     const std::string beta_location_json = serialize_item_location( beta_inventory );
     const int64_t alpha_worn_uid = alpha_worn->uid().get_value();
@@ -260,6 +282,50 @@ TEST_CASE( "stable_avatar_context_switch_preserves_player_and_item_identity",
     CHECK( g->critter_by_id<Character>( beta_id ) == &beta );
     CHECK( get_creature_tracker().creature_at<avatar>( beta.pos_abs() ) == &beta );
     CHECK( same_owner( beta_owner, g->shared_from<avatar>( beta ) ) );
+
+    mission::clear_all();
+    mission *alpha_mission = mission::reserve_new( mission_context_alpha, character_id() );
+    mission *beta_mission = mission::reserve_new( mission_context_beta, character_id() );
+    REQUIRE( alpha_mission != nullptr );
+    REQUIRE( beta_mission != nullptr );
+    alpha_mission->assign( alpha );
+    {
+        multiplayer_active_player_guard guard( *g, beta_owner );
+        beta_mission->assign( beta );
+    }
+    REQUIRE( alpha.get_active_mission() == alpha_mission );
+    REQUIRE( beta.get_active_mission() == beta_mission );
+
+    const tripoint_abs_ms memory_probe = alpha.pos_abs() + tripoint_rel_ms( 20, 20, 0 );
+    alpha.prepare_map_memory_region( memory_probe, memory_probe );
+    beta.prepare_map_memory_region( memory_probe, memory_probe );
+    alpha.memorize_symbol( memory_probe, U'A' );
+    beta.memorize_symbol( memory_probe, U'B' );
+    alpha.learn_recipe( &recipe_context_alpha.obj() );
+    beta.learn_recipe( &recipe_context_beta.obj() );
+    alpha.add_bionic( bio_ears );
+    beta.add_bionic( bio_faraday );
+    alpha.set_mutation( trait_context_alpha );
+    beta.set_mutation( trait_context_beta );
+    diary *const alpha_diary = alpha.get_avatar_diary();
+    diary *beta_diary = nullptr;
+    {
+        multiplayer_active_player_guard guard( *g, beta_owner );
+        beta_diary = beta.get_avatar_diary();
+    }
+    REQUIRE( alpha_diary != nullptr );
+    REQUIRE( beta_diary != nullptr );
+    REQUIRE( alpha_diary != beta_diary );
+    REQUIRE( alpha.knows_recipe( &recipe_context_alpha.obj() ) );
+    REQUIRE( beta.knows_recipe( &recipe_context_beta.obj() ) );
+    CHECK( alpha.get_memorized_tile( memory_probe ).symbol == U'A' );
+    {
+        multiplayer_active_player_guard guard( *g, beta_owner );
+        CHECK( beta.get_memorized_tile( memory_probe ).symbol == U'B' );
+    }
+
+    const std::string alpha_before = serialize_avatar( alpha );
+    const std::string beta_before = serialize_avatar( beta );
 
     bool found_alpha_in_all_creatures = false;
     bool found_beta_in_all_creatures = false;
@@ -397,6 +463,21 @@ TEST_CASE( "stable_avatar_context_switch_preserves_player_and_item_identity",
                     "alpha inventory item", i, selected );
                 record_context_invariant( item_identity_matches( alpha_wielded, alpha,
                                           alpha_wielded_uid ), "alpha wielded item", i, selected );
+                record_context_invariant( alpha.get_active_mission() == alpha_mission,
+                                          "alpha mission", i, selected );
+                record_context_invariant( alpha.get_memorized_tile( memory_probe ).symbol == U'A',
+                                          "alpha map memory", i, selected );
+                record_context_invariant( alpha.get_avatar_diary() == alpha_diary,
+                                          "alpha diary", i, selected );
+                record_context_invariant( alpha.knows_recipe( &recipe_context_alpha.obj() ) &&
+                                          !alpha.knows_recipe( &recipe_context_beta.obj() ),
+                                          "alpha recipes", i, selected );
+                record_context_invariant( alpha.has_bionic( bio_ears ) &&
+                                          !alpha.has_bionic( bio_faraday ),
+                                          "alpha bionics", i, selected );
+                record_context_invariant( alpha.has_trait( trait_context_alpha ) &&
+                                          !alpha.has_trait( trait_context_beta ),
+                                          "alpha mutations", i, selected );
             } else {
                 record_context_invariant( g->get_safe_mode() == SAFE_MODE_OFF &&
                                           g->get_most_seen() == 9 &&
@@ -411,6 +492,21 @@ TEST_CASE( "stable_avatar_context_switch_preserves_player_and_item_identity",
                     "beta inventory item", i, selected );
                 record_context_invariant( item_identity_matches( beta_wielded, beta,
                                           beta_wielded_uid ), "beta wielded item", i, selected );
+                record_context_invariant( beta.get_active_mission() == beta_mission,
+                                          "beta mission", i, selected );
+                record_context_invariant( beta.get_memorized_tile( memory_probe ).symbol == U'B',
+                                          "beta map memory", i, selected );
+                record_context_invariant( beta.get_avatar_diary() == beta_diary,
+                                          "beta diary", i, selected );
+                record_context_invariant( beta.knows_recipe( &recipe_context_beta.obj() ) &&
+                                          !beta.knows_recipe( &recipe_context_alpha.obj() ),
+                                          "beta recipes", i, selected );
+                record_context_invariant( beta.has_bionic( bio_faraday ) &&
+                                          !beta.has_bionic( bio_ears ),
+                                          "beta bionics", i, selected );
+                record_context_invariant( beta.has_trait( trait_context_beta ) &&
+                                          !beta.has_trait( trait_context_alpha ),
+                                          "beta mutations", i, selected );
             }
         }
         record_context_invariant( &get_avatar() == &alpha, "guard restoration", i, selected );
@@ -437,6 +533,216 @@ TEST_CASE( "stable_avatar_context_switch_preserves_player_and_item_identity",
         CHECK( &get_avatar() == &beta );
     }
     CHECK( &get_avatar() == &alpha );
+
+    const int alpha_moves_before_world_contexts = alpha.get_moves();
+    const int beta_moves_before_world_contexts = beta.get_moves();
+    const move_mode_id alpha_move_mode_before_world_contexts = alpha.current_movement_mode();
+    const move_mode_id beta_move_mode_before_world_contexts = beta.current_movement_mode();
+    const shared_ptr_fast<monster> alpha_mount_owner = make_shared_fast<monster>( mon_horse );
+    const shared_ptr_fast<monster> beta_mount_owner = make_shared_fast<monster>( mon_horse );
+    monster *alpha_mount = g->place_critter_around( alpha_mount_owner, alpha.pos_bub(), 0, true );
+    monster *beta_mount = g->place_critter_around( beta_mount_owner, beta.pos_bub(), 0, true );
+    REQUIRE( alpha_mount == alpha_mount_owner.get() );
+    REQUIRE( beta_mount == beta_mount_owner.get() );
+    alpha.mount_creature( *alpha_mount );
+    {
+        multiplayer_active_player_guard guard( *g, beta_owner );
+        beta.mount_creature( *beta_mount );
+        CHECK( beta.is_mounted() );
+        CHECK( beta.mounted_creature.get() == beta_mount );
+        CHECK( beta_mount->mounted_player == &beta );
+        CHECK( beta_mount->mounted_player_id == beta_id );
+        CHECK( alpha.is_mounted() );
+        CHECK( alpha.mounted_creature.get() == alpha_mount );
+        CHECK( alpha_mount->mounted_player == &alpha );
+    }
+    CHECK( alpha.is_mounted() );
+    CHECK( alpha.mounted_creature.get() == alpha_mount );
+    CHECK( alpha_mount->mounted_player == &alpha );
+    CHECK( alpha_mount->mounted_player_id == alpha_id );
+    CHECK( beta.is_mounted() );
+    CHECK( beta_mount->mounted_player == &beta );
+
+    alpha.remove_effect( effect_riding );
+    alpha.mounted_creature.reset();
+    alpha_mount->remove_effect( effect_ridden );
+    alpha_mount->mounted_player = nullptr;
+    alpha_mount->mounted_player_id = character_id();
+    beta.remove_effect( effect_riding );
+    beta.mounted_creature.reset();
+    beta_mount->remove_effect( effect_ridden );
+    beta_mount->mounted_player = nullptr;
+    beta_mount->mounted_player_id = character_id();
+    g->remove_zombie( *alpha_mount );
+    g->remove_zombie( *beta_mount );
+
+    const tripoint_abs_ms beta_position_before_vehicle = beta.pos_abs();
+    beta.setpos( here, tripoint_bub_ms( 72, 60, 0 ), false );
+    vehicle *alpha_vehicle = here.add_vehicle( vehicle_prototype_bicycle, alpha.pos_bub(),
+                             0_degrees, 100, veh_spawn_status::UNDAMAGED );
+    vehicle *beta_vehicle = here.add_vehicle( vehicle_prototype_bicycle, beta.pos_bub(),
+                            0_degrees, 100, veh_spawn_status::UNDAMAGED );
+    REQUIRE( alpha_vehicle != nullptr );
+    REQUIRE( beta_vehicle != nullptr );
+    here.board_vehicle( alpha.pos_bub(), &alpha );
+    alpha.controlling_vehicle = true;
+    {
+        multiplayer_active_player_guard guard( *g, beta_owner );
+        here.board_vehicle( beta.pos_bub(), &beta );
+        beta.controlling_vehicle = true;
+        CHECK( beta.in_vehicle );
+        CHECK( beta_vehicle->is_passenger( beta ) );
+        CHECK( beta_vehicle->get_driver( here ) == &beta );
+        CHECK( alpha.in_vehicle );
+        CHECK( alpha_vehicle->is_passenger( alpha ) );
+        CHECK( alpha_vehicle->get_driver( here ) == &alpha );
+    }
+    CHECK( alpha.in_vehicle );
+    CHECK( alpha_vehicle->is_passenger( alpha ) );
+    CHECK( alpha_vehicle->get_driver( here ) == &alpha );
+    CHECK( beta.in_vehicle );
+    CHECK( beta_vehicle->is_passenger( beta ) );
+    here.unboard_vehicle( alpha.pos_bub() );
+    here.unboard_vehicle( beta.pos_bub() );
+    clear_vehicles();
+    beta.setpos( beta_position_before_vehicle, false );
+
+    alpha.grab( object_type::FURNITURE, tripoint_rel_ms::east );
+    {
+        multiplayer_active_player_guard guard( *g, beta_owner );
+        beta.grab( object_type::VEHICLE, tripoint_rel_ms::west );
+        CHECK( beta.get_grab_type() == object_type::VEHICLE );
+        CHECK( beta.grab_point == tripoint_rel_ms::west );
+        CHECK( alpha.get_grab_type() == object_type::FURNITURE );
+        CHECK( alpha.grab_point == tripoint_rel_ms::east );
+    }
+    CHECK( alpha.get_grab_type() == object_type::FURNITURE );
+    CHECK( alpha.grab_point == tripoint_rel_ms::east );
+    CHECK( beta.get_grab_type() == object_type::VEHICLE );
+    CHECK( beta.grab_point == tripoint_rel_ms::west );
+    alpha.grab( object_type::NONE );
+    beta.grab( object_type::NONE );
+    alpha.set_moves( alpha_moves_before_world_contexts );
+    beta.set_moves( beta_moves_before_world_contexts );
+    alpha.set_movement_mode( alpha_move_mode_before_world_contexts );
+    beta.set_movement_mode( beta_move_mode_before_world_contexts );
+
+    const tripoint_abs_sm map_origin_before_shift = here.get_abs_sub();
+    const tripoint_abs_ms alpha_position_before_shift = alpha.pos_abs();
+    const tripoint_abs_ms beta_position_before_shift = beta.pos_abs();
+    on_out_of_scope restore_map_shift( [&]() {
+        while( here.get_abs_sub() != map_origin_before_shift ) {
+            int x = HALF_MAPSIZE_X;
+            int y = HALF_MAPSIZE_Y;
+            if( here.get_abs_sub().x() < map_origin_before_shift.x() ) {
+                x = HALF_MAPSIZE_X + SEEX;
+            } else if( here.get_abs_sub().x() > map_origin_before_shift.x() ) {
+                x = HALF_MAPSIZE_X - 1;
+            }
+            if( here.get_abs_sub().y() < map_origin_before_shift.y() ) {
+                y = HALF_MAPSIZE_Y + SEEY;
+            } else if( here.get_abs_sub().y() > map_origin_before_shift.y() ) {
+                y = HALF_MAPSIZE_Y - 1;
+            }
+            g->update_map( x, y );
+        }
+        alpha.clear_destination();
+        beta.clear_destination();
+        alpha.setpos( alpha_position_before_shift, false );
+        beta.setpos( beta_position_before_shift, false );
+        clear_map();
+    } );
+
+    vehicle *alpha_remote_vehicle = here.add_vehicle( vehicle_prototype_car,
+                                    tripoint_bub_ms( 66, 66, 0 ), 0_degrees, 100,
+                                    veh_spawn_status::UNDAMAGED );
+    vehicle *beta_remote_vehicle = here.add_vehicle( vehicle_prototype_car,
+                                   tripoint_bub_ms( 78, 66, 0 ), 0_degrees, 100,
+                                   veh_spawn_status::UNDAMAGED );
+    REQUIRE( alpha_remote_vehicle != nullptr );
+    REQUIRE( beta_remote_vehicle != nullptr );
+    item alpha_controller( itype_remotevehcontrol );
+    item beta_controller( itype_remotevehcontrol );
+    alpha_controller.active = true;
+    beta_controller.active = true;
+    item_location alpha_controller_location = alpha.i_add( alpha_controller );
+    item_location beta_controller_location = beta.i_add( beta_controller );
+    REQUIRE( alpha_controller_location );
+    REQUIRE( beta_controller_location );
+    on_out_of_scope cleanup_remote_vehicles( [&]() {
+        g->setremoteveh( nullptr );
+        {
+            multiplayer_active_player_guard guard( *g, beta_owner );
+            g->setremoteveh( nullptr );
+        }
+        alpha_controller_location.remove_item();
+        beta_controller_location.remove_item();
+        clear_vehicles();
+    } );
+    g->setremoteveh( alpha_remote_vehicle );
+    REQUIRE( g->remoteveh() == alpha_remote_vehicle );
+    {
+        multiplayer_active_player_guard guard( *g, beta_owner );
+        g->setremoteveh( beta_remote_vehicle );
+        REQUIRE( g->remoteveh() == beta_remote_vehicle );
+    }
+    CHECK( g->remoteveh() == alpha_remote_vehicle );
+
+    beta.setpos( here, tripoint_bub_ms( HALF_MAPSIZE_X + SEEX, HALF_MAPSIZE_Y, 0 ), false );
+    const tripoint_abs_ms beta_position_at_shift = beta.pos_abs();
+    const tripoint_bub_ms alpha_bubble_before_shift = alpha.pos_bub( here );
+    const tripoint_bub_ms beta_bubble_before_shift = beta.pos_bub( here );
+    alpha.set_destination( { alpha_bubble_before_shift + tripoint_rel_ms::east } );
+    beta.set_destination( { beta_bubble_before_shift + tripoint_rel_ms::east } );
+    const std::vector<tripoint_bub_ms> alpha_route_before_shift = alpha.get_auto_move_route();
+    const std::vector<tripoint_bub_ms> beta_route_before_shift = beta.get_auto_move_route();
+    {
+        multiplayer_active_player_guard guard( *g, beta_owner );
+        const point_rel_sm east_shift = g->update_map( beta );
+        REQUIRE( east_shift == point_rel_sm::east );
+        const point_rel_ms east_shift_ms = coords::project_to<coords::ms>( east_shift );
+        CHECK( &get_avatar() == &beta );
+        CHECK( alpha.pos_abs() == alpha_position_before_shift );
+        CHECK( beta.pos_abs() == beta_position_at_shift );
+        CHECK( alpha.pos_bub( here ) == alpha_bubble_before_shift - east_shift_ms );
+        CHECK( beta.pos_bub( here ) == beta_bubble_before_shift - east_shift_ms );
+        CHECK( alpha.get_auto_move_route().front() ==
+               alpha_route_before_shift.front() - east_shift_ms );
+        CHECK( beta.get_auto_move_route().front() ==
+               beta_route_before_shift.front() - east_shift_ms );
+        CHECK( g->multiplayer_players().find_by_id( alpha_id ).get() == &alpha );
+        CHECK( g->multiplayer_players().find_by_id( beta_id ).get() == &beta );
+        CHECK( same_owner( alpha_owner, g->shared_from<avatar>( alpha ) ) );
+        CHECK( same_owner( beta_owner, g->shared_from<avatar>( beta ) ) );
+        CHECK( g->remoteveh() == beta_remote_vehicle );
+
+        int reverse_x = HALF_MAPSIZE_X - 1;
+        int reverse_y = HALF_MAPSIZE_Y;
+        const point_rel_sm west_shift = g->update_map( reverse_x, reverse_y );
+        REQUIRE( west_shift == point_rel_sm::west );
+        CHECK( here.get_abs_sub() == map_origin_before_shift );
+        CHECK( alpha.pos_abs() == alpha_position_before_shift );
+        CHECK( alpha.get_auto_move_route() == alpha_route_before_shift );
+        CHECK( beta.get_auto_move_route() == beta_route_before_shift );
+        CHECK( g->remoteveh() == beta_remote_vehicle );
+    }
+    CHECK( &get_avatar() == &alpha );
+    CHECK( g->remoteveh() == alpha_remote_vehicle );
+    alpha.clear_destination();
+    beta.clear_destination();
+    alpha.setpos( alpha_position_before_shift, false );
+    beta.setpos( beta_position_before_shift, false );
+    g->setremoteveh( nullptr );
+    {
+        multiplayer_active_player_guard guard( *g, beta_owner );
+        g->setremoteveh( nullptr );
+    }
+    alpha_controller_location.remove_item();
+    beta_controller_location.remove_item();
+    clear_vehicles();
+    cleanup_remote_vehicles.cancel();
+    clear_map();
+    restore_map_shift.cancel();
 
     weak_ptr_fast<avatar> temporary_weak_owner;
     avatar *temporary_player = nullptr;
@@ -499,6 +805,137 @@ TEST_CASE( "stable_avatar_context_switch_preserves_player_and_item_identity",
     CHECK( serialize_avatar( alpha ) == alpha_before );
     CHECK( serialize_avatar( beta ) == beta_before );
 
+    const std::string alpha_runtime_json =
+        serialize_multiplayer_player_runtime( *alpha_runtime );
+    const std::string beta_runtime_json =
+        serialize_multiplayer_player_runtime( *beta_runtime );
+    multiplayer_player_load_result loaded_alpha_runtime =
+        deserialize_multiplayer_player_runtime( alpha_runtime_json, nullptr, nullptr );
+    multiplayer_player_load_result loaded_beta_runtime =
+        deserialize_multiplayer_player_runtime( beta_runtime_json, nullptr, nullptr );
+    INFO( loaded_alpha_runtime.error );
+    REQUIRE( loaded_alpha_runtime );
+    INFO( loaded_beta_runtime.error );
+    REQUIRE( loaded_beta_runtime );
+    CHECK( loaded_alpha_runtime.runtime->status() == multiplayer_player_status::importing );
+    CHECK( loaded_beta_runtime.runtime->status() == multiplayer_player_status::importing );
+    CHECK( loaded_alpha_runtime.runtime->player_id() == alpha_runtime->player_id() );
+    CHECK( loaded_beta_runtime.runtime->player_id() == beta_runtime->player_id() );
+    CHECK( loaded_alpha_runtime.runtime->session_generation() ==
+           alpha_runtime->session_generation() );
+    CHECK( loaded_beta_runtime.runtime->session_generation() ==
+           beta_runtime->session_generation() );
+    CHECK( &loaded_alpha_runtime.runtime->player() != &alpha );
+    CHECK( &loaded_beta_runtime.runtime->player() != &beta );
+    CHECK( loaded_alpha_runtime.runtime->player().getID() == alpha.getID() );
+    CHECK( loaded_beta_runtime.runtime->player().getID() == beta.getID() );
+    CHECK( loaded_alpha_runtime.runtime->player().name == alpha.name );
+    CHECK( loaded_beta_runtime.runtime->player().name == beta.name );
+    CHECK( loaded_alpha_runtime.runtime->player().pos_abs() == alpha.pos_abs() );
+    CHECK( loaded_beta_runtime.runtime->player().pos_abs() == beta.pos_abs() );
+    CHECK( loaded_alpha_runtime.runtime->player().get_value( "multiplayer_context_probe" ) ==
+           "alpha" );
+    CHECK( loaded_beta_runtime.runtime->player().get_value( "multiplayer_context_probe" ) ==
+           "beta" );
+    CHECK( loaded_alpha_runtime.runtime->player().get_active_mission() == alpha_mission );
+    CHECK( loaded_beta_runtime.runtime->player().get_active_mission() == beta_mission );
+    CHECK( loaded_alpha_runtime.runtime->player().has_bionic( bio_ears ) );
+    CHECK( loaded_beta_runtime.runtime->player().has_bionic( bio_faraday ) );
+    CHECK( loaded_alpha_runtime.runtime->player().has_trait( trait_context_alpha ) );
+    CHECK( loaded_beta_runtime.runtime->player().has_trait( trait_context_beta ) );
+    CHECK( loaded_alpha_runtime.runtime->player().knows_recipe( &recipe_context_alpha.obj() ) );
+    CHECK( loaded_beta_runtime.runtime->player().knows_recipe( &recipe_context_beta.obj() ) );
+    REQUIRE( loaded_alpha_runtime.runtime->player().get_wielded_item() );
+    REQUIRE( loaded_beta_runtime.runtime->player().get_wielded_item() );
+    CHECK( loaded_alpha_runtime.runtime->player().get_wielded_item()->typeId() == itype_2x4 );
+    CHECK( loaded_beta_runtime.runtime->player().get_wielded_item()->typeId() == itype_2x4 );
+    CHECK( loaded_alpha_runtime.runtime->safe_mode() == alpha_runtime->safe_mode() );
+    CHECK( loaded_beta_runtime.runtime->safe_mode() == beta_runtime->safe_mode() );
+    CHECK( loaded_alpha_runtime.runtime->most_seen() == alpha_runtime->most_seen() );
+    CHECK( loaded_beta_runtime.runtime->most_seen() == beta_runtime->most_seen() );
+    CHECK( loaded_alpha_runtime.runtime->turns_since_last_monster() ==
+           alpha_runtime->turns_since_last_monster() );
+    CHECK( loaded_beta_runtime.runtime->turns_since_last_monster() ==
+           beta_runtime->turns_since_last_monster() );
+    CHECK( loaded_alpha_runtime.runtime->safe_mode_warning_logged() ==
+           alpha_runtime->safe_mode_warning_logged() );
+    CHECK( loaded_beta_runtime.runtime->safe_mode_warning_logged() ==
+           beta_runtime->safe_mode_warning_logged() );
+    CHECK( Messages::recent_messages( loaded_alpha_runtime.runtime->message_log(), 20 ) ==
+           Messages::recent_messages( alpha_runtime->message_log(), 20 ) );
+    CHECK( Messages::recent_messages( loaded_beta_runtime.runtime->message_log(), 20 ) ==
+           Messages::recent_messages( beta_runtime->message_log(), 20 ) );
+    CHECK( loaded_alpha_runtime.runtime->stats().get_events(
+               event_type::character_takes_damage ).count() ==
+           alpha_runtime->stats().get_events( event_type::character_takes_damage ).count() );
+    CHECK( loaded_beta_runtime.runtime->stats().get_events(
+               event_type::character_takes_damage ).count() ==
+           beta_runtime->stats().get_events( event_type::character_takes_damage ).count() );
+
+    multiplayer_player_registry loaded_registry;
+    REQUIRE( loaded_registry.register_player( loaded_alpha_runtime.runtime ) );
+    REQUIRE( loaded_registry.register_player( loaded_beta_runtime.runtime ) );
+    CHECK_FALSE( loaded_registry.register_player( loaded_alpha_runtime.runtime ) );
+    multiplayer_player_load_result duplicate_alpha_runtime =
+        deserialize_multiplayer_player_runtime( alpha_runtime_json, nullptr, nullptr );
+    REQUIRE( duplicate_alpha_runtime );
+    CHECK_FALSE( loaded_registry.register_player( duplicate_alpha_runtime.runtime ) );
+    CHECK( duplicate_alpha_runtime.runtime->status() == multiplayer_player_status::importing );
+    CHECK( loaded_registry.size() == 2 );
+    CHECK( loaded_registry.find_by_player_id( alpha_runtime->player_id() ) ==
+           loaded_alpha_runtime.runtime );
+    CHECK( loaded_registry.find_by_player_id( beta_runtime->player_id() ) ==
+           loaded_beta_runtime.runtime );
+    REQUIRE( loaded_registry.begin_session( alpha_runtime->player_id() ) );
+    REQUIRE( loaded_registry.begin_session( beta_runtime->player_id() ) );
+    CHECK( loaded_alpha_runtime.runtime->session_generation() ==
+           alpha_runtime->session_generation() + 1 );
+    CHECK( loaded_beta_runtime.runtime->session_generation() ==
+           beta_runtime->session_generation() + 1 );
+    CHECK( loaded_registry.disconnect( alpha_runtime->player_id() ) );
+    CHECK( loaded_registry.disconnect( beta_runtime->player_id() ) );
+
+    CHECK_FALSE( multiplayer_player_id::from_string( "" ).is_valid() );
+    CHECK_FALSE( multiplayer_player_id::from_string(
+                     "00000000-0000-3000-8000-000000000000" ).is_valid() );
+    CHECK_FALSE( multiplayer_player_id::from_string(
+                     "00000000-0000-4000-7000-000000000000" ).is_valid() );
+    CHECK( multiplayer_player_id::from_string( alpha_runtime->player_id().str() ) ==
+           alpha_runtime->player_id() );
+
+    const multiplayer_player_load_result unknown_schema =
+        deserialize_multiplayer_player_runtime( R"({"server_player_schema":2})", nullptr, nullptr );
+    CHECK_FALSE( unknown_schema );
+    CHECK( unknown_schema.error == "unsupported server player snapshot schema" );
+    const multiplayer_player_load_result exhausted_generation =
+        deserialize_multiplayer_player_runtime(
+            R"({"server_player_schema":1,"player_id":"00000000-0000-4000-8000-000000000000","session_generation":9223372036854775807})",
+            nullptr, nullptr );
+    CHECK_FALSE( exhausted_generation );
+    CHECK( exhausted_generation.error == "session generation exhausted" );
+    const multiplayer_player_load_result invalid_safe_mode =
+        deserialize_multiplayer_player_runtime(
+            R"({"server_player_schema":1,"player_id":"00000000-0000-4000-8000-000000000000","session_generation":0,"run_mode":99})",
+            nullptr, nullptr );
+    CHECK_FALSE( invalid_safe_mode );
+    CHECK( invalid_safe_mode.error == "invalid safe mode" );
+
+    bool worker_serialize_rejected = false;
+    bool worker_deserialize_rejected = false;
+    std::thread snapshot_worker( [&]() {
+        try {
+            serialize_multiplayer_player_runtime( *alpha_runtime );
+        } catch( const std::logic_error & ) {
+            worker_serialize_rejected = true;
+        }
+        const multiplayer_player_load_result worker_load =
+            deserialize_multiplayer_player_runtime( alpha_runtime_json, nullptr, nullptr );
+        worker_deserialize_rejected = !worker_load && !worker_load.error.empty();
+    } );
+    snapshot_worker.join();
+    CHECK( worker_serialize_rejected );
+    CHECK( worker_deserialize_rejected );
+
     REQUIRE( alpha_worn );
     REQUIRE( alpha_nested );
     REQUIRE( alpha_inventory );
@@ -519,6 +956,9 @@ TEST_CASE( "stable_avatar_context_switch_preserves_player_and_item_identity",
     CHECK( beta_wielded.carrier() == &beta );
     CHECK( loaded_alpha.carrier() == &alpha );
     CHECK( loaded_beta.carrier() == &beta );
+    alpha.reset_all_missions();
+    beta.reset_all_missions();
+    mission::clear_all();
     CHECK( g->mark_multiplayer_player_dead( beta_runtime->player_id() ) );
     CHECK( beta_runtime->status() == multiplayer_player_status::dead );
     CHECK_FALSE( g->begin_multiplayer_player_session( beta_runtime->player_id() ) );

@@ -1894,7 +1894,19 @@ bool avatar::query_yn( const std::string &mes ) const
 
 void avatar::set_pos_abs_only( const tripoint_abs_ms &loc )
 {
+    const tripoint_abs_ms old_pos = pos_abs();
     Creature::set_pos_abs_only( loc );
+    if( g != nullptr ) {
+        g->update_multiplayer_player_position( *this, old_pos, loc );
+    }
+}
+
+void avatar::on_move( const tripoint_abs_ms &old_pos )
+{
+    Character::on_move( old_pos );
+    if( g != nullptr ) {
+        g->update_multiplayer_player_position( *this, old_pos, pos_abs() );
+    }
 }
 
 npc &avatar::get_shadow_npc()

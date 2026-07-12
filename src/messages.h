@@ -31,6 +31,10 @@ class message_log;
 shared_ptr_fast<message_log> make_message_log();
 shared_ptr_fast<message_log> current_message_log();
 void set_current_message_log( const shared_ptr_fast<message_log> &messages );
+void serialize( const shared_ptr_fast<message_log> &messages, JsonOut &json );
+void deserialize( const shared_ptr_fast<message_log> &messages, const JsonObject &json );
+std::vector<std::pair<std::string, std::string>> recent_messages(
+            const shared_ptr_fast<message_log> &messages, size_t count );
 std::vector<std::pair<std::string, std::string>> recent_messages( size_t count );
 bool has_debug_filter( debugmode::debug_filter type );
 void add_msg( std::string msg );

@@ -83,6 +83,43 @@ bool multiplayer_player_registry::mark_dead( const multiplayer_player_id &id )
     return runtime != nullptr && runtime->mark_dead();
 }
 
+void multiplayer_player_registry::update_position( const avatar &player,
+        const tripoint_abs_ms &old_position, const tripoint_abs_ms &new_position )
+{
+    if( old_position == new_position || find_runtime( player ) == nullptr ) {
+        return;
+    }
+
+    const auto indexed = std::find( indexed_players.begin(), indexed_players.end(), &player );
+    if( indexed_players.size() != players.size() || indexed == indexed_players.end() ) {
+        rebuild_indexes();
+        return;
+    }
+    const std::size_t index = static_cast<std::size_t>( indexed - indexed_players.begin() );
+    if( indexed_positions[index] != old_position ) {
+        rebuild_indexes();
+        return;
+    }
+
+    const auto old_entry = players_by_position.find( old_position );
+    if( old_entry == players_by_position.end() ||
+        std::find( old_entry->second.begin(), old_entry->second.end(), &player ) ==
+        old_entry->second.end() ) {
+        rebuild_indexes();
+        return;
+    }
+    std::vector<avatar *> &occupants = old_entry->second;
+    occupants.erase( std::remove( occupants.begin(), occupants.end(), &player ), occupants.end() );
+    if( occupants.empty() ) {
+        players_by_position.erase( old_entry );
+    }
+    std::vector<avatar *> &new_occupants = players_by_position[new_position];
+    if( std::find( new_occupants.begin(), new_occupants.end(), &player ) == new_occupants.end() ) {
+        new_occupants.emplace_back( const_cast<avatar *>( &player ) );
+    }
+    indexed_positions[index] = new_position;
+}
+
 shared_ptr_fast<avatar> multiplayer_player_registry::find_by_id( const character_id &id ) const
 {
     if( !id.is_valid() ) {

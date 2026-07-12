@@ -181,6 +181,8 @@ class game
         friend class editmap_ui;
         friend class main_menu;
         friend class exosuit_interact;
+        friend class avatar;
+        friend class map;
         friend class multiplayer_active_player_guard;
         friend class swap_map;
         friend achievements_tracker &get_achievements();
@@ -220,6 +222,7 @@ class game
         bool disconnect_multiplayer_player( const multiplayer_player_id &id );
         bool mark_multiplayer_player_dead( const multiplayer_player_id &id );
         const multiplayer_player_registry &multiplayer_players() const;
+        bool is_simulation_thread() const;
 
         /*
         * MAIN GAME LOOP
@@ -722,6 +725,7 @@ class game
         // Helper to make calling with a player pointer less verbose.
         point_rel_sm update_map( Character &p, bool z_level_changed = false );
         point_rel_sm update_map( int &x, int &y, bool z_level_changed = false );
+        point_rel_sm update_map( Character &p, int &x, int &y, bool z_level_changed );
         void update_overmap_seen(); // Update which overmap tiles we can see
 
         void peek();
@@ -1206,8 +1210,12 @@ class game
         const scenario *scen = nullptr; // NOLINT(cata-serialize)
 
         event_bus &events();
-        bool is_simulation_thread() const;
         void set_active_player( const shared_ptr_fast<multiplayer_player_runtime> &next );
+        void update_multiplayer_player_position( const avatar &player,
+                const tripoint_abs_ms &old_position, const tripoint_abs_ms &new_position );
+        void shift_multiplayer_player_map_contexts( const point_rel_sm &shift );
+        vehicle *find_remote_vehicle( const avatar &player );
+        void refresh_multiplayer_remote_vehicle_caches();
         timed_event_manager &timed_events; // NOLINT(cata-serialize)
         memorial_logger &memorial();
 
@@ -1302,9 +1310,6 @@ class game
         std::time_t last_save_timestamp = 0; // NOLINT(cata-serialize)
 
         mutable std::array<float, OVERMAP_LAYERS> latest_lightlevels; // NOLINT(cata-serialize)
-        // remoteveh() cache
-        time_point remoteveh_cache_time; // NOLINT(cata-serialize)
-        vehicle *remoteveh_cache; // NOLINT(cata-serialize)
         /** Has an NPC been spawned since last load? */
         bool npcs_dirty = false; // NOLINT(cata-serialize)
         /** Has anything died in this turn and needs to be cleaned up? */

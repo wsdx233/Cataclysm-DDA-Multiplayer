@@ -5139,6 +5139,17 @@ void stats_tracker::deserialize( const JsonObject &jo )
     }
 }
 
+void stats_tracker::deserialize_multiplayer_snapshot( const JsonObject &jo )
+{
+    jo.allow_omitted_members();
+    clear();
+    jo.read( "data", data );
+    for( std::pair<const event_type, event_multiset> &d : data ) {
+        d.second.set_type( d.first );
+    }
+    jo.read( "initial_scores", initial_scores );
+}
+
 namespace
 {
 
