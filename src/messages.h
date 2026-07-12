@@ -10,6 +10,7 @@
 #include "coords_fwd.h"
 #include "debug.h"
 #include "enums.h"
+#include "memory_fast.h"
 #include "string_formatter.h"
 #include "translation.h"
 
@@ -25,6 +26,11 @@ class window;
 namespace Messages
 {
 
+class message_log;
+
+shared_ptr_fast<message_log> make_message_log();
+shared_ptr_fast<message_log> current_message_log();
+void set_current_message_log( const shared_ptr_fast<message_log> &messages );
 std::vector<std::pair<std::string, std::string>> recent_messages( size_t count );
 bool has_debug_filter( debugmode::debug_filter type );
 void add_msg( std::string msg );

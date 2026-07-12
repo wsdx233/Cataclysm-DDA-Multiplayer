@@ -9,6 +9,7 @@
 - 目标平台：Android 图形客户端、Windows 图形客户端、Linux/Windows 无界面服务器
 - 目标连接方式：客户端输入服务器地址后直连
 - 文档性质：长期 fork 的架构与交付计划，不代表 CDDA 上游项目路线
+- 架构决策记录：[ADR 索引](adr/README.md)
 
 本文将需求中的“跨段联机”按“跨端、跨平台联机”理解，也就是 Android 与 Windows 客户端可以连接同一个 headless 服务器。如果这里同时指“玩家能够跨地图分区、相距任意远仍在线”，则对应本文后面的“多现实泡”阶段，不应作为首个可玩版本的前置条件。
 
@@ -22,7 +23,7 @@
 4. 模拟仍保持单线程：网络线程只能收发、校验和排队，任何世界修改只能发生在模拟线程。
 5. 时间采用共享回合屏障：所有在线玩家完成当前秒内可用 moves 后，怪物、NPC、天气、场和物品等世界阶段才推进。
 6. 首版只维护一个共享 reality bubble，并限制玩家分离范围。这能复用当前 `map`、怪物列表、NPC 列表、声音和气味系统，显著减少改动。
-7. 利用现有唯一 `game::u` 作为“活动主角执行槽”：每次只激活一个玩家执行现有 avatar 行动。优先验证完整 `avatar` 状态槽交换；若不安全，则退回 `Character::swap_character()` 加 avatar sidecar。
+7. 每名玩家的完整 avatar 使用地址稳定的 registry ownership；`game` 只切换活动玩家上下文，让 `get_avatar()` 等旧入口转发到当前执行者。Phase 0 已证明完整 avatar move-swap 会破坏持久物品引用，因此不按原样采用；sidecar 只用于隔离 player-scoped 状态，不再作为移动 Character 主体的默认退路。
 8. 将 `game::handle_action()` 拆成“本地输入解析”和“服务器命令执行”，单人模式也走同一个命令执行器，避免维护两套游戏规则。
 9. 客户端人物不能直接把完整 `.sav` 上传。新增版本化的 portable character package，并对坐标、任务、ID、活动、世界引用和物品 UID 做清理及重映射。
 10. 多现实泡、自动 NAT 穿透、公共大厅、任意版本兼容和自动分发 mod 均后置。
@@ -61,7 +62,7 @@
 
 - `Character` 是 `avatar` 与 `npc` 的共同基类。
 - `avatar::control_npc()` 已通过 `Character::swap_character()` 在主角与 NPC 之间交换角色主体状态。
-- `avatar` 已有默认 move constructor 和 move assignment，可用于验证完整状态槽交换。
+- `avatar` 已有默认 move constructor 和 move assignment；Phase 0 对照测试证明其序列化值可完成 move-swap round-trip，同时也证明持久运行时引用不会自动随值迁移。
 - `game::do_regular_action()` 已经是输入解析之后的主要动作分发点。
 - `current_map` 与 `swap_map` 已提供 RAII 切换当前地图的先例。
 - `map.h` 已明确备注未来若存在多个 reality bubble，需要拆分 active bubble 与 all bubbles 语义。
@@ -211,69 +212,74 @@ class active_player_guard {
 
 进入时完成：
 
-- 将目标玩家放入 `game::u` 活动执行槽。
-- 切换当前 `player_runtime`。
+- 将活动 avatar/runtime 指针切换到 registry 中地址稳定的目标玩家，不移动 avatar 或 Character 值。
 - 切换消息 sink、stats、achievements、safe mode 等玩家状态。
-- 确保 `get_avatar()`、`get_player_character()` 与现有 `u` 成员指向目标玩家语义。
+- 确保 `get_avatar()`、`get_player_character()` 和相关兼容入口指向目标玩家；迁移期固定 `game::u` 只作为单人 backing storage，不能代表多人活动身份。
 - 设置调试上下文，记录哪个玩家、哪个命令正在执行。
 
 退出时完成：
 
-- 把活动槽状态写回玩家 registry。
-- 恢复上一个上下文。
-- 检查角色 ID、位置、item UID 和 tracker 索引不变量。
+- 按严格 LIFO 恢复上一个活动指针和 player-scoped 上下文。
+- 检查 avatar/runtime 地址、角色 ID、位置、item UID、shared ownership 和 tracker 索引不变量。
 
 任何网络线程调用该 guard 都应触发断言。
 
 ## 7. 最小侵入式多玩家角色模型
 
-### 7.1 首选方案：完整 avatar 状态槽交换
+### 7.1 首选方案：稳定 avatar 地址加活动上下文指针
 
-`player_registry` 持有每名玩家的完整 `avatar` 状态。`game::u` 保持现有对象地址，作为唯一活动执行槽。非活动玩家作为额外 human avatar 注册到 creature 查询中。
+`player_registry` 以 `unique_ptr`、真实 shared ownership 或其他地址稳定方式持有每名玩家的完整 `player_runtime` 和 `avatar`。玩家加入世界后，活动玩家切换、registry 扩容和连接状态变化都不得移动 avatar 对象。
 
 切换玩家时：
 
-1. 将 `game::u` 与目标玩家所在 avatar slot 做 move swap。
-2. 更新 `player_id -> slot` 映射，因为身份随值交换而不是随对象地址固定。
-3. 更新 `u_shared_ptr`/额外 human player shared pointer 索引。
-4. 使 tracker 和位置索引继续能找到所有玩家。
-5. 执行现有 avatar 动作。
-6. 在 guard 退出时保留当前 slot 映射，无需把玩家强制换回固定地址。
+1. scheduler 按稳定 `player_id` 从 registry 解析目标 runtime。
+2. `active_player_guard` 保存上一个上下文，并把 `game` 的活动 avatar/runtime 指针改为目标对象。
+3. guard 在整个激活区间持有 registry/runtime 提供的 shared owner；活动裸指针必须等于该 owner 的 `.get()`，`shared_from()` 必须返回同一控制块。
+4. `get_avatar()`、`get_player_character()`、消息和 stats 等兼容入口在 guard 期间转发到目标 runtime。
+5. 执行现有 avatar 动作；短期裸引用不得跨出本次 command safe point。
+6. guard 退出时恢复上一个上下文，不复制、移动或写回 avatar 主体。
 
 优点：
 
-- `game::u`、`get_avatar()` 和大量直接访问 `u` 的代码无需立即修改。
-- avatar-only 状态，如地图记忆、任务选择、配方、日记和 snippets，不需要手工 sidecar 拆解。
-- 非活动玩家不是 NPC，因此不会自动运行 NPC AI。
+- 玩家身份、avatar 地址和 character-backed `item_location` owner 保持一致。
+- inventory、worn、wielded、activity、map memory、任务、配方和日记无需在每次命令前后搬运。
+- 现有 getter 调用点可以保持不变；直接使用固定 `game::u` 的内部路径由编译器和 phase audit 分批迁移。
+- 非活动玩家仍是 human avatar，不运行 NPC AI。
 
-必须先验证的风险：
+持久引用规则：
 
-- `item_location`、safe reference、activity actor 中是否保存 avatar 对象地址。
-- mounted creature、vehicle passenger、grab、remote control 是否依赖固定对象地址。
-- mission pointer、diary、map memory 和 enchantment cache 在 move swap 后是否有效。
-- `shared_ptr_fast` alias 是否错误地把“对象槽”当作“玩家身份”。
-- `is_avatar()` 的旧代码是否隐含“全世界只有一个 avatar”。
+- 跨 command、turn、disconnect 或 save/load 的角色引用使用 `player_id`/`character_id` 与 generation。
+- 物品引用使用 `item_uid`、owner/location context 和 revision；指针与 safe reference 只是可验证缓存。
+- 缓存 owner ID、UID 或 generation 不匹配时必须丢弃并重新解析，不能信任旧地址。
+- 当前活动 avatar 使用 registry 对真实 avatar/runtime 的 shared ownership；legacy `u_shared_ptr` 的 null-deleter alias 仅允许表示 `game` 自身拥有的单人 backing avatar，不能用于额外 human player。
 
-### 7.2 退路：Character 主体交换加 avatar sidecar
+### 7.2 已排除的原样方案：完整 avatar move-swap
 
-如果完整 avatar swap 在 ASan/UBSan 与状态 round-trip 测试中不可靠，则使用现有 `Character::swap_character()`：
+Phase 0 GCC spike 已证明两个 avatar 的序列化值可以连续 move-swap 10,000 次，但 persistent reference 不变量失败：
 
-- 非活动玩家主体存为 `human_player_body`，可基于 `npc` 或独立 `Character` 容器。
-- avatar-only 字段放入显式 `player_avatar_state`。
-- 激活时把主体与 sidecar 装入 `game::u`。
-- 非活动主体注册到 creature tracker，但必须禁止 NPC AI。
+- 预先保存的 wielded `item_location` 在 swap 后失效。
+- inventory `item_location` 的 cached `Character *` 仍指向旧槽，carrier ID 变成另一玩家。
 
-该方案改动更多，但复用了上游已经用于 `avatar::control_npc()` 的主体交换路径。
+因此不继续通过逐项 swap 后修复补丁扩展该方案。测试保留为失败对照，防止未来再次把“状态 hash 相同”误当成“运行时身份正确”。
 
-### 7.3 角色 registry 必须提供
+### 7.3 Player runtime sidecar 的保留用途
+
+sidecar 继续用于把当前散落在 `game` 或进程级单例中的玩家状态迁入 `player_runtime`，例如 messages、safe mode、stats、achievements、memorial、自动化规则和 connection/session 状态。
+
+不把 `Character::swap_character()` 加 sidecar 作为默认玩家激活机制，因为该操作仍移动 weapon、inventory、worn 和 activity，不能从根本上保证引用地址稳定。只有后续证据证明某个受限主体交换边界完整且必要时，才以独立 ADR 重新评估。
+
+### 7.4 角色 registry 必须提供
 
 - 稳定的 `player_id`，使用随机 UUID，不复用 `character_id` 作为账号 ID。
 - 服务器分配且世界内唯一的 `character_id`。
 - 当前连接、会话代数、角色状态、所在 bubble、最后确认 revision。
 - active/offline/dead/importing 等状态机。
+- 地址稳定的 avatar/runtime ownership；容器 rehash 或扩容不得移动 live avatar。
 - `creature_at()`、`all_creatures()`、`shared_from()`、`critter_by_id()` 对 human players 的支持。
 - 地图 shift 时同步移动所有玩家的 bubble 坐标。
 - 同一 tile 的骑乘等合法叠放规则，其他情况拒绝重复占位。
+
+Phase 0 的可行性实现可以先用 `character_id` 加绝对坐标的按查询刷新索引验证稳定地址和查询边界；这不是生产协议或持久身份模型。进入 Phase 1 前，registry 必须替换为包含随机 UUID `player_id`、session generation 和状态机的 `player_runtime` ownership，并在统一移动/map-shift 边界维护位置索引，明确同格叠放规则。
 
 ## 8. 回合与时间模型
 
@@ -1011,20 +1017,21 @@ world_runtime
 - scene visibility filter，确保隐藏怪物、陷阱和未探索地形不出现在包中。
 - save generation 与 fallback。
 
-### 20.2 活动主角槽专项测试
+### 20.2 活动玩家上下文专项测试
 
 在决定角色桥接方案前必须有：
 
-- 两个 avatar 连续交换 10,000 次后状态 hash 不变。
-- inventory、nested pockets、worn、wielded、item_location 均可用。
-- active activity 可交换并继续。
-- mounted、vehicle passenger、grab、remote control round-trip。
+- 两个地址稳定的 avatar 连续切换活动上下文 10,000 次后，对象地址、身份和状态 hash 不变。
+- inventory、nested pockets、worn、wielded、item_location 在每次切换后均解析到正确 owner 和 UID。
+- active activity 可在切出、切回后继续。
+- guard 嵌套、提前返回和异常恢复保持严格 LIFO；非模拟线程使用触发断言。
+- mounted、vehicle passenger、grab、remote control 完成上下文切换 round-trip。
 - missions、map memory、diary、recipes、bionics、mutations 保持。
 - `creature_at`、`shared_from` 和 `critter_by_id` 始终返回正确身份。
 - ASan、UBSan、LSan 下无错误。
 - 保存后加载，两个角色与世界状态一致。
 
-若任一核心不变量无法稳定满足，立即采用 sidecar 退路，不继续在完整 avatar swap 上堆补丁。
+完整 avatar move-swap 的引用失败测试作为对照保留。稳定地址方案若仍有核心不变量失败，先停止生产扩展并更新 ADR，不通过分散的 cache 修复掩盖问题。
 
 ### 20.3 集成测试
 
@@ -1122,7 +1129,7 @@ TCP 不会乱序交付同一连接中的字节，但业务测试仍要覆盖重�
 - 建立 ADR：authority、time model、transport、protocol、player bridge、rendering、save、character policy、bubble policy。
 - 为 `game::do_turn()` 建立阶段级测试和 profiling。
 - 实现两个 avatar 同图存在的 test harness。
-- 验证完整 avatar slot swap；同时准备 sidecar fallback 原型。
+- 验证稳定 avatar ownership、活动上下文指针和 player-runtime sidecar；保留完整 move-swap 失败对照。
 - 审计 `get_avatar()` 在 world phase 中的高风险调用。
 - 验证 Asio/TCP 在 Linux、MSVC、Android NDK 编译。
 - 验证 TLS 方案或明确 LAN/VPN 限制。
@@ -1318,7 +1325,7 @@ tests/multiplayer_integration_test.cpp
 
 | 风险 | 严重度 | 缓解措施 |
 | --- | ---: | --- |
-| 完整 avatar swap 破坏指针/引用 | 致命 | Phase 0 sanitizer + round-trip gate；失败即 sidecar fallback |
+| 活动玩家切换破坏指针/身份 | 致命 | avatar/runtime 地址稳定；持久 ID/UID handle；Phase 0 sanitizer 与 identity gate |
 | 世界阶段误用“当前活动玩家” | 致命 | phase audit、debug activation reason、多人对称测试 |
 | UI 与规则耦合导致 server 阻塞 | 致命 | typed query/commit；server UI 调用断言；按动作覆盖矩阵迁移 |
 | 多玩家时间体验差 | 高 | turn barrier、可配置 timeout、全员安全快进、明确暂停状态 |
@@ -1374,7 +1381,7 @@ tests/multiplayer_integration_test.cpp
 
 - 建 fork 分支与 CI 基线。
 - 写 ADR。
-- 建 active avatar swap/sidecar 对比 spike。
+- 建稳定 avatar 上下文、full-swap 失败对照和 player-runtime sidecar spike。
 - 建 Asio Linux/Windows/Android 编译 spike。
 
 第 3 至 5 周：

@@ -183,8 +183,10 @@ void safemode::show( const std::string &custom_name_in, bool is_safemode_in )
         mvwprintz( w_header, point( locx, 2 ), c_white, safe_mode_enabled_text );
         locx += utf8_width( safe_mode_enabled_text );
         locx += shortcut_print( w_header, point( locx + 1, 2 ),
-                                ( g->safe_mode == SAFE_MODE_ON ? c_light_green : c_light_red ), c_white,
-                                ( g->safe_mode == SAFE_MODE_ON ? _( "True" ) : _( "False" ) ) );
+                                ( g->get_safe_mode() == SAFE_MODE_ON ?
+                                  c_light_green : c_light_red ), c_white,
+                                ( g->get_safe_mode() == SAFE_MODE_ON ?
+                                  _( "True" ) : _( "False" ) ) );
 
         wattron( w_header, c_light_gray );
         for( auto &pos : column_pos ) {

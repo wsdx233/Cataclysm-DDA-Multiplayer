@@ -409,7 +409,12 @@ void func_diag::_update_diag_args( const_dialogue const *d ) const
             [thing, this, i, d]( auto const & v )
             {
                 if constexpr( at_runtime ^ v_is_static<decltype( v )> ) {
-                    params[i] = _get_diag_value( *d, thing );
+                    if constexpr( v_is_static<decltype( v )> ) {
+                        params[i] = diag_value{ v };
+                    } else {
+                        cata_assert( d != nullptr );
+                        params[i] = _get_diag_value( *d, thing );
+                    }
                 }
             },
         },
@@ -426,7 +431,12 @@ void func_diag::_update_diag_kwargs( const_dialogue const *d ) const
             [this, blorg, d]( auto const & v )
             {
                 if constexpr( at_runtime ^ v_is_static<decltype( v )> ) {
-                    kwargs.kwargs[ blorg.first ] = _get_diag_value( *d, blorg.second );
+                    if constexpr( v_is_static<decltype( v )> ) {
+                        kwargs.kwargs[ blorg.first ] = diag_value{ v };
+                    } else {
+                        cata_assert( d != nullptr );
+                        kwargs.kwargs[ blorg.first ] = _get_diag_value( *d, blorg.second );
+                    }
                 }
             },
         },

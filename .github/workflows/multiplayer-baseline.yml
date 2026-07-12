@@ -379,11 +379,27 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
           Copy-Item cataclysmdda-0.J.zip artifacts\cdda-windows-client-x64-baseline.zip
-          $versionOutput = & .\bindist\cataclysm-tiles.exe --version 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            throw "Windows version smoke test failed with exit code $LASTEXITCODE"
+          $versionStdout = Join-Path $env:RUNNER_TEMP 'cdda-windows-version.stdout.txt'
+          $versionStderr = Join-Path $env:RUNNER_TEMP 'cdda-windows-version.stderr.txt'
+          $versionProcess = Start-Process `
+            -FilePath (Resolve-Path .\bindist\cataclysm-tiles.exe).Path `
+            -ArgumentList '--version' `
+            -RedirectStandardOutput $versionStdout `
+            -RedirectStandardError $versionStderr `
+            -Wait `
+            -PassThru
+          $versionOutput = @(
+            if (Test-Path $versionStdout) { Get-Content $versionStdout }
+            if (Test-Path $versionStderr) { Get-Content $versionStderr }
+          )
+          $versionText = ($versionOutput -join [Environment]::NewLine).Trim()
+          if ($versionProcess.ExitCode -ne 0) {
+            throw "Windows version smoke test failed with exit code $($versionProcess.ExitCode): $versionText"
           }
-          $versionOutput | Set-Content artifacts\windows-version.txt
+          if ([string]::IsNullOrWhiteSpace($versionText) -or $versionText -notmatch 'Cataclysm') {
+            throw "Windows version smoke test produced unexpected output: $versionText"
+          }
+          $versionText | Set-Content artifacts\windows-version.txt
           & 7z t artifacts\cdda-windows-client-x64-baseline.zip
           if ($LASTEXITCODE -ne 0) {
             throw "Windows package integrity check failed"

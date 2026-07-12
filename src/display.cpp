@@ -529,19 +529,19 @@ std::pair<std::string, nc_color> display::safe_mode_text_color( const bool class
     // draw_stat_narrow and draw_stat_wide display "On" or "Off" value
     std::string s_text;
     if( classic_mode ) {
-        if( g->safe_mode || get_option<bool>( "AUTOSAFEMODE" ) ) {
+        if( g->get_safe_mode() || get_option<bool>( "AUTOSAFEMODE" ) ) {
             s_text = _( "SAFE" );
         }
     } else {
-        s_text = g->safe_mode ? _( "On" ) : _( "Off" );
+        s_text = g->get_safe_mode() ? _( "On" ) : _( "Off" );
     }
 
     // By default, color is green if safe, red otherwise
-    nc_color s_color = g->safe_mode ? c_green : c_red;
+    nc_color s_color = g->get_safe_mode() ? c_green : c_red;
     // If auto-safe-mode is enabled, go to light red, yellow, and green as the turn limit approaches
-    if( g->safe_mode == SAFE_MODE_OFF && get_option<bool>( "AUTOSAFEMODE" ) ) {
+    if( g->get_safe_mode() == SAFE_MODE_OFF && get_option<bool>( "AUTOSAFEMODE" ) ) {
         time_duration s_return = time_duration::from_turns( get_option<int>( "AUTOSAFEMODETURNS" ) );
-        int iPercent = g->turnssincelastmon * 100 / s_return;
+        int iPercent = g->get_turns_since_last_monster() * 100 / s_return;
         if( iPercent >= 100 ) {
             s_color = c_green;
         } else if( iPercent >= 75 ) {
@@ -1657,4 +1657,3 @@ std::pair<std::string, nc_color> display::wind_text_color( const Character &u )
 
     return std::make_pair( wind_text, get_wind_color( windpower ) );
 }
-

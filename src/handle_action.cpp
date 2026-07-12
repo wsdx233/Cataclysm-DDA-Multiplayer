@@ -2959,19 +2959,19 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             break;
 
         case ACTION_TOGGLE_SAFEMODE:
-            if( safe_mode == SAFE_MODE_OFF ) {
+            if( get_safe_mode() == SAFE_MODE_OFF ) {
                 set_safe_mode( SAFE_MODE_ON );
-                mostseen = 0;
+                set_most_seen( 0 );
                 add_msg( m_info, _( "Safe mode ON!" ) );
             } else {
-                turnssincelastmon = 0_turns;
+                set_turns_since_last_monster( 0_turns );
                 set_safe_mode( SAFE_MODE_OFF );
                 add_msg( m_info, get_option<bool>( "AUTOSAFEMODE" )
                          ? _( "Safe mode OFF!  (Auto safe mode still enabled!)" ) : _( "Safe mode OFF!" ) );
             }
             if( player_character.has_effect( effect_laserlocked ) ) {
                 player_character.remove_effect( effect_laserlocked );
-                safe_mode_warning_logged = false;
+                set_safe_mode_warning_logged( false );
             }
             break;
 
@@ -2982,7 +2982,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         }
 
         case ACTION_IGNORE_ENEMY:
-            if( safe_mode == SAFE_MODE_STOP ) {
+            if( get_safe_mode() == SAFE_MODE_STOP ) {
                 add_msg( m_info, _( "Ignoring enemy!" ) );
                 for( auto &elem : player_character.get_mon_visible().new_seen_mon ) {
                     monster &critter = *elem;
@@ -2996,17 +2996,17 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                     add_msg( m_info, _( "Ignoring laser targeting!" ) );
                 }
                 player_character.remove_effect( effect_laserlocked );
-                safe_mode_warning_logged = false;
+                set_safe_mode_warning_logged( false );
             }
             break;
 
         case ACTION_WHITELIST_ENEMY:
-            if( safe_mode == SAFE_MODE_STOP && !get_safemode().empty() ) {
+            if( get_safe_mode() == SAFE_MODE_STOP && !get_safemode().empty() ) {
                 get_safemode().add_rule( get_safemode().lastmon_whitelist, Creature::Attitude::ANY, 0,
                                          rule_state::WHITELISTED );
                 add_msg( m_info, _( "Creature whitelisted: %s" ), get_safemode().lastmon_whitelist );
                 set_safe_mode( SAFE_MODE_ON );
-                mostseen = 0;
+                set_most_seen( 0 );
             } else {
                 get_safemode().show();
             }

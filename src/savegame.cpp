@@ -110,8 +110,8 @@ void game::serialize_json( std::ostream &fout )
     json.member( "initial_season", static_cast<int>( calendar::initial_season ) );
     json.member( "dimension_prefix", get_dimension_prefix() );
     json.member( "auto_travel_mode", auto_travel_mode );
-    json.member( "run_mode", static_cast<int>( safe_mode ) );
-    json.member( "mostseen", mostseen );
+    json.member( "run_mode", static_cast<int>( get_safe_mode() ) );
+    json.member( "mostseen", get_most_seen() );
     // current map coordinates
     tripoint_abs_sm pos_abs_sm = get_map().get_abs_sub();
     point_abs_om pos_om;
@@ -134,13 +134,13 @@ void game::serialize_json( std::ostream &fout )
     json.member( "active_monsters", *critter_tracker );
 
     json.member( "driving_view_offset", driving_view_offset );
-    json.member( "turnssincelastmon", turnssincelastmon );
+    json.member( "turnssincelastmon", get_turns_since_last_monster() );
     json.member( "bVMonsterLookFire", bVMonsterLookFire );
 
     // save stats.
     json.member( "kill_tracker", *kill_tracker_ptr );
-    json.member( "stats_tracker", *stats_tracker_ptr );
-    json.member( "achievements_tracker", *achievements_tracker_ptr );
+    json.member( "stats_tracker", stats() );
+    json.member( "achievements_tracker", achievements() );
 
     json.member( "player", u );
     json.member( "inactive_global_effect_on_condition_vector",
@@ -264,7 +264,9 @@ void game::unserialize_impl( const JsonObject &data )
 
     data.read( "auto_travel_mode", auto_travel_mode );
     data.read( "run_mode", tmprun );
-    data.read( "mostseen", mostseen );
+    int loaded_most_seen = get_most_seen();
+    data.read( "mostseen", loaded_most_seen );
+    set_most_seen( loaded_most_seen );
     data.read( "levx", lev.x() );
     data.read( "levy", lev.y() );
     data.read( "levz", lev.z() );
@@ -284,7 +286,7 @@ void game::unserialize_impl( const JsonObject &data )
 
     load_map( project_combine( com, lev ), /*pump_events=*/true );
 
-    safe_mode = static_cast<safe_mode_type>( tmprun );
+    set_safe_mode( static_cast<safe_mode_type>( tmprun ) );
 
     std::string linebuff;
     std::string linebuf;
@@ -300,7 +302,9 @@ void game::unserialize_impl( const JsonObject &data )
     data.has_null( "monstairz" ); // TEMPORARY until 0.G
 
     data.read( "driving_view_offset", driving_view_offset );
-    data.read( "turnssincelastmon", turnssincelastmon );
+    time_duration loaded_turns_since_last_monster = get_turns_since_last_monster();
+    data.read( "turnssincelastmon", loaded_turns_since_last_monster );
+    set_turns_since_last_monster( loaded_turns_since_last_monster );
     data.read( "bVMonsterLookFire", bVMonsterLookFire );
 
     data.read( "kill_tracker", *kill_tracker_ptr );
@@ -319,8 +323,8 @@ void game::unserialize_impl( const JsonObject &data )
     global_variables_instance.unserialize( data );
     data.read( "unique_npcs", unique_npcs );
     inp_mngr.pump_events();
-    data.read( "stats_tracker", *stats_tracker_ptr );
-    data.read( "achievements_tracker", *achievements_tracker_ptr );
+    data.read( "stats_tracker", stats() );
+    data.read( "achievements_tracker", achievements() );
     inp_mngr.pump_events();
     Messages::deserialize( data );
 
@@ -2229,4 +2233,3 @@ void npc::export_to( const cata_path &path ) const
         serialize( jsout );
     } );
 }
-

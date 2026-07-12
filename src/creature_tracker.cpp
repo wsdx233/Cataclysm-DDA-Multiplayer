@@ -17,6 +17,7 @@
 #include "maptile_fwd.h"
 #include "mongroup.h"
 #include "monster.h"
+#include "multiplayer_player_registry.h"
 #include "mtype.h"
 #include "npc.h"
 #include "point.h"
@@ -208,7 +209,8 @@ bool creature_tracker::is_present( Creature *creature ) const
             }
         }
     } else if( creature->is_avatar() ) {
-        return true;
+        const avatar *player = creature->as_avatar();
+        return player != nullptr && g->multiplayer_players().contains( *player );
     } else if( creature->is_npc() ) {
         for( const shared_ptr_fast<npc> &cur_npc : active_npc ) {
             if( static_cast<const Creature *>( cur_npc.get() ) == creature ) {
@@ -328,9 +330,8 @@ T *creature_tracker::creature_at( const tripoint_abs_ms &p, bool allow_hallucina
     }
     constexpr bool is_npc = std::is_same_v<T, npc> || std::is_same_v<T, const npc>;
     if( !is_npc ) {
-        avatar &you = get_avatar();
-        if( p == you.pos_abs() ) {
-            return dynamic_cast<T *>( &you );
+        if( avatar *player = g->multiplayer_players().find_at( p ) ) {
+            return dynamic_cast<T *>( player );
         }
     }
     for( auto &cur_npc : active_npc ) {

@@ -6,10 +6,35 @@ This file applies to the entire repository.
 
 Before changing multiplayer architecture or build/release behavior, read:
 
-- [`doc/MULTIPLAYER_REFACTOR_PLAN.md`](doc/MULTIPLAYER_REFACTOR_PLAN.md): product scope, architecture, phases, risks, tests, and prohibited shortcuts.
-- [`doc/MULTIPLAYER_BUILD_BASELINE.md`](doc/MULTIPLAYER_BUILD_BASELINE.md): pinned toolchains, CI artifacts, local setup, and verified build status.
+- [`doc/multiplayer/README.md`](doc/multiplayer/README.md): documentation map, reading order, ownership, and handoff rules.
+- [`doc/multiplayer/STATUS.md`](doc/multiplayer/STATUS.md): current phase, active work, evidence, blockers, and exact next steps.
+- [`doc/multiplayer/MULTIPLAYER_REFACTOR_PLAN.md`](doc/multiplayer/MULTIPLAYER_REFACTOR_PLAN.md): product scope, architecture, phases, risks, tests, and prohibited shortcuts.
+- [`doc/multiplayer/MULTIPLAYER_BUILD_BASELINE.md`](doc/multiplayer/MULTIPLAYER_BUILD_BASELINE.md): pinned toolchains, CI artifacts, local setup, and verified build status.
+- [`doc/multiplayer/adr/README.md`](doc/multiplayer/adr/README.md): accepted and pending architecture decisions.
 
 The refactor plan is the source of truth for fork-specific architecture. Existing upstream CDDA patterns remain the default for code style and unchanged game behavior. If code investigation invalidates a plan assumption, record the decision in an ADR and update the plan instead of silently diverging.
+
+## Documentation And Handoff Discipline
+
+`AGENTS.md` is the operational entry point for future coding agents. Keep it concise and current: it should explain the project goal, non-negotiable engineering constraints, current phase gates, toolchain commands, and how work is handed off. Do not turn it into a chronological development diary or duplicate detailed ADR rationale here.
+
+Use the multiplayer documentation by ownership:
+
+- Put durable product scope, architecture, phase ordering, risks, and exit criteria in the refactor plan.
+- Put one-way or difficult-to-reverse technical decisions, alternatives, consequences, and validation gates in ADRs.
+- Put pinned toolchains, reproducible build commands, artifact contracts, and verified platform results in the build baseline.
+- Put the current work snapshot, commands already run, concrete results, unresolved findings, and ordered next actions in `STATUS.md`.
+- Put navigation and document-maintenance rules in `doc/multiplayer/README.md`.
+
+At the start of a multiplayer task, read `AGENTS.md`, `STATUS.md`, the relevant plan sections, and every related ADR before editing code. At the end of a task, update the owned documents in the same change as the code when facts changed. A handoff is not complete unless `STATUS.md` states:
+
+- the current branch and phase;
+- what changed and why;
+- exact verification commands and outcomes;
+- known failures or unverified platforms;
+- the next gate and the first concrete command or file to inspect.
+
+Do not mark a gate complete based on intent, a POC compile, or an in-progress CI run. Record evidence first. If implementation findings contradict an accepted ADR, stop expanding the implementation, mark the conflict in `STATUS.md`, and update or supersede the ADR plus the refactor plan before continuing.
 
 ## Project Goal
 
@@ -29,7 +54,7 @@ The architectural summary from the refactor plan is:
 4. Simulation remains single-threaded. Network and compression workers may only exchange immutable DTOs through bounded queues.
 5. Time uses a shared turn barrier with fair round-robin command execution.
 6. v1 uses one shared reality bubble with a player-distance tether. Multiple reality bubbles are a later optional phase.
-7. Existing `game::u` is retained as the active-avatar execution slot. Phase 0 must decide between full avatar slot swapping and the sidecar fallback.
+7. Each player avatar has stable registry-owned storage. Existing player getters are redirected through a simulation-thread-only active-player context; full avatar move-swap remains only as a failing reference-identity comparison.
 8. Input parsing and rule execution must be separated. Single-player and multiplayer should call the same command executors.
 9. Clients must not upload a complete `.sav`. Character transfer uses a versioned portable package with ID remapping and world-reference cleanup.
 10. Headless execution must not initialize or block on SDL, curses UI, ImGui, sound, popups, or local menus.
@@ -47,16 +72,24 @@ Completed baseline work:
 - Fork remote: `https://github.com/wsdx233/Cataclysm-DDA-Multiplayer.git`.
 - Linux curses package builds and passes archive, `--version`, and dynamic-library smoke checks.
 - Android arm64 debug and unsigned release APKs build and pass ZIP, ABI, badging, and signing-state checks.
-- The Windows MSVC build is configured in CI but still requires its first run on a `windows-2022` runner.
+- The first hosted Windows job compiled and packaged successfully, but a PowerShell GUI-process exit-code
+  false negative stopped the version smoke step before artifact upload. The local workflow fix still requires
+  a clean `windows-2022` rerun.
 - Full compiled translations are taken from the hash-pinned official baseline release package, without requiring a fork Transifex secret.
+- Multiplayer documentation is consolidated under `doc/multiplayer/`, with a current handoff snapshot in `STATUS.md`.
+- Nine Phase 0 ADRs now record authority, time, transport/TLS, protocol, player bridge, rendering, saves, character policy, and bubble policy. Transport/TLS and player bridge remain validation-gated.
+- The stable-avatar/shared-owner bridge, human-player registry, and `player_runtime` sidecar compile under GCC 13
+  release/curses and joint ASan/UBSan/LSan. They pass the 10,000-switch identity/runtime matrix while retaining
+  full-swap as a failing reference-identity comparison; see `STATUS.md` for exact evidence.
 
-The next Phase 0 work, in order, is:
+The remaining Phase 0 work, in order, is:
 
-1. Run the complete baseline workflow on the fork, especially Windows MSVC.
-2. Add ADRs for authority, time model, transport/TLS, protocol, player bridge, rendering, saves, character policy, and bubble policy.
-3. Build the avatar slot-swap versus sidecar test spike under ASan/UBSan.
-4. Build the standalone Asio/TCP transport spike on Linux, MSVC, and Android NDK; validate the TLS packaging decision.
-5. Enter Phase 1 only after the player-bridge go/no-go decision and three-platform transport compile gate pass.
+1. Rerun the baseline workflow with the corrected Windows GUI-process smoke check and record the Windows artifact
+   evidence before marking the three-platform baseline complete.
+2. Extend the stable-avatar/runtime matrix through movement/map-shift, mount, vehicle, grab, remote-control, and
+   two-player save/load boundaries; compile it with Android NDK and MSVC, then make the player-bridge go/no-go decision.
+3. Build the standalone Asio/TCP transport spike on Linux, MSVC, and Android NDK; validate the TLS packaging decision.
+4. Enter Phase 1 only after the player-bridge decision and three-platform transport compile gate pass.
 
 Linux curses is only the current non-SDL build baseline. It is not a multiplayer server and must not be described or shipped as one.
 
@@ -212,7 +245,7 @@ For build-script, workflow, or toolchain changes:
 5. Run the hosted Windows job for MSVC-specific or shared C++ changes before considering the baseline green.
 6. Verify generated artifacts contain only the requested ABI/platform and include build provenance plus SHA-256.
 
-For multiplayer simulation changes, scale tests with risk. Phase 0 requires sanitizer-backed avatar swap/sidecar invariants. Later phases require loopback server/client tests, two-player conflict tests, reconnect/idempotency tests, save round trips, visibility leak tests, fuzzing, and soak tests as specified in the plan.
+For multiplayer simulation changes, scale tests with risk. Phase 0 requires sanitizer-backed stable-avatar context, persistent-reference, and player-runtime invariants; the full-swap tests remain a negative comparison. Later phases require loopback server/client tests, two-player conflict tests, reconnect/idempotency tests, save round trips, visibility leak tests, fuzzing, and soak tests as specified in the plan.
 
 ## Engineering Constraints
 

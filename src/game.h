@@ -14,6 +14,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -58,7 +59,7 @@ enum quit_status {
     QUIT_WATCH,     // Died, and watching aftermath
 };
 
-enum safe_mode_type {
+enum safe_mode_type : int {
     SAFE_MODE_OFF = 0, // Moving always allowed
     SAFE_MODE_ON = 1, // Moving allowed, but if a new monsters spawns, go to SAFE_MODE_STOP
     SAFE_MODE_STOP = 2, // New monsters spotted, no movement allowed
@@ -82,6 +83,10 @@ class live_view;
 class map;
 class memorial_logger;
 class monster;
+class multiplayer_active_player_guard;
+class multiplayer_player_id;
+class multiplayer_player_registry;
+class multiplayer_player_runtime;
 class npc;
 class npc_template;
 class overmap;
@@ -176,6 +181,7 @@ class game
         friend class editmap_ui;
         friend class main_menu;
         friend class exosuit_interact;
+        friend class multiplayer_active_player_guard;
         friend class swap_map;
         friend achievements_tracker &get_achievements();
         friend event_bus &get_event_bus();
@@ -198,6 +204,22 @@ class game
     public:
         game();
         ~game();
+
+        /**
+         * Returns the avatar selected for the current simulation operation.
+         * This is normally the legacy local avatar.  The Phase 0 multiplayer
+         * registry may redirect it with multiplayer_active_player_guard.
+         */
+        avatar &active_avatar();
+        const avatar &active_avatar() const;
+        multiplayer_player_runtime &active_player_runtime();
+        const multiplayer_player_runtime &active_player_runtime() const;
+        bool register_multiplayer_player( const shared_ptr_fast<avatar> &player );
+        bool unregister_multiplayer_player( const avatar &player );
+        bool begin_multiplayer_player_session( const multiplayer_player_id &id );
+        bool disconnect_multiplayer_player( const multiplayer_player_id &id );
+        bool mark_multiplayer_player_dead( const multiplayer_player_id &id );
+        const multiplayer_player_registry &multiplayer_players() const;
 
         /*
         * MAIN GAME LOOP
@@ -394,7 +416,7 @@ class game
         * Returns a shared pointer to the given critter (which can be of any of the subclasses of
         * @ref Creature). The function may return an empty pointer if the given critter
         * is not stored anywhere (e.g. it was allocated on the stack, not stored in
-        * the @ref critter_tracker nor in @ref active_npc nor is it @ref u).
+        * the @ref critter_tracker, @ref active_npc, or multiplayer player registry).
         */
         template<typename T = Creature>
         shared_ptr_fast<T> shared_from( const T &critter );
@@ -536,9 +558,6 @@ class game
 
         class Creature_range : public non_dead_range<Creature>
         {
-            private:
-                shared_ptr_fast<Character> u;
-
             public:
                 explicit Creature_range( game &game_ref );
         };
@@ -908,6 +927,13 @@ class game
          */
         bool check_safe_mode_allowed( bool repeat_safe_mode_warnings = true );
         void set_safe_mode( safe_mode_type mode );
+        safe_mode_type get_safe_mode() const;
+        int get_most_seen() const;
+        void set_most_seen( int value );
+        time_duration get_turns_since_last_monster() const;
+        void set_turns_since_last_monster( const time_duration &value );
+        bool is_safe_mode_warning_logged() const;
+        void set_safe_mode_warning_logged( bool value );
 
         /** open appliance interaction screen */
         void exam_appliance( vehicle &veh, const point_rel_ms &cp = point_rel_ms::zero );
@@ -1163,8 +1189,6 @@ class game
         pimpl<timed_event_manager> timed_event_manager_ptr; // NOLINT(cata-serialize)
         pimpl<item_wakeup_manager> item_wakeup_manager_ptr;
         pimpl<event_bus> event_bus_ptr; // NOLINT(cata-serialize)
-        pimpl<stats_tracker> stats_tracker_ptr;
-        pimpl<achievements_tracker> achievements_tracker_ptr;
         pimpl<kill_tracker> kill_tracker_ptr;
         pimpl<memorial_logger> memorial_logger_ptr; // NOLINT(cata-serialize)
         pimpl<spell_events> spell_events_ptr; // NOLINT(cata-serialize)
@@ -1175,11 +1199,15 @@ class game
         // 'current_map' will be identical to 'm' as you can save only at the top of the main loop.
         ::current_map &current_map; // NOLINT(cata-serialize)
         avatar &u;
+        avatar *active_avatar_ptr; // NOLINT(cata-serialize)
+        std::thread::id simulation_thread_id; // NOLINT(cata-serialize)
         scent_map &scent;
         // scenario is saved in avatar::store
         const scenario *scen = nullptr; // NOLINT(cata-serialize)
 
         event_bus &events();
+        bool is_simulation_thread() const;
+        void set_active_player( const shared_ptr_fast<multiplayer_player_runtime> &next );
         timed_event_manager &timed_events; // NOLINT(cata-serialize)
         memorial_logger &memorial();
 
@@ -1245,21 +1273,14 @@ class game
         bool was_fullscreen = false; // NOLINT(cata-serialize)
         bool auto_travel_mode = false;
         bool queue_screenshot = false; // NOLINT(cata-serialize)
-        safe_mode_type safe_mode;
-
-        // tracks time since last monster seen to allow automatically
-        // reactivating safe mode.
-        time_duration turnssincelastmon = 0_turns;
     private:
         weather_manager weather; // NOLINT(cata-serialize)
-
-    public:
-        // # of mons seen last turn; if this increases, set safe_mode to SAFE_MODE_STOP
-        // Please note that this does not count ignored monsters, so this value might
-        // be 0 even if the player currently sees some monsters.
-        int mostseen = 0;
-    private:
         shared_ptr_fast<Character> u_shared_ptr; // NOLINT(cata-serialize)
+        shared_ptr_fast<avatar> active_avatar_shared_ptr; // NOLINT(cata-serialize)
+        shared_ptr_fast<multiplayer_player_runtime>
+        active_player_runtime_shared_ptr; // NOLINT(cata-serialize)
+        std::unique_ptr<multiplayer_player_registry>
+        multiplayer_player_registry_ptr; // NOLINT(cata-serialize)
 
         catacurses::window w_terrain_ptr; // NOLINT(cata-serialize)
         catacurses::window w_minimap_ptr; // NOLINT(cata-serialize)
@@ -1269,7 +1290,6 @@ class game
         std::string list_item_upvote; // NOLINT(cata-serialize)
         std::string list_item_downvote; // NOLINT(cata-serialize)
 
-        bool safe_mode_warning_logged = false; // NOLINT(cata-serialize)
         bool bVMonsterLookFire = false;
         character_id next_npc_id; // NOLINT(cata-serialize)
         int next_mission_id = 0; // NOLINT(cata-serialize)

@@ -12,6 +12,7 @@
 
 #include "cached_options.h"
 #include "calendar.h"
+#include "cata_assert.h"
 #include "catacharset.h"
 #include "character.h"
 #include "color.h"
@@ -420,8 +421,25 @@ class messages_impl
         }
 };
 
-// Messages object.
-messages_impl player_messages;
+} // namespace
+
+class Messages::message_log
+{
+    public:
+        messages_impl messages;
+};
+
+namespace
+{
+
+shared_ptr_fast<Messages::message_log> active_player_messages =
+    make_shared_fast<Messages::message_log>();
+
+messages_impl &player_messages()
+{
+    cata_assert( active_player_messages != nullptr );
+    return active_player_messages->messages;
+}
 
 bool message_exceeds_ttl( const game_message &message )
 {
@@ -429,11 +447,29 @@ bool message_exceeds_ttl( const game_message &message )
            message.timestamp_in_user_actions + message_ttl <= g->get_user_action_counter();
 }
 
-} //namespace
+} // namespace
+
+shared_ptr_fast<Messages::message_log> Messages::make_message_log()
+{
+    return make_shared_fast<message_log>();
+}
+
+shared_ptr_fast<Messages::message_log> Messages::current_message_log()
+{
+    return active_player_messages;
+}
+
+void Messages::set_current_message_log( const shared_ptr_fast<message_log> &messages )
+{
+    cata_assert( messages != nullptr );
+    if( messages != nullptr ) {
+        active_player_messages = messages;
+    }
+}
 
 std::vector<std::pair<std::string, std::string>> Messages::recent_messages( const size_t count )
 {
-    return player_messages.recent_messages( count );
+    return player_messages().recent_messages( count );
 }
 
 bool Messages::has_debug_filter( debugmode::debug_filter type )
@@ -445,8 +481,8 @@ void Messages::serialize( JsonOut &json )
 {
     json.member( "player_messages" );
     json.start_object();
-    json.member( "messages", player_messages.messages );
-    json.member( "curmes", player_messages.curmes );
+    json.member( "messages", player_messages().messages );
+    json.member( "curmes", player_messages().curmes );
     json.end_object();
 }
 
@@ -457,39 +493,39 @@ void Messages::deserialize( const JsonObject &json )
     }
 
     JsonObject obj = json.get_object( "player_messages" );
-    obj.read( "messages", player_messages.messages );
-    obj.read( "curmes", player_messages.curmes );
+    obj.read( "messages", player_messages().messages );
+    obj.read( "curmes", player_messages().curmes );
 }
 
 void Messages::add_msg( std::string msg )
 {
-    player_messages.add_msg_string( std::move( msg ) );
+    player_messages().add_msg_string( std::move( msg ) );
 }
 
 void Messages::add_msg( const game_message_params &params, std::string msg )
 {
-    player_messages.add_msg_string( std::move( msg ), params );
+    player_messages().add_msg_string( std::move( msg ), params );
 }
 
 void Messages::clear_messages()
 {
-    player_messages.messages.clear();
-    player_messages.active = true;
+    player_messages().messages.clear();
+    player_messages().active = true;
 }
 
 void Messages::deactivate()
 {
-    player_messages.active = false;
+    player_messages().active = false;
 }
 
 size_t Messages::size()
 {
-    return player_messages.messages.size();
+    return player_messages().messages.size();
 }
 
 bool Messages::has_undisplayed_messages()
 {
-    return player_messages.has_undisplayed_messages();
+    return player_messages().has_undisplayed_messages();
 }
 
 // Returns pairs of message log type id and untranslated name
@@ -660,7 +696,7 @@ void Messages::dialog::init( ui_adaptor &ui )
     const size_t msg_count = size();
     for( size_t ind = 0; ind < msg_count; ++ind ) {
         const size_t msg_ind = log_from_top ? ind : msg_count - 1 - ind;
-        const game_message &msg = player_messages.history( msg_ind );
+        const game_message &msg = player_messages().history( msg_ind );
         const auto &folded = foldstring( msg.get_with_count(), msg_width );
         for( const auto &it : folded ) {
             folded_filtered.emplace_back( folded_all.size() );
@@ -711,7 +747,7 @@ void Messages::dialog::show()
 
         const size_t folded_ind = offset + line;
         const size_t msg_ind = folded_all[folded_filtered[folded_ind]].first;
-        const game_message &msg = player_messages.history( msg_ind );
+        const game_message &msg = player_messages().history( msg_ind );
 
         nc_color col = msgtype_to_color( msg.type, false );
 
@@ -795,7 +831,7 @@ void Messages::dialog::do_filter( const std::string &filter_str )
     folded_filtered.clear();
     for( size_t folded_ind = 0; folded_ind < folded_all.size(); ) {
         const size_t msg_ind = folded_all[folded_ind].first;
-        const game_message &msg = player_messages.history( msg_ind );
+        const game_message &msg = player_messages().history( msg_ind );
         const bool match = ( !has_type_filter || filter_type == msg.type ) &&
                            ci_find_substr( remove_color_tags( msg.get_with_count() ), filter_text ) >= 0;
 
@@ -925,7 +961,7 @@ void Messages::display_messages()
 {
     dialog dlg;
     dlg.run();
-    player_messages.curmes = calendar::turn;
+    player_messages().curmes = calendar::turn;
 }
 
 void Messages::display_messages( const catacurses::window &ipk_target, const int left,
@@ -944,14 +980,14 @@ void Messages::display_messages( const catacurses::window &ipk_target, const int
                 break;
             }
 
-            const game_message &m = player_messages.messages[i];
+            const game_message &m = player_messages().messages[i];
             if( message_exceeds_ttl( m ) ) {
                 break;
             }
 
-            const nc_color col = m.get_color( player_messages.curmes );
+            const nc_color col = m.get_color( player_messages().curmes );
             std::string message_text = m.get_with_count();
-            if( !m.is_recent( player_messages.curmes ) ) {
+            if( !m.is_recent( player_messages().curmes ) ) {
                 message_text = remove_color_tags( message_text );
             }
 
@@ -972,7 +1008,7 @@ void Messages::display_messages( const catacurses::window &ipk_target, const int
                 break;
             }
 
-            const game_message &m = player_messages.messages[i];
+            const game_message &m = player_messages().messages[i];
             if( message_exceeds_ttl( m ) ) {
                 break;
             }
@@ -982,9 +1018,9 @@ void Messages::display_messages( const catacurses::window &ipk_target, const int
                 continue;
             }
 
-            const nc_color col = m.get_color( player_messages.curmes );
+            const nc_color col = m.get_color( player_messages().curmes );
             std::string message_text = m.get_with_count();
-            if( !m.is_recent( player_messages.curmes ) ) {
+            if( !m.is_recent( player_messages().curmes ) ) {
                 message_text = remove_color_tags( message_text );
             }
 
@@ -1001,7 +1037,7 @@ void Messages::display_messages( const catacurses::window &ipk_target, const int
         }
     }
 
-    player_messages.curmes = calendar::turn;
+    player_messages().curmes = calendar::turn;
 }
 
 void add_msg( std::string msg )

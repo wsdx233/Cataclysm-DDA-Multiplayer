@@ -178,13 +178,23 @@ git remote set-url --push upstream DISABLED
 
 只允许向 `origin` 推送 fork 分支。不要恢复 `upstream` 的 push URL。
 
-## 9. 当前本机验证状态
+## 9. 当前验证状态
 
 2026-07-12 在基线提交 `d84b90d` 上完成：
 
 - Linux x64 curses `bindist` 构建、tar 完整性、`cataclysm --version` 和 `ldd` 检查通过。
 - Android arm64 debug APK 构建、ZIP 完整性、ABI、badging 和 debug v2 签名检查通过。
 - Android arm64 unsigned release APK 构建、ZIP 完整性、ABI、badging 和未签名状态检查通过。
-- Windows MSVC 配置已进入 CI workflow；本机不是 Windows，最终结果必须在 `windows-2022` runner 上确认。
+- 本机不是 Windows，Windows 结果必须以 `windows-2022` hosted runner 为准。
+
+2026-07-12 的首个 hosted baseline run `29177657248`（提交 `0955d865ea170c26511a789ce9d37334ac530953`）中：
+
+- 固定 translations、tileset、soundpack 和 shaders 的准备作业成功。
+- Linux x64 curses job 成功并上传 artifact `cdda-linux-curses-x64-baseline`。
+- Android arm64 job 成功并上传 artifact `cdda-android-arm64-baseline`。
+- Windows MSVC job 以 `0 Error(s)` 完成编译并由 `windist.ps1 -SDL3` 完成打包；随后 version smoke 因 PowerShell 直接调用 GUI subsystem exe 后 `$LASTEXITCODE` 为 null 被误判失败，未执行 artifact upload。
+- workflow 已改为通过 `Start-Process -Wait -PassThru` 取得显式进程退出码并验证版本输出；该修复通过 actionlint 1.7.12，但尚未在 hosted runner 重跑。
+
+因此 Linux/Android hosted artifacts 已有成功证据，Windows compile/package 已有成功证据，但完整三平台 artifact 基线仍未关闭。必须取得新 run 的 Windows version smoke、ZIP 完整性、provenance 和 artifact upload 成功结果后，才能把 Windows 和完整基线标为通过。
 
 本地生成物位于仓库默认的忽略目录中，不作为源码提交。规范产物和 hash 以 fork 上的 `multiplayer-baseline` workflow 为准。

@@ -412,7 +412,7 @@ bool game::load( const save_t &name )
                         gamemode = std::make_unique<special_game>();
                     }
 
-                    mostseen = 0; // ...and mostseen is 0, we haven't seen any monsters yet.
+                    set_most_seen( 0 ); // ...and mostseen is 0, we haven't seen any monsters yet.
 
                     init_autosave();
                     get_auto_pickup().load_character(); // Load character auto pickup rules

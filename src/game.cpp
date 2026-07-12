@@ -57,6 +57,7 @@
 #include "butchery_requirements.h"
 #include "butchery.h"
 #include "cached_options.h"
+#include "cata_assert.h"
 #include "cata_imgui.h"
 #include "cata_path.h"
 #include "cata_scope_helpers.h"
@@ -162,6 +163,8 @@
 #include "monstergenerator.h"
 #include "move_mode.h"
 #include "mtype.h"
+#include "multiplayer_player_registry.h"
+#include "multiplayer_player_runtime.h"
 #include "npc.h"
 #include "npctrade.h"
 #include "omdata.h"
@@ -453,29 +456,43 @@ static void achievement_failed( const achievement *a, bool achievements_enabled 
 game::game() :
     liveview( *liveview_ptr ),
     scent_ptr( *this ),
-    achievements_tracker_ptr( *stats_tracker_ptr, achievement_attained, achievement_failed, true ),
     m( *map_ptr ),
     current_map( *current_map_ptr ),
     u( *u_ptr ),
+    active_avatar_ptr( &u ),
+    simulation_thread_id( std::this_thread::get_id() ),
     scent( *scent_ptr ),
     timed_events( *timed_event_manager_ptr ),
     uquit( QUIT_NO ),
     save_is_dirty( false ),
-    safe_mode( SAFE_MODE_ON ),
     u_shared_ptr( &u, null_deleter{} ),
+    active_avatar_shared_ptr( std::dynamic_pointer_cast<avatar>( u_shared_ptr ) ),
     next_npc_id( 1 ),
     next_mission_id( 1 ),
     next_item_uid( 1 ),
     remoteveh_cache_time( calendar::before_time_starts ),
     last_mouse_edge_scroll( std::chrono::steady_clock::now() )
 {
+    multiplayer_player_registry_ptr = std::make_unique<multiplayer_player_registry>();
+    active_player_runtime_shared_ptr = make_shared_fast<multiplayer_player_runtime>(
+                                           active_avatar_shared_ptr, achievement_attained,
+                                           achievement_failed, true );
+    const bool registered_local_avatar =
+        multiplayer_player_registry_ptr->register_player( active_player_runtime_shared_ptr );
+    const bool started_local_session = registered_local_avatar &&
+                                       multiplayer_player_registry_ptr->begin_session(
+                                           active_player_runtime_shared_ptr->player_id() );
+    cata_assert( started_local_session );
+    cata_assert( registered_local_avatar );
+    static_cast<void>( started_local_session );
+    static_cast<void>( registered_local_avatar );
     current_map.set( &m );
     first_redraw_since_waiting_started = true;
     reset_light_level();
-    events().subscribe( &*stats_tracker_ptr );
+    events().subscribe( &active_player_runtime_shared_ptr->stats() );
     events().subscribe( &*kill_tracker_ptr );
     events().subscribe( &*memorial_logger_ptr );
-    events().subscribe( &*achievements_tracker_ptr );
+    events().subscribe( &active_player_runtime_shared_ptr->achievements() );
     events().subscribe( &*spell_events_ptr );
     events().subscribe( &*eoc_events_ptr );
     debug_menu::debug_capture::instance().on_game_load( events() );
@@ -494,6 +511,134 @@ game::~game()
     if( debug_menu::debug_capture::is_initialized() ) {
         debug_menu::debug_capture::instance().on_game_shutdown();
     }
+}
+
+avatar &game::active_avatar()
+{
+    cata_assert( active_avatar_ptr != nullptr );
+    cata_assert( active_avatar_shared_ptr.get() == active_avatar_ptr );
+    cata_assert( multiplayer_players().owns( active_avatar_shared_ptr ) );
+    cata_assert( active_player_runtime_shared_ptr != nullptr );
+    cata_assert( &active_player_runtime_shared_ptr->player() == active_avatar_ptr );
+    return *active_avatar_ptr;
+}
+
+const avatar &game::active_avatar() const
+{
+    cata_assert( active_avatar_ptr != nullptr );
+    cata_assert( active_avatar_shared_ptr.get() == active_avatar_ptr );
+    cata_assert( multiplayer_players().owns( active_avatar_shared_ptr ) );
+    cata_assert( active_player_runtime_shared_ptr != nullptr );
+    cata_assert( &active_player_runtime_shared_ptr->player() == active_avatar_ptr );
+    return *active_avatar_ptr;
+}
+
+multiplayer_player_runtime &game::active_player_runtime()
+{
+    cata_assert( active_player_runtime_shared_ptr != nullptr );
+    cata_assert( multiplayer_players().owns( active_player_runtime_shared_ptr ) );
+    return *active_player_runtime_shared_ptr;
+}
+
+const multiplayer_player_runtime &game::active_player_runtime() const
+{
+    cata_assert( active_player_runtime_shared_ptr != nullptr );
+    cata_assert( multiplayer_players().owns( active_player_runtime_shared_ptr ) );
+    return *active_player_runtime_shared_ptr;
+}
+
+bool game::register_multiplayer_player( const shared_ptr_fast<avatar> &player )
+{
+    cata_assert( is_simulation_thread() );
+    if( !is_simulation_thread() || player == nullptr || !player->getID().is_valid() ) {
+        return false;
+    }
+    shared_ptr_fast<multiplayer_player_runtime> runtime =
+        make_shared_fast<multiplayer_player_runtime>( player, achievement_attained,
+                achievement_failed, false );
+    if( !multiplayer_player_registry_ptr->register_player( runtime ) ) {
+        return false;
+    }
+    if( multiplayer_player_registry_ptr->begin_session( runtime->player_id() ) ) {
+        return true;
+    }
+    multiplayer_player_registry_ptr->unregister_player( runtime->player() );
+    return false;
+}
+
+bool game::unregister_multiplayer_player( const avatar &player )
+{
+    cata_assert( is_simulation_thread() );
+    cata_assert( &player != active_avatar_ptr );
+    if( !is_simulation_thread() || &player == active_avatar_ptr ) {
+        return false;
+    }
+    return multiplayer_player_registry_ptr->unregister_player( player );
+}
+
+bool game::begin_multiplayer_player_session( const multiplayer_player_id &id )
+{
+    cata_assert( is_simulation_thread() );
+    if( !is_simulation_thread() ) {
+        return false;
+    }
+    return multiplayer_player_registry_ptr->begin_session( id );
+}
+
+bool game::disconnect_multiplayer_player( const multiplayer_player_id &id )
+{
+    cata_assert( is_simulation_thread() );
+    if( !is_simulation_thread() || active_player_runtime_shared_ptr->player_id() == id ) {
+        return false;
+    }
+    return multiplayer_player_registry_ptr->disconnect( id );
+}
+
+bool game::mark_multiplayer_player_dead( const multiplayer_player_id &id )
+{
+    cata_assert( is_simulation_thread() );
+    if( !is_simulation_thread() || active_player_runtime_shared_ptr->player_id() == id ) {
+        return false;
+    }
+    return multiplayer_player_registry_ptr->mark_dead( id );
+}
+
+const multiplayer_player_registry &game::multiplayer_players() const
+{
+    cata_assert( multiplayer_player_registry_ptr != nullptr );
+    return *multiplayer_player_registry_ptr;
+}
+
+bool game::is_simulation_thread() const
+{
+    return std::this_thread::get_id() == simulation_thread_id;
+}
+
+void game::set_active_player( const shared_ptr_fast<multiplayer_player_runtime> &next )
+{
+    cata_assert( is_simulation_thread() );
+    if( !is_simulation_thread() ) {
+        return;
+    }
+    cata_assert( next != nullptr );
+    const bool registry_owns_next = multiplayer_players().owns( next );
+    cata_assert( registry_owns_next );
+    cata_assert( next != nullptr && next->status() == multiplayer_player_status::active );
+    if( !registry_owns_next || next->status() != multiplayer_player_status::active ) {
+        return;
+    }
+
+    cata_assert( active_player_runtime_shared_ptr != nullptr );
+    events().unsubscribe( &active_player_runtime_shared_ptr->stats() );
+    events().unsubscribe( &active_player_runtime_shared_ptr->achievements() );
+
+    active_player_runtime_shared_ptr = next;
+    active_avatar_shared_ptr = next->player_owner();
+    active_avatar_ptr = active_avatar_shared_ptr.get();
+    next->activate_messages();
+
+    events().subscribe( &next->stats() );
+    events().subscribe( &next->achievements() );
 }
 
 #if defined(TUI)
@@ -706,7 +851,7 @@ void game::setup()
     // Weather shift in 30
     weather.nextweather = calendar::start_of_game + 30_minutes;
 
-    turnssincelastmon = 0_turns; //Auto safe mode init
+    set_turns_since_last_monster( 0_turns ); //Auto safe mode init
 
     sounds::reset_sounds();
     clear_zombies();
@@ -722,7 +867,7 @@ void game::setup()
     stats().clear();
     // reset kill counts
     kill_tracker_ptr->clear();
-    achievements_tracker_ptr->clear();
+    achievements().clear();
     eoc_events_ptr->clear();
     // reset follower list
     scent.reset();
@@ -780,8 +925,8 @@ bool game::start_game()
     new_game = true;
     start_calendar();
     weather.nextweather = calendar::turn;
-    safe_mode = SAFE_MODE_ON;
-    mostseen = 0; // ...and mostseen is 0, we haven't seen any monsters yet.
+    set_safe_mode( SAFE_MODE_ON );
+    set_most_seen( 0 ); // ...and mostseen is 0, we haven't seen any monsters yet.
     get_safemode().load_global();
 
     init_autosave();
@@ -2958,12 +3103,12 @@ event_bus &game::events()
 
 stats_tracker &game::stats()
 {
-    return *stats_tracker_ptr;
+    return active_player_runtime().stats();
 }
 
 achievements_tracker &game::achievements()
 {
-    return *achievements_tracker_ptr;
+    return active_player_runtime().achievements();
 }
 
 memorial_logger &game::memorial()
@@ -3923,7 +4068,7 @@ void game::mon_info_update( )
                     bool passmon = false;
                     mon_visible.has_dangerous_creature_in_proximity = true;
                     if( critter.ignoring > 0 ) {
-                        if( safe_mode != SAFE_MODE_ON ) {
+                        if( get_safe_mode() != SAFE_MODE_ON ) {
                             critter.ignoring = 0;
                         } else if( ( sm_ignored_turns == time_duration() ||
                                      ( critter.lastseen_turn &&
@@ -3974,8 +4119,8 @@ void game::mon_info_update( )
         }
     }
 
-    if( uistate.distraction_hostile_spotted && newseen > mostseen ) {
-        if( newseen - mostseen == 1 ) {
+    if( uistate.distraction_hostile_spotted && newseen > get_most_seen() ) {
+        if( newseen - get_most_seen() == 1 ) {
             if( !new_seen_mon.empty() ) {
                 monster &critter = *new_seen_mon.back();
                 cancel_activity_or_ignore_query( distraction_type::hostile_spotted_far,
@@ -3999,27 +4144,29 @@ void game::mon_info_update( )
         } else {
             cancel_activity_or_ignore_query( distraction_type::hostile_spotted_far, _( "Monsters spotted!" ) );
         }
-        turnssincelastmon = 0_turns;
-        if( safe_mode == SAFE_MODE_ON ) {
+        set_turns_since_last_monster( 0_turns );
+        if( get_safe_mode() == SAFE_MODE_ON ) {
             set_safe_mode( SAFE_MODE_STOP );
         }
     } else if( calendar::turn > previous_turn && get_option<bool>( "AUTOSAFEMODE" ) &&
                newseen == 0 ) { // Auto safe mode, but only if it's a new turn
-        turnssincelastmon += calendar::turn - previous_turn;
+        set_turns_since_last_monster( get_turns_since_last_monster() +
+                                      ( calendar::turn - previous_turn ) );
         time_duration auto_safe_mode =
             time_duration::from_turns( get_option<int>( "AUTOSAFEMODETURNS" ) );
-        if( turnssincelastmon >= auto_safe_mode && safe_mode == SAFE_MODE_OFF ) {
+        if( get_turns_since_last_monster() >= auto_safe_mode &&
+            get_safe_mode() == SAFE_MODE_OFF ) {
             set_safe_mode( SAFE_MODE_ON );
             add_msg( m_info, _( "Safe mode ON!" ) );
         }
     }
 
-    if( newseen == 0 && safe_mode == SAFE_MODE_STOP ) {
+    if( newseen == 0 && get_safe_mode() == SAFE_MODE_STOP ) {
         set_safe_mode( SAFE_MODE_ON );
     }
 
     previous_turn = calendar::turn;
-    mostseen = newseen;
+    set_most_seen( newseen );
 }
 
 void game::cleanup_dead()
@@ -4359,9 +4506,8 @@ void game::use_computer( const tripoint_bub_ms &p )
 template<typename T>
 shared_ptr_fast<T> game::shared_from( const T &critter )
 {
-    if( static_cast<const Creature *>( &critter ) == static_cast<const Creature *>( &u ) ) {
-        // u is not stored in a shared_ptr, but it won't go out of scope anyway
-        return std::dynamic_pointer_cast<T>( u_shared_ptr );
+    if( const avatar *player = critter.as_avatar() ) {
+        return std::dynamic_pointer_cast<T>( multiplayer_players().shared_from( *player ) );
     }
     if( critter.is_monster() ) {
         if( const shared_ptr_fast<monster> mon_ptr = critter_tracker->find( critter.pos_abs() ) ) {
@@ -4389,9 +4535,8 @@ template shared_ptr_fast<npc> game::shared_from<npc>( const npc & );
 template<typename T>
 T *game::critter_by_id( const character_id &id )
 {
-    if( id == u.getID() ) {
-        // player is always alive, therefore no is-dead check
-        return dynamic_cast<T *>( &u );
+    if( const shared_ptr_fast<avatar> player = multiplayer_players().find_by_id( id ) ) {
+        return dynamic_cast<T *>( player.get() );
     }
     return find_npc( id );
 }
@@ -4569,8 +4714,8 @@ monster *game::place_critter_at_or_within( const shared_ptr_fast<monster> &mon, 
 
 size_t game::num_creatures() const
 {
-    // Plus one for the player.
-    return critter_tracker->size() + critter_tracker->active_npc.size() + 1;
+    return critter_tracker->size() + critter_tracker->active_npc.size() +
+           multiplayer_players().size();
 }
 
 bool game::update_zombie_pos( const monster &critter, const tripoint_abs_ms &old_pos,
@@ -7243,7 +7388,7 @@ void game::reload_weapon( bool try_everything )
 
 bool game::check_safe_mode_allowed( bool repeat_safe_mode_warnings )
 {
-    if( !repeat_safe_mode_warnings && safe_mode_warning_logged ) {
+    if( !repeat_safe_mode_warnings && is_safe_mode_warning_logged() ) {
         // Already warned player since safe_mode_warning_logged is set.
         return false;
     }
@@ -7259,10 +7404,10 @@ bool game::check_safe_mode_allowed( bool repeat_safe_mode_warnings )
             add_msg( game_message_params{ m_warning, gmf_bypass_cooldown },
                      _( "You are being laser-targeted, %s to ignore." ), msg_ignore );
         }
-        safe_mode_warning_logged = true;
+        set_safe_mode_warning_logged( true );
         return false;
     }
-    if( safe_mode != SAFE_MODE_STOP ) {
+    if( get_safe_mode() != SAFE_MODE_STOP ) {
         return true;
     }
     // Currently driving around, ignore the monster, they have no chance against a proper car anyway (-:
@@ -7376,14 +7521,49 @@ bool game::check_safe_mode_allowed( bool repeat_safe_mode_warnings )
     add_msg( game_message_params{ m_warning, gmf_bypass_cooldown },
              _( "Spotted %1$s -- safe mode is on!  (%2$s to turn it off, %3$s to ignore monster%4$s)" ),
              spotted_creature_text, msg_safe_mode, msg_ignore, whitelist );
-    safe_mode_warning_logged = true;
+    set_safe_mode_warning_logged( true );
     return false;
 }
 
 void game::set_safe_mode( safe_mode_type mode )
 {
-    safe_mode = mode;
-    safe_mode_warning_logged = false;
+    active_player_runtime().set_safe_mode( mode );
+    set_safe_mode_warning_logged( false );
+}
+
+safe_mode_type game::get_safe_mode() const
+{
+    return active_player_runtime().safe_mode();
+}
+
+int game::get_most_seen() const
+{
+    return active_player_runtime().most_seen();
+}
+
+void game::set_most_seen( const int value )
+{
+    active_player_runtime().set_most_seen( value );
+}
+
+time_duration game::get_turns_since_last_monster() const
+{
+    return active_player_runtime().turns_since_last_monster();
+}
+
+void game::set_turns_since_last_monster( const time_duration &value )
+{
+    active_player_runtime().set_turns_since_last_monster( value );
+}
+
+bool game::is_safe_mode_warning_logged() const
+{
+    return active_player_runtime().safe_mode_warning_logged();
+}
+
+void game::set_safe_mode_warning_logged( const bool value )
+{
+    active_player_runtime().set_safe_mode_warning_logged( value );
 }
 
 bool game::disable_robot( const tripoint_bub_ms &p )
@@ -8292,7 +8472,8 @@ point_rel_sm game::place_player( const tripoint_bub_ms &dest_loc, bool quick )
     // adjusted_pos = ( old_pos.x - submap_shift.x * SEEX, old_pos.y - submap_shift.y * SEEY, old_pos.z )
 
     //Auto pulp or butcher and Auto foraging
-    if( !quick && get_option<bool>( "AUTO_FEATURES" )  && mostseen == 0 && !u.is_mounted() ) {
+    if( !quick && get_option<bool>( "AUTO_FEATURES" ) && get_most_seen() == 0 &&
+        !u.is_mounted() ) {
         static constexpr std::array<direction, 8> adjacentDir = {
             direction::NORTH, direction::NORTHEAST, direction::EAST, direction::SOUTHEAST,
             direction::SOUTH, direction::SOUTHWEST, direction::WEST, direction::NORTHWEST
@@ -10736,13 +10917,16 @@ game::monster_range::monster_range( game &game_ref )
     items.insert( items.end(), monsters.begin(), monsters.end() );
 }
 
-game::Creature_range::Creature_range( game &game_ref ) : u( &game_ref.u, []( Character * ) { } )
+game::Creature_range::Creature_range( game &game_ref )
 {
     const auto &monsters = game_ref.critter_tracker->get_monsters_list();
     items.insert( items.end(), monsters.begin(), monsters.end() );
     items.insert( items.end(), game_ref.critter_tracker->active_npc.begin(),
                   game_ref.critter_tracker->active_npc.end() );
-    items.emplace_back( u );
+    for( const shared_ptr_fast<multiplayer_player_runtime> &runtime :
+         game_ref.multiplayer_players().all() ) {
+        items.emplace_back( runtime->player_owner() );
+    }
 }
 
 game::npc_range::npc_range( game &game_ref )
@@ -11525,17 +11709,17 @@ achievements_tracker &get_achievements()
 
 Character &get_player_character()
 {
-    return g->u;
+    return g->active_avatar();
 }
 
 viewer &get_player_view()
 {
-    return g->u;
+    return g->active_avatar();
 }
 
 avatar &get_avatar()
 {
-    return g->u;
+    return g->active_avatar();
 }
 
 map &get_map()

@@ -244,7 +244,7 @@ bool avatar_action::move( avatar &you, map &m, const tripoint_rel_ms &d )
     }
 
     item_location weapon = you.get_wielded_item();
-    if( m.has_flag( ter_furn_flag::TFLAG_MINEABLE, dest_loc ) && g->mostseen == 0 &&
+    if( m.has_flag( ter_furn_flag::TFLAG_MINEABLE, dest_loc ) && g->get_most_seen() == 0 &&
         get_option<bool>( "AUTO_FEATURES" ) && get_option<bool>( "AUTO_MINING" ) &&
         !m.veh_at( dest_loc ) && !you.is_underwater() && !you.has_effect( effect_stunned ) &&
         !you.has_effect( effect_psi_stunned ) && !is_riding && !you.has_effect( effect_incorporeal ) &&
@@ -396,7 +396,8 @@ bool avatar_action::move( avatar &you, map &m, const tripoint_rel_ms &d )
                                           _( "You're too pacified to strike anything…" ) ) ) {
                 return false;
             }
-            if( g->safe_mode == SAFE_MODE_ON && critter.attitude_to( you ) == Creature::Attitude::NEUTRAL ) {
+            if( g->get_safe_mode() == SAFE_MODE_ON &&
+                critter.attitude_to( you ) == Creature::Attitude::NEUTRAL ) {
                 const std::string msg_safe_mode = press_x( ACTION_TOGGLE_SAFEMODE );
                 add_msg( m_warning,
                          _( "Not attacking the %1$s -- safe mode is on!  (%2$s to turn it off)" ), critter.name(),
@@ -534,7 +535,7 @@ bool avatar_action::move( avatar &you, map &m, const tripoint_rel_ms &d )
     const tripoint_abs_ms abs_dest_loc = here.get_abs( dest_loc );
     if( g->walk_move( dest_loc, via_ramp ) ) {
         // AUTOPEEK: If safe mode would be triggered after the move, look around and move back
-        if( g->safe_mode == SAFE_MODE_ON && !you.is_running() &&
+        if( g->get_safe_mode() == SAFE_MODE_ON && !you.is_running() &&
             you.pos_abs() == abs_dest_loc ) {
             here.build_map_cache( dest_loc.z() );
             here.update_visibility_cache( dest_loc.z() );

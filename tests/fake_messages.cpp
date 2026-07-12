@@ -26,11 +26,35 @@ class window;
  * event of a test failure.
  */
 
-static std::vector<std::pair<std::string, std::string>> messages;
+class Messages::message_log
+{
+    public:
+        std::vector<std::pair<std::string, std::string>> messages;
+};
+
+static shared_ptr_fast<Messages::message_log> active_messages =
+    make_shared_fast<Messages::message_log>();
+
+shared_ptr_fast<Messages::message_log> Messages::make_message_log()
+{
+    return make_shared_fast<message_log>();
+}
+
+shared_ptr_fast<Messages::message_log> Messages::current_message_log()
+{
+    return active_messages;
+}
+
+void Messages::set_current_message_log( const shared_ptr_fast<message_log> &messages )
+{
+    if( messages != nullptr ) {
+        active_messages = messages;
+    }
+}
 
 std::vector<std::pair<std::string, std::string>> Messages::recent_messages( size_t )
 {
-    return messages;
+    return active_messages->messages;
 }
 bool Messages::has_debug_filter( debugmode::debug_filter )
 {
@@ -39,7 +63,8 @@ bool Messages::has_debug_filter( debugmode::debug_filter )
 void Messages::add_msg( std::string m )
 {
     if( !m.empty() ) {
-        messages.emplace_back( to_string_time_of_day( calendar::turn ), std::move( m ) );
+        active_messages->messages.emplace_back( to_string_time_of_day( calendar::turn ),
+                                                std::move( m ) );
     }
 }
 void Messages::add_msg( const game_message_params &, std::string m )
@@ -48,12 +73,12 @@ void Messages::add_msg( const game_message_params &, std::string m )
 }
 void Messages::clear_messages()
 {
-    messages.clear();
+    active_messages->messages.clear();
 }
 void Messages::deactivate() {}
 size_t Messages::size()
 {
-    return messages.size();
+    return active_messages->messages.size();
 }
 bool Messages::has_undisplayed_messages()
 {

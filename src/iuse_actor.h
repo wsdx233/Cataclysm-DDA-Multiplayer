@@ -142,7 +142,7 @@ class mp3_iuse : public iuse_actor
 {
         itype_id transform;
         translation msg;
-        bool activate;
+        bool activate = false;
     public:
         explicit mp3_iuse( const std::string &type = "mp3" ) : iuse_actor( type ) {}
 
@@ -1263,7 +1263,7 @@ class effect_on_conditions_actor : public iuse_actor
         explicit effect_on_conditions_actor( const std::string &type = "effect_on_conditions" ) :
             iuse_actor(
                 type ) {}
-        bool consume;
+        bool consume = false;
 
         ~effect_on_conditions_actor() override = default;
         void load( const JsonObject &obj, const std::string &src ) override;

@@ -3697,7 +3697,7 @@ class item : public visitable
         mutable cat_cache cached_category;
 
         /** Is this item electronically browsed? */
-        bool browsed;
+        bool browsed = false;
         /** Additional encumbrance this item, not itype, has. */
         units::volume additional_encumbrance = 0_ml;
 
