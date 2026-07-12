@@ -15,6 +15,7 @@
 /app/jni/lua
 /app/jni/mpg-123
 /app/build
+/app/libs
 /app/src/main/assetsWinHost
 /build
 /captures

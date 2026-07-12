@@ -1,0 +1,528 @@
+name: Multiplayer vanilla build baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - multiplayer/main
+    paths:
+      - '.github/actions/**'
+      - '.github/workflows/multiplayer-baseline.yml'
+      - 'android/**'
+      - 'build-scripts/**'
+      - 'data/**'
+      - 'gfx/**'
+      - 'lang/**'
+      - 'msvc-full-features/**'
+      - 'src/**'
+      - 'Makefile'
+      - 'CMakeLists.txt'
+  pull_request:
+    branches:
+      - multiplayer/main
+    paths:
+      - '.github/actions/**'
+      - '.github/workflows/multiplayer-baseline.yml'
+      - 'android/**'
+      - 'build-scripts/**'
+      - 'data/**'
+      - 'gfx/**'
+      - 'lang/**'
+      - 'msvc-full-features/**'
+      - 'src/**'
+      - 'Makefile'
+      - 'CMakeLists.txt'
+
+concurrency:
+  group: multiplayer-baseline-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BASELINE_UPSTREAM_COMMIT: d84b90dd2aee090ca28c8dad5cdf1fab6dea151a
+  BASELINE_TILESET_COMMIT: 13b1e25e4362af9e90885b323296ec8226ccae47
+  BASELINE_SOUNDPACK_COMMIT: 88586bb600eae4b053a8928bddbd5371d0b1ecc6
+  BASELINE_VCPKG_COMMIT: f6672d8e480ccdecddfad3fd1b838ba369ffe6cd
+  BASELINE_TRANSLATIONS_SHA256: 999419a0c0da8ec25f92dd85127fe858145ff5b59e5582ad5094ad8a98c735ab
+  ZSTD_CLEVEL: 17
+
+jobs:
+  translations:
+    name: Extract pinned release translations
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download and verify baseline release package
+        run: |
+          package="$RUNNER_TEMP/cdda-linux-terminal-only-x64-2026-07-11-0744.tar.gz"
+          curl -fL --retry 3 \
+            https://github.com/CleverRaven/Cataclysm-DDA/releases/download/cdda-experimental-2026-07-11-0744/cdda-linux-terminal-only-x64-2026-07-11-0744.tar.gz \
+            -o "$package"
+          printf '%s  %s\n' "$BASELINE_TRANSLATIONS_SHA256" "$package" | sha256sum -c -
+          mkdir -p translations
+          tar -xzf "$package" \
+            --wildcards \
+            --strip-components=1 \
+            -C translations \
+            '*/lang/mo/*'
+          test -f translations/lang/mo/zh_CN/LC_MESSAGES/cataclysm-dda.mo
+          test -f translations/lang/mo/zh_TW/LC_MESSAGES/cataclysm-dda.mo
+
+      - name: Upload compiled translations
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: multiplayer-baseline-translations
+          path: translations
+          if-no-files-found: error
+          retention-days: 7
+
+  default-tileset:
+    name: Compose default tileset
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install composition dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvips42 python3-venv
+          python3 -m venv "$RUNNER_TEMP/tileset-venv"
+          "$RUNNER_TEMP/tileset-venv/bin/pip" install pyvips==2.2.3
+          echo "$RUNNER_TEMP/tileset-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Build JSON formatter
+        run: make -j2 tools/format/json_formatter.cgi
+
+      - name: Fetch pinned tileset source
+        run: |
+          tileset_source="$RUNNER_TEMP/CDDA-Tilesets"
+          git init "$tileset_source"
+          git -C "$tileset_source" remote add origin https://github.com/I-am-Erk/CDDA-Tilesets.git
+          git -C "$tileset_source" sparse-checkout init --cone
+          git -C "$tileset_source" sparse-checkout set gfx/UltimateCataclysm
+          git -C "$tileset_source" fetch --depth 1 origin "$BASELINE_TILESET_COMMIT"
+          git -C "$tileset_source" checkout --detach FETCH_HEAD
+
+      - name: Compose UltimateCataclysm
+        run: |
+          source_dir="$RUNNER_TEMP/CDDA-Tilesets/gfx/UltimateCataclysm"
+          destination_dir="$GITHUB_WORKSPACE/gfx/UltimateCataclysm"
+          rm -rf "$destination_dir"
+          python3 tools/gfx_tools/compose.py \
+            --use-all \
+            --obsolete-fillers \
+            --feedback CONCISE \
+            --format-json \
+            --loglevel INFO \
+            "$source_dir" "$destination_dir"
+          cp "$source_dir/tileset.txt" "$destination_dir/"
+          if [ -f "$source_dir/fallback.png" ]; then
+            cp "$source_dir/fallback.png" "$destination_dir/"
+          fi
+          if [ -f "$source_dir/layering.json" ]; then
+            cp "$source_dir/layering.json" "$destination_dir/"
+          fi
+
+      - name: Upload default tileset
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: multiplayer-baseline-default-tileset
+          path: gfx/UltimateCataclysm
+          if-no-files-found: error
+          retention-days: 7
+
+  soundpack:
+    name: Fetch pinned soundpack
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch CC-Sounds
+        run: |
+          soundpack_source="$RUNNER_TEMP/CDDA-Soundpacks"
+          git init "$soundpack_source"
+          git -C "$soundpack_source" remote add origin https://github.com/Fris0uman/CDDA-Soundpacks.git
+          git -C "$soundpack_source" fetch --depth 1 origin "$BASELINE_SOUNDPACK_COMMIT"
+          git -C "$soundpack_source" checkout --detach FETCH_HEAD
+          git -C "$soundpack_source" submodule update --init --recursive --depth 1
+          mkdir -p data
+          cp -a "$soundpack_source/sound/CC-Sounds" data/sound
+
+      - name: Upload soundpack
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: multiplayer-baseline-soundpack
+          path: data/sound
+          if-no-files-found: error
+          retention-days: 7
+
+  shaders:
+    name: Compile SDL3 shaders
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build shader artifacts
+        uses: ./.github/actions/build-sdl3-shaders
+        with:
+          artifact-name: multiplayer-baseline-shaders
+          retention-days: '7'
+
+  linux-curses:
+    name: Linux x64 curses package
+    runs-on: ubuntu-24.04
+    needs:
+      - translations
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download compiled translations
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: multiplayer-baseline-translations
+          path: ${{ runner.temp }}/baseline-translations
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 ccache gettext libncursesw5-dev parallel
+
+      - name: Restore compiler cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: multiplayer-baseline-linux-curses-${{ github.sha }}
+          restore-keys: |
+            multiplayer-baseline-linux-curses-
+
+      - name: Build pinned libbacktrace
+        run: |
+          git clone https://github.com/ianlancetaylor/libbacktrace.git "$RUNNER_TEMP/libbacktrace"
+          git -C "$RUNNER_TEMP/libbacktrace" checkout 14818b7783eeb9a56c3f0fca78cefd3143f8c5f6
+          cd "$RUNNER_TEMP/libbacktrace"
+          ./configure
+          make -j"$(nproc)"
+          cp LICENSE "$GITHUB_WORKSPACE/LICENSE-libbacktrace.txt"
+          sudo make install
+
+      - name: Create build identity
+        run: |
+          cat > VERSION.txt <<EOF
+          build type: multiplayer-baseline-linux-curses-x64
+          source commit: $GITHUB_SHA
+          upstream baseline: $BASELINE_UPSTREAM_COMMIT
+          EOF
+
+      - name: Build package
+        run: |
+          make COMPILER=clang++-18 \
+            -j"$(nproc)" \
+            TILES=0 \
+            SOUND=0 \
+            RELEASE=1 \
+            LOCALIZE=1 \
+            LANGUAGES=all \
+            BACKTRACE=1 \
+            LIBBACKTRACE=1 \
+            WARN_STALE_DATA=1 \
+            PCH=0 \
+            CCACHE=1 \
+            bindist
+
+      - name: Smoke test and record provenance
+        run: |
+          mkdir -p artifacts smoke
+          package="$(find . -maxdepth 1 -type f -name 'cataclysmdda-*.tar.gz' -print -quit)"
+          test -n "$package"
+          repack_dir="$(mktemp -d)"
+          tar -xzf "$package" -C "$repack_dir"
+          package_root="$(find "$repack_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -n "$package_root"
+          rm -rf "$package_root/lang/mo"
+          mkdir -p "$package_root/lang"
+          cp -a "$RUNNER_TEMP/baseline-translations/lang/mo" "$package_root/lang/mo"
+          test -f "$package_root/lang/mo/zh_CN/LC_MESSAGES/cataclysm-dda.mo"
+          tar -czf "$package" -C "$repack_dir" "$(basename "$package_root")"
+          cp "$package" artifacts/cdda-linux-curses-x64-baseline.tar.gz
+          tar -xzf artifacts/cdda-linux-curses-x64-baseline.tar.gz -C smoke
+          binary="$(find smoke -type f -name cataclysm -perm -111 -print -quit)"
+          test -n "$binary"
+          "$binary" --version | tee artifacts/linux-version.txt
+          {
+            echo "artifact=cdda-linux-curses-x64-baseline.tar.gz"
+            echo "sha256=$(sha256sum artifacts/cdda-linux-curses-x64-baseline.tar.gz | cut -d' ' -f1)"
+            echo "source_commit=$GITHUB_SHA"
+            echo "upstream_baseline=$BASELINE_UPSTREAM_COMMIT"
+            echo "runner_image=ubuntu-24.04"
+            echo "compiler=$(clang++-18 --version | head -n 1)"
+            echo "translations_sha256=$BASELINE_TRANSLATIONS_SHA256"
+            echo "build_command=make TILES=0 SOUND=0 RELEASE=1 LOCALIZE=1 LANGUAGES=all BACKTRACE=1 LIBBACKTRACE=1 PCH=0 bindist"
+          } > artifacts/linux-build-manifest.txt
+
+      - name: Upload Linux package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: multiplayer-baseline-linux-curses-x64-${{ github.sha }}
+          path: artifacts
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  windows-client:
+    name: Windows x64 MSVC tiles and sound package
+    runs-on: windows-2022
+    needs:
+      - default-tileset
+      - soundpack
+      - shaders
+      - translations
+    env:
+      BACKTRACE: 1
+      CDDA_RELEASE_BUILD: 1
+      VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\.github\vcpkg_triplets
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download default tileset
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: multiplayer-baseline-default-tileset
+          path: gfx/UltimateCataclysm
+
+      - name: Download soundpack
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: multiplayer-baseline-soundpack
+          path: data/sound
+
+      - name: Download shader artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: multiplayer-baseline-shaders
+          path: data/shaders
+
+      - name: Download compiled translations
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: multiplayer-baseline-translations
+          path: .
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@4f806de0a5a7294ffabaff804b38a9b435a73bda # v2
+        with:
+          msystem: mingw64
+          install: >-
+            gettext
+            make
+
+      - name: Mark shader artifacts fresh
+        shell: msys2 {0}
+        run: touch data/shaders/build-*.stamp data/shaders/*.spv data/shaders/*.dxil data/shaders/*.msl
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
+
+      - name: Install CMake 3
+        uses: lukka/get-cmake@f176ccd3f28bda569c43aae4894f06b2435a3375
+        with:
+          cmakeVersion: 3.31.6
+
+      - name: Install pinned vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
+        with:
+          vcpkgDirectory: '${{ github.workspace }}/../b/vcpkg'
+          vcpkgGitCommitId: ${{ env.BASELINE_VCPKG_COMMIT }}
+
+      - name: Integrate vcpkg
+        run: vcpkg integrate install --vcpkg-root "${{ github.workspace }}\..\b\vcpkg"
+
+      - name: Cache installed vcpkg packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: msvc-full-features/vcpkg_installed
+          key: multiplayer-baseline-vcpkg-${{ hashFiles('msvc-full-features/vcpkg.json', '.github/vcpkg_triplets/x64-windows-static.cmake') }}-${{ env.BASELINE_VCPKG_COMMIT }}
+
+      - name: Compile translations
+        shell: msys2 {0}
+        run: lang/compile_mo.sh all
+
+      - name: Create build identity
+        shell: pwsh
+        run: |
+          @(
+            'build type: multiplayer-baseline-windows-client-x64'
+            'source commit: ${{ github.sha }}'
+            'upstream baseline: ${{ env.BASELINE_UPSTREAM_COMMIT }}'
+          ) | Set-Content -Encoding ascii VERSION.txt
+
+      - name: Build package
+        shell: pwsh
+        run: |
+          msbuild -m -p:Configuration=Release -p:Platform=x64 "-target:Cataclysm-vcpkg-static;JsonFormatter-vcpkg-static;zzip" msvc-full-features\Cataclysm-vcpkg-static.sln
+          .\build-scripts\windist.ps1 -SDL3
+
+      - name: Smoke test and record provenance
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Copy-Item cataclysmdda-0.J.zip artifacts\cdda-windows-client-x64-baseline.zip
+          $versionOutput = & .\bindist\cataclysm-tiles.exe --version 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows version smoke test failed with exit code $LASTEXITCODE"
+          }
+          $versionOutput | Set-Content artifacts\windows-version.txt
+          & 7z t artifacts\cdda-windows-client-x64-baseline.zip
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows package integrity check failed"
+          }
+          $hash = (Get-FileHash artifacts\cdda-windows-client-x64-baseline.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $msbuildVersion = (msbuild -version -nologo | Select-Object -Last 1).Trim()
+          $cmakeVersion = (cmake --version | Select-Object -First 1).Trim()
+          @(
+            'artifact=cdda-windows-client-x64-baseline.zip'
+            "sha256=$hash"
+            'source_commit=${{ github.sha }}'
+            'upstream_baseline=${{ env.BASELINE_UPSTREAM_COMMIT }}'
+            'runner_image=windows-2022'
+            "msbuild=$msbuildVersion"
+            "cmake=$cmakeVersion"
+            'vcpkg_commit=${{ env.BASELINE_VCPKG_COMMIT }}'
+            'tileset_commit=${{ env.BASELINE_TILESET_COMMIT }}'
+            'soundpack_commit=${{ env.BASELINE_SOUNDPACK_COMMIT }}'
+            'translations_sha256=${{ env.BASELINE_TRANSLATIONS_SHA256 }}'
+            'build_command=msbuild Release x64 Cataclysm-vcpkg-static;JsonFormatter-vcpkg-static;zzip'
+          ) | Set-Content -Encoding ascii artifacts\windows-build-manifest.txt
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: multiplayer-baseline-windows-client-x64-${{ github.sha }}
+          path: artifacts
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  android-client:
+    name: Android arm64 release APK
+    runs-on: ubuntu-24.04
+    needs:
+      - default-tileset
+      - shaders
+      - translations
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download default tileset
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: multiplayer-baseline-default-tileset
+          path: gfx/UltimateCataclysm
+
+      - name: Download shader artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: multiplayer-baseline-shaders
+          path: data/shaders
+
+      - name: Download compiled translations
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: multiplayer-baseline-translations
+          path: .
+
+      - name: Mark shader artifacts fresh
+        run: touch data/shaders/build-*.stamp data/shaders/*.spv data/shaders/*.dxil data/shaders/*.msl
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: gradle
+          cache-dependency-path: |
+            android/*.gradle
+            android/**/*.gradle
+            android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Install Android build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gettext
+          sdkmanager_path="$(command -v sdkmanager || find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          test -n "$sdkmanager_path"
+          yes | "$sdkmanager_path" --licenses >/dev/null || true
+          "$sdkmanager_path" \
+            'platform-tools' \
+            'platforms;android-35' \
+            'build-tools;34.0.0' \
+            'ndk;28.1.13356709'
+
+      - name: Build unsigned release APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew \
+            -Pj="$(nproc)" \
+            -Pabi_arm_32=false \
+            -Pabi_arm_64=true \
+            -Pabi_x86_32=false \
+            -Pabi_x86_64=false \
+            -Poverride_versionCode="${{ github.run_number }}" \
+            assembleExperimentalRelease
+
+      - name: Smoke test and record provenance
+        run: |
+          mkdir -p artifacts
+          package="$(find android/app/build/outputs/apk/experimental/release -type f -name '*.apk' -print -quit)"
+          test -n "$package"
+          cp "$package" artifacts/cdda-android-arm64-baseline-unsigned.apk
+          unzip -t artifacts/cdda-android-arm64-baseline-unsigned.apk
+          unzip -l artifacts/cdda-android-arm64-baseline-unsigned.apk | grep -q 'lib/arm64-v8a/libmain.so'
+          if unzip -l artifacts/cdda-android-arm64-baseline-unsigned.apk | grep -q 'lib/armeabi-v7a/'; then
+            echo 'Unexpected armeabi-v7a library in arm64-only APK' >&2
+            exit 1
+          fi
+          aapt_path="$ANDROID_HOME/build-tools/34.0.0/aapt"
+          test -x "$aapt_path"
+          "$aapt_path" dump badging artifacts/cdda-android-arm64-baseline-unsigned.apk | tee artifacts/android-badging.txt
+          {
+            echo "artifact=cdda-android-arm64-baseline-unsigned.apk"
+            echo "sha256=$(sha256sum artifacts/cdda-android-arm64-baseline-unsigned.apk | cut -d' ' -f1)"
+            echo "source_commit=$GITHUB_SHA"
+            echo "upstream_baseline=$BASELINE_UPSTREAM_COMMIT"
+            echo "runner_image=ubuntu-24.04"
+            echo "java=$(java -version 2>&1 | head -n 1)"
+            echo "gradle=$(cd android && ./gradlew --version | awk '/^Gradle / { print; exit }')"
+            echo "android_platform=35"
+            echo "android_build_tools=34.0.0"
+            echo "android_ndk=28.1.13356709"
+            echo "tileset_commit=$BASELINE_TILESET_COMMIT"
+            echo "translations_sha256=$BASELINE_TRANSLATIONS_SHA256"
+            echo "signed=false"
+            echo "build_command=./gradlew assembleExperimentalRelease arm64-only"
+          } > artifacts/android-build-manifest.txt
+
+      - name: Upload Android package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: multiplayer-baseline-android-arm64-${{ github.sha }}
+          path: artifacts
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
