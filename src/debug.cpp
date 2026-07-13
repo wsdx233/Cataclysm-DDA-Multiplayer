@@ -299,8 +299,14 @@ namespace
 {
 
 std::set<std::string> ignored_messages;
+bool debugmsg_prompts_suppressed = false;
 
 } // namespace
+
+void set_debugmsg_prompt_suppression( const bool suppress )
+{
+    debugmsg_prompts_suppressed = suppress;
+}
 
 // debugmsg prompts that could not be shown immediately are buffered and replayed when catacurses::stdscr is available
 // need to use method here to ensure `buffered_prompts` vector is initialized single time
@@ -554,7 +560,7 @@ void realDebugmsg( const char *filename, const char *line, const char *funcname,
         }
     }
 
-    if( test_mode ) {
+    if( test_mode || debugmsg_prompts_suppressed ) {
         return;
     }
 

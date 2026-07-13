@@ -456,6 +456,8 @@ std::string word_rewrap( const std::string &ins, int width, uint32_t split = ' '
 std::vector<size_t> get_tag_positions( std::string_view s );
 std::vector<std::string> split_by_color( std::string_view s );
 
+/** Prevent blocking UI prompts; suppressed prompts are logged and reject their operation. */
+void set_popup_suppression( bool value );
 bool query_yn( const std::string &text );
 template<typename ...Args>
 inline bool query_yn( const char *const msg, Args &&... args )

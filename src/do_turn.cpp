@@ -522,13 +522,26 @@ void game::handle_progress_ui()
 
 bool game::do_turn()
 {
+    return do_turn_impl( {}, true );
+}
+
+bool game::do_turn_remote( const std::function<std::optional<bool>()> &action_handler )
+{
+    return do_turn_impl( action_handler, false );
+}
+
+bool game::do_turn_impl( const std::function<std::optional<bool>()> &remote_action_handler,
+                         const bool local_ui )
+{
     if( is_game_over() ) {
-        return turn_handler::cleanup_at_end();
+        return local_ui ? turn_handler::cleanup_at_end() : true;
     }
 
     multiplayer_turn_phase_trace phase_trace( multiplayer_turn_phase::turn_begin );
 
-    drain_renderer_recovery();
+    if( local_ui ) {
+        drain_renderer_recovery();
+    }
 
     weather_manager &weather = get_weather();
 
@@ -544,7 +557,9 @@ bool game::do_turn()
     if( swapping_dimensions ) {
         swapping_dimensions = false;
     }
-    play_music( music::get_music_id_string() );
+    if( local_ui ) {
+        play_music( music::get_music_id_string() );
+    }
 
     // starting a new turn, clear out temperature cache
     weather.temperature_cache.clear();
@@ -595,7 +610,7 @@ bool game::do_turn()
     u.update_body();
 
     // Auto-save if autosave is enabled
-    if( get_option<bool>( "AUTOSAVE" ) &&
+    if( local_ui && get_option<bool>( "AUTOSAVE" ) &&
         calendar::once_every( 1_turns * get_option<int>( "AUTOSAVE_TURNS" ) ) &&
         !u.is_dead_state() ) {
         autosave();
@@ -622,12 +637,14 @@ bool game::do_turn()
         }
     }
 
-    music::deactivate_music_id( music::music_id::sound );
+    if( local_ui ) {
+        music::deactivate_music_id( music::music_id::sound );
+    }
 
     // Process sound events into sound markers for display to the player.
     sounds::process_sound_markers( &u );
 
-    if( u.is_deaf() ) {
+    if( local_ui && u.is_deaf() ) {
         sfx::do_hearing_loss();
     }
 
@@ -650,24 +667,29 @@ bool game::do_turn()
                 }
                 explosion_handler::process_explosions();
                 sounds::process_sound_markers( &u );
-                if( !u.activity && uquit != QUIT_WATCH
+                if( local_ui && !u.activity && uquit != QUIT_WATCH
                     && ( !u.has_distant_destination() || calendar::once_every( 10_seconds ) ) ) {
                     wait_popup_reset();
                     ui_manager::redraw();
                 }
 
-                if( queue_screenshot ) {
+                if( local_ui && queue_screenshot ) {
                     take_screenshot();
                     queue_screenshot = false;
                 }
 
-                if( handle_action() ) {
+                const std::optional<bool> action_result = local_ui ?
+                        std::optional<bool>( handle_action() ) : remote_action_handler();
+                if( !action_result ) {
+                    return true;
+                }
+                if( *action_result ) {
                     ++moves_since_last_save;
                     u.action_taken();
                 }
 
                 if( is_game_over() ) {
-                    return turn_handler::cleanup_at_end();
+                    return local_ui ? turn_handler::cleanup_at_end() : true;
                 }
 
                 if( uquit == QUIT_WATCH ) {
@@ -682,7 +704,7 @@ bool game::do_turn()
             // Reset displayed sound markers now that the turn is over.
             // We only want this to happen if the player had a chance to examine the sounds.
             sounds::reset_markers();
-        } else {
+        } else if( local_ui ) {
             // Rate limit key polling to 10 times a second.
             static auto start = std::chrono::time_point_cast<std::chrono::milliseconds>(
                                     std::chrono::steady_clock::now() );
@@ -757,7 +779,7 @@ bool game::do_turn()
     // replenish avatar moves
     u.process_turn();
 
-    if( u.get_moves() < 0 && get_option<bool>( "FORCE_REDRAW" ) ) {
+    if( local_ui && u.get_moves() < 0 && get_option<bool>( "FORCE_REDRAW" ) ) {
         ui_manager::redraw();
         refresh_display();
     }
@@ -766,7 +788,9 @@ bool game::do_turn()
         handle_weather_effects( weather.weather_id );
     }
 
-    handle_progress_ui();
+    if( local_ui ) {
+        handle_progress_ui();
+    }
 
     m.invalidate_visibility_cache();
 
@@ -786,13 +810,15 @@ bool game::do_turn()
         u.check_and_recover_morale();
     }
 
-    if( !u.is_deaf() ) {
-        sfx::remove_hearing_loss();
+    if( local_ui ) {
+        if( !u.is_deaf() ) {
+            sfx::remove_hearing_loss();
+        }
+        sfx::do_danger_music();
+        sfx::do_vehicle_engine_sfx();
+        sfx::do_vehicle_exterior_engine_sfx();
+        sfx::do_low_stamina_sfx();
     }
-    sfx::do_danger_music();
-    sfx::do_vehicle_engine_sfx();
-    sfx::do_vehicle_exterior_engine_sfx();
-    sfx::do_low_stamina_sfx();
 
     // reset player noise
     u.volume = 0;

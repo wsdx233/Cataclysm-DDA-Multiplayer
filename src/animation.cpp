@@ -30,6 +30,7 @@
 #include "memory_fast.h"
 #include "monster.h"
 #include "mtype.h"
+#include "multiplayer_runtime_mode.h"
 #include "options.h"
 #include "output.h"
 #include "point.h"
@@ -51,6 +52,12 @@ static const activity_id ACT_TARGET_PRACTICE( "ACT_TARGET_PRACTICE" );
 
 namespace
 {
+
+bool animations_suppressed()
+{
+    return test_mode || get_multiplayer_runtime_mode() ==
+           multiplayer_runtime_mode::dedicated_server;
+}
 
 class basic_animation
 {
@@ -289,8 +296,7 @@ void draw_custom_explosion_curses( game &g,
 #if defined(TILES)
 void explosion_handler::draw_explosion( const tripoint_bub_ms &p, const int r, const nc_color &col )
 {
-    if( test_mode ) {
-        // avoid segfault from null tilecontext in tests
+    if( animations_suppressed() ) {
         return;
     }
 
@@ -328,6 +334,9 @@ void explosion_handler::draw_explosion( const tripoint_bub_ms &p, const int r, c
 #else
 void explosion_handler::draw_explosion( const tripoint_bub_ms &p, const int r, const nc_color &col )
 {
+    if( animations_suppressed() ) {
+        return;
+    }
     draw_explosion_curses( *g, p, r, col );
 }
 #endif
@@ -335,8 +344,7 @@ void explosion_handler::draw_explosion( const tripoint_bub_ms &p, const int r, c
 void explosion_handler::draw_custom_explosion(
     const std::map<tripoint_bub_ms, nc_color> &all_area, const std::optional<std::string> &tile_id )
 {
-    if( test_mode ) {
-        // avoid segfault from null tilecontext in tests
+    if( animations_suppressed() ) {
         return;
     }
 
@@ -512,8 +520,7 @@ void draw_bullet_curses( map &m, const tripoint_bub_ms &t, const char bullet,
 void game::draw_bullet( const tripoint_bub_ms &t, const int /*i*/,
                         const std::vector<tripoint_bub_ms> &/*trajectory*/, const char bullet )
 {
-    if( test_mode ) {
-        // avoid segfault from null tilecontext in tests
+    if( animations_suppressed() ) {
         return;
     }
     if( !use_tiles ) {
@@ -550,6 +557,9 @@ void game::draw_bullet( const tripoint_bub_ms &t, const int i,
                         const std::vector<tripoint_bub_ms> &trajectory,
                         const char bullet )
 {
+    if( animations_suppressed() ) {
+        return;
+    }
     draw_bullet_curses( m, t, bullet, &trajectory[i] );
 }
 #endif
@@ -561,6 +571,9 @@ namespace
 void hit_animation( const avatar &u, const tripoint_bub_ms &center, nc_color cColor,
                     const std::string &cTile )
 {
+    if( animations_suppressed() ) {
+        return;
+    }
     const tripoint_rel_ms init_pos = relative_view_pos( u, center );
     // Only show animation if initially visible
     if( init_pos.z() == 0 && is_valid_in_w_terrain( init_pos.xy() ) ) {
@@ -592,8 +605,7 @@ void draw_hit_mon_curses( const tripoint_bub_ms &center, const monster &m, const
 #if defined(TILES)
 void game::draw_hit_mon( const tripoint_bub_ms &p, const monster &m, const bool dead )
 {
-    if( test_mode ) {
-        // avoid segfault from null tilecontext in tests
+    if( animations_suppressed() ) {
         return;
     }
 
@@ -626,8 +638,7 @@ void draw_hit_player_curses( const game &/* g */, const Character &p, const int 
 #if defined(TILES)
 void game::draw_hit_player( const Character &p, const int dam ) const
 {
-    if( test_mode ) {
-        // avoid segfault from null tilecontext in tests
+    if( animations_suppressed() ) {
         return;
     }
 

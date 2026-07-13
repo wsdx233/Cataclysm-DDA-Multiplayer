@@ -51,6 +51,7 @@ struct ui_state {
 } // namespace
 
 static ui_state *gLUI = nullptr;
+static bool loading_ui_suppressed = false;
 
 static void redraw()
 {
@@ -236,9 +237,17 @@ static void update_state( const std::string &context, const std::string &step )
     gLUI->step = std::string( step );
 }
 
+void loading_ui::set_suppressed( const bool value )
+{
+    loading_ui_suppressed = value;
+    if( loading_ui_suppressed ) {
+        done();
+    }
+}
+
 void loading_ui::show( const std::string &context, const std::string &step )
 {
-    if( test_mode ) {
+    if( test_mode || loading_ui_suppressed ) {
         return;
     }
     update_state( context, step );

@@ -2895,7 +2895,8 @@ class Character : public Creature, public visitable
 
         int avg_nat_bpm;
         void randomize_heartrate();
-        void randomize( bool random_scenario, bool play_now = false );
+        void randomize( bool random_scenario, bool play_now = false,
+                        bool force_generic_profession = false );
         void randomize_cosmetics();
         int get_focus() const {
             return std::max( 1, focus_pool / 1000 );

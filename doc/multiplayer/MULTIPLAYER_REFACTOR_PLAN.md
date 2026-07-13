@@ -744,21 +744,25 @@ enum class runtime_mode {
 };
 ```
 
-CLI 示例：
+CLI 示例（当前已实现的 server 操作）：
 
 ```text
-cataclysm-server --server-config server.json
-cataclysm-tiles --connect example.org:27999
+cataclysm --init-server-config server.json
+cataclysm --check-server-config server.json
+cataclysm --server server.json
 ```
 
-首个阶段可由现有 curses binary 增加 `--server` 并跳过界面初始化，即使仍链接 ncurses。之后再增加独立 `cataclysm-server` target，去除运行时窗口依赖。不要把“完全不链接 curses”作为第一个联机切片的阻塞项。
+图形客户端连接命令仍属于 Phase 2 后续工作，预期形式为 `cataclysm-tiles --connect example.org:27999`。
+首个阶段由现有 curses/tiles binary 增加 `--server` 并跳过界面初始化，即使仍链接 UI backend。之后再增加独立
+`cataclysm-server` target，去除运行时窗口依赖。不要把“完全不链接 curses”作为第一个联机切片的阻塞项。
 
 ### 15.2 服务器配置
 
-建议配置结构：
+当前 schema 1 的生成配置采用“只声明已交付能力”的严格默认值（省略了认证和限流字段的完整示例）：
 
 ```json
 {
+  "schema_version": 1,
   "world": {
     "name": "coop-world",
     "seed": "server-owned-seed",
@@ -768,12 +772,12 @@ cataclysm-tiles --connect example.org:27999
   },
   "network": {
     "listen": "127.0.0.1:27999",
-    "tls": "disabled",
+    "security": "disabled",
     "allow_insecure_lan": false
   },
   "players": {
-    "max": 4,
-    "character_policy": "portable_lease",
+    "max": 1,
+    "character_policy": "server_owned",
     "tether_tiles": 48,
     "disconnect_grace_seconds": 30
   },
@@ -784,13 +788,17 @@ cataclysm-tiles --connect example.org:27999
   },
   "save": {
     "interval_turns": 300,
-    "keep_generations": 5
+    "keep_generations": 1
   }
 }
 ```
 
+Phase 3 的共享 scheduler 完成前，parser 必须拒绝 `players.max > 1`；Phase 5 的 generation save 和人物导入完成前，
+必须拒绝 `keep_generations > 1`、`portable_lease` 和 `copy_in`，不能让配置伪装为已生效。对应阶段完成后再扩大合法范围，
+最终私服推荐值仍是 2 至 4 名玩家、多个 save generations 和 `portable_lease`。
+
 这是未内嵌 TLS 时的安全默认值。非 loopback 地址只有在管理员显式设置受信 LAN 例外，或将
-`tls` 设为 `external_tunnel` 后才可接受。`tls: required` 只有在后续嵌入式 TLS 三平台门禁完成后才允许；
+`security` 设为 `external_tunnel` 后才可接受。嵌入式 `required` 只有在后续 TLS 三平台门禁完成后才允许；
 当前 parser 必须拒绝它，而不是静默降级。证书和私钥字段也不得在没有对应 backend 时伪装为生效。
 
 配置加载必须：
@@ -1167,6 +1175,11 @@ canonical generation save 和实际远程命令均未被 Phase 0 spike 冒充完
 
 退出标准：服务器可无终端交互启动、监听、握手、拒绝不兼容客户端并优雅退出。
 
+截至 2026-07-13，Phase 1 的本地实现和退出 smoke 已满足：生产有界 Asio transport、固定 FlatBuffers
+schema/handshake、真实 ordered content SHA-256、严格 config/token、headless world bootstrap、JSON log、signal
+save/shutdown 和真实进程 loopback 均已验证。当前 source 的 hosted MSVC/Android/Linux artifacts 必须在推送后
+补证，结果记录在 `STATUS.md`；在该证据完成前不把 hosted gate 标成绿色。
+
 ### Phase 2：单远程玩家垂直切片（4 至 7 周）
 
 - 拆出 input resolver 与简单 command executor。
@@ -1178,6 +1191,11 @@ canonical generation save 和实际远程命令均未被 Phase 0 spike 冒充完
 - 实现 full snapshot、revision、command result 和 ping。
 
 退出标准：一个客户端可以远程控制服务器唯一 avatar，画面不依赖服务端图形环境。
+
+当前服务器侧纵向切片已完成 wait/move shared executor、simulation-thread remote turn callback、terrain/
+furniture/player/monster visible scene、full snapshot、revision、command result、ping、resync、resume 和幂等重放；
+真实 headless smoke client 可驱动唯一 server-owned avatar。Windows/Android 图形 network client、本地
+keys/touch → semantic command 和 scene → tiles renderer 尚未实现，所以 Phase 2 明确保持进行中。
 
 ### Phase 3：第二玩家与共享 Scheduler（5 至 8 周）
 

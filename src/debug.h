@@ -227,6 +227,9 @@ std::string capture_debugmsg_during( const std::function<void()> &func );
  */
 void replay_buffered_debugmsg_prompts();
 
+/** Log debug messages without buffering or opening an interactive prompt. */
+void set_debugmsg_prompt_suppression( bool suppress );
+
 // Debug Only                                                       {{{1
 // ---------------------------------------------------------------------
 

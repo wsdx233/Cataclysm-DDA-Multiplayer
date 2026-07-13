@@ -115,6 +115,7 @@ class avatar : public Character
 
         // newcharacter.cpp
         bool create( character_type type, const std::string &tempname = "" );
+        bool create_dedicated();
         // initialize avatar and avatar mocks
         void initialize( character_type type );
         bool load_template( const std::string &template_name, pool_type & );

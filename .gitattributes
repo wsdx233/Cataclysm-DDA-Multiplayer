@@ -16,6 +16,9 @@
 *.txt     text
 *.yml     text
 
+# Keep pinned third-party source byte-for-byte even when upstream contains EOF whitespace.
+src/third-party/asio/** whitespace=-blank-at-eof
+
 # Visual Studio project files, leave them alone.
 *.cmd     -text
 *.filters -text

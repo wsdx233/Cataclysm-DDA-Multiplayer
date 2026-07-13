@@ -1,0 +1,70 @@
+#pragma once
+#ifndef CATA_SRC_MULTIPLAYER_SERVER_H
+#define CATA_SRC_MULTIPLAYER_SERVER_H
+
+#include <chrono>
+#include <cstddef>
+#include <deque>
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <string>
+
+#include "multiplayer_content_manifest.h"
+#include "multiplayer_server_config.h"
+#include "multiplayer_server_lobby.h"
+#include "multiplayer_transport.h"
+
+bool multiplayer_server_content_manifest( const multiplayer_server_config &config,
+        std::string &manifest, multiplayer_content_manifest_stats &stats,
+        std::string &error );
+
+struct multiplayer_server_player_identity {
+    std::string player_id;
+    std::string character_id;
+};
+
+class multiplayer_dedicated_server
+{
+    public:
+        using clock = std::chrono::steady_clock;
+
+        multiplayer_dedicated_server( multiplayer_server_config config,
+                                      std::filesystem::path config_path,
+                                      std::string build_id,
+                                      std::string content_manifest_override = {},
+                                      std::optional<multiplayer_server_player_identity>
+                                      fixed_player_identity = std::nullopt );
+        ~multiplayer_dedicated_server();
+
+        multiplayer_dedicated_server( const multiplayer_dedicated_server & ) = delete;
+        multiplayer_dedicated_server &operator=( const multiplayer_dedicated_server & ) = delete;
+
+        bool start( std::string &error );
+        bool poll_once( clock::time_point now, std::string &error );
+        void stop();
+        bool running() const;
+        std::uint16_t bound_port() const;
+        std::optional<multiplayer_server_lobby_event> poll_event();
+        bool send( multiplayer_connection_id connection,
+                   const multiplayer_protocol_envelope &envelope, std::string &error );
+        void disconnect( multiplayer_connection_id connection, std::string reason );
+
+    private:
+        bool execute_actions( std::vector<multiplayer_server_lobby_action> actions,
+                              std::string &error );
+        bool process_lobby_event( multiplayer_server_lobby_event event,
+                                  clock::time_point now, std::string &error );
+
+        multiplayer_server_config config_;
+        std::filesystem::path config_path_;
+        std::string build_id_;
+        std::string content_manifest_override_;
+        std::optional<multiplayer_server_player_identity> fixed_player_identity_;
+        multiplayer_server_transport transport_;
+        std::unique_ptr<multiplayer_server_lobby> lobby_;
+        std::deque<multiplayer_server_lobby_event> events_;
+        bool running_ = false;
+};
+
+#endif // CATA_SRC_MULTIPLAYER_SERVER_H

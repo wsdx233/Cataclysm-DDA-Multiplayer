@@ -234,6 +234,8 @@ class game
         * @return true if game is over (death, saved, quit, etc)
         */
         bool do_turn();
+        /** Runs one world turn with semantic remote actions instead of local input. */
+        bool do_turn_remote( const std::function<std::optional<bool>()> &action_handler );
 
         /** Loads static data that does not depend on mods or similar. */
         void load_static_data();
@@ -274,7 +276,9 @@ class game
         /** Loads dynamic data from the folder if it is part of a subdirectory that is named after a currently loaded mod_id.  May throw. */
         void load_mod_interaction_data_from_dir( const cata_path &path, const std::string &src );
     public:
-        void setup();
+        void setup( bool show_loading_ui = true );
+        /** Starts or loads the active world without constructing a UI loading surface. */
+        bool start_dedicated_world();
         /** Saving and loading functions. */
         void serialize_json( std::ostream &fout ); // for save
         void unserialize( std::istream &fin, const cata_path &path ); // for load
@@ -284,6 +288,8 @@ class game
         void unserialize_master( const cata_path &file_name, std::istream &fin ); // for load
         void unserialize_master( const JsonValue &jv ); // for load
     private:
+        bool do_turn_impl( const std::function<std::optional<bool>()> &remote_action_handler,
+                           bool local_ui );
         void unserialize_impl( const JsonObject &data );
     public:
 
@@ -966,7 +972,7 @@ class game
 #if defined(__ANDROID__)
         void load_shortcuts( const cata_path &path );
 #endif
-        bool start_game(); // Starts a new game in the active world
+        bool start_game( bool show_loading_ui = true ); // Starts a new game in the active world
 
         //private save functions.
         // returns false if saving failed for whatever reason

@@ -419,12 +419,16 @@ static matype_id choose_ma_style( const character_type type, const std::vector<m
     }
 }
 
-void Character::randomize( const bool random_scenario, bool play_now )
+void Character::randomize( const bool random_scenario, bool play_now,
+                           const bool force_generic_profession )
 {
     const int max_trait_points = get_option<int>( "MAX_TRAIT_POINTS" );
     // Reset everything to the defaults to have a clean state.
     if( is_avatar() ) {
         *this->as_avatar() = avatar();
+        if( force_generic_profession ) {
+            set_scenario( scenario::generic() );
+        }
     }
 
     bool gender_selection = one_in( 2 );
@@ -461,7 +465,8 @@ void Character::randomize( const bool random_scenario, bool play_now )
     }
 
     const scenario *scenario_from = is_avatar() ? get_scenario() : scenario::generic();
-    prof = scenario_from->weighted_random_profession( is_npc() );
+    prof = force_generic_profession ? profession::generic() :
+           scenario_from->weighted_random_profession( is_npc() );
     play_name_suffix = prof->gender_appropriate_name( male );
     zero_all_skills();
 
@@ -836,6 +841,18 @@ bool avatar::create( character_type type, const std::string &tempname )
 
     initialize( type );
 
+    return true;
+}
+
+bool avatar::create_dedicated()
+{
+    loading_ui::done();
+    randomize( false, true, true );
+    if( !get_scenario()->has_flag( flag_SKIP_DEFAULT_BACKGROUND ) ) {
+        add_default_background();
+    }
+    set_body();
+    initialize( character_type::NOW );
     return true;
 }
 

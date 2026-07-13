@@ -6,6 +6,8 @@
 
 namespace loading_ui
 {
+/** Suppress construction and rendering of loading surfaces in headless runtimes. */
+void set_suppressed( bool value );
 void show( const std::string &context, const std::string &step );
 void done();
 // Drop the splash GPU texture. Must run while the renderer is live, before a

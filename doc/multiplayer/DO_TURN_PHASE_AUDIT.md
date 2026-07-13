@@ -12,12 +12,30 @@
 | --- | --- | --- |
 | `turn_begin` | calendar、weather 起始、timed events、item wakeups、missions | 每个共享 turn 恰好一次 |
 | `player_begin` | 当前 avatar 的 vehicle/mount/body/activity、附近 NPC sound marker | Phase 3 对每名 barrier 玩家执行 |
-| `player_input` | 本地输入循环、activity continuation、driving view offset | Phase 1/2 拆为 command queue 与共同 executor |
+| `player_input` | 本地输入循环或单远程玩家 semantic-command callback、activity continuation | Phase 2 已共享 wait/move executor；Phase 3 改为多玩家 barrier queue |
 | `world` | scent、map falling/vehicle/field/item、explosion、monster/NPC、overmap NPC | 每个共享 turn 恰好一次，不得隐式代表单一玩家 |
 | `player_end` | moves/body/weather/morale、可见性和本地音效收尾 | 规则部分逐玩家；UI/音效部分仅客户端 |
 
 正常 `do_turn()` 的测试必须按上述顺序各报告一次。游戏结束的 cleanup 提前返回不进入该序列；
 行动中死亡等提前返回由 RAII trace 报告已经进入的阶段，不伪造尚未运行的阶段。
+
+## Phase 1/2 单远程玩家路径
+
+`game::do_turn()` 与 `game::do_turn_remote()` 现在共同进入私有 `do_turn_impl()`；前者保留原本本地行为，
+后者只在 `player_input` 阶段调用 simulation-thread callback。callback 的 `std::optional<bool>` 合约为：
+
+- `std::nullopt`：signal 或 runtime failure 要求中止等待；
+- `false`：当前轮询没有产生 action；
+- `true`：语义命令已执行并消费本轮玩家 action。
+
+remote 路径不执行 renderer recovery、music/SFX、autosave、截图、blocking activity key polling、progress UI、
+`FORCE_REDRAW` 或本地 game-over cleanup。dedicated runtime 还在动画入口统一抑制 explosion、bullet 和 hit
+绘制；popup/debug/loading UI 有 headless suppression。`[multiplayer][command_executor]` 中的真实 turn 测试
+证明 wait command 可由 callback 消费且不进入本地 input handler；实际进程 smoke 进一步证明无 curses/SDL
+初始化即可完成 auth、scene、wait、world phase、save 和 signal shutdown。
+
+这仍不是 ADR-0002 的多人 scheduler：当前只有一个 server-owned active avatar，一次完整 world phase 只由该
+玩家的 action 推进。Phase 3 必须以 registry/guard 扩展逐玩家阶段，而不是复制 `do_turn_impl()`。
 
 ## Phase 0 基线
 

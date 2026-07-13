@@ -183,6 +183,8 @@ zzip.dSYM
 # test executables and generated data
 /tests/obj
 /tests/cata_test
+/tests/*-cata_test
+/tests/*-cata_test.exe
 /tests/line_test
 /tests/map_iterator_test
 /tests/shadowcasting_test

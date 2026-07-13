@@ -72,6 +72,7 @@
 #include "messages.h"
 #include "monster.h"
 #include "move_mode.h"
+#include "multiplayer_command_executor.h"
 #include "mtype.h"
 #include "mutation.h"
 #include "options.h"
@@ -2386,15 +2387,11 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             break;
 
         case ACTION_TIMEOUT:
-            if( check_safe_mode_allowed( false ) ) {
-                player_character.pause();
-            }
+            multiplayer_execute_wait( *this, player_character, false );
             break;
 
         case ACTION_PAUSE:
-            if( check_safe_mode_allowed() ) {
-                player_character.pause();
-            }
+            multiplayer_execute_wait( *this, player_character, true );
             break;
 
         case ACTION_CYCLE_MOVE:
@@ -2485,7 +2482,9 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                     veh_door_part_before = ovp->vehicle().next_part_to_open(
                                                ovp->part_index(), true );
                 }
-                if( !avatar_action::move( player_character, here, tripoint_rel_ms( dest_delta, 0 ) ) ) {
+                if( !multiplayer_execute_move(
+                        *this, player_character, here, tripoint_rel_ms( dest_delta, 0 ),
+                        multiplayer_command_execution_context::local_interactive ) ) {
                     // auto-move should be canceled due to a failed move or obstacle
                     add_msg_debug( debugmode::DF_ACTIVITY,
                                    "auto_move: move(%d,%d) FAILED at pos=(%d,%d), aborting",

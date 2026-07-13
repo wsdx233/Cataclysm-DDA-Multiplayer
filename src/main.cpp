@@ -9,24 +9,28 @@
 // IWYU pragma: no_include <sys/signal.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <clocale>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 #if defined(_WIN32)
 #include "cata_allocator.h"
 #include "platform_win.h"
-#else
-#include <csignal>
 #endif
 
 #include <flatbuffers/util.h>
@@ -34,6 +38,7 @@
 #include "cached_options.h"
 #include "cata_allocator.h"
 #include "cata_path.h"
+#include "avatar.h"
 #include "color.h"
 #include "compatibility.h"
 #include "crash.h"
@@ -52,6 +57,14 @@
 #include "main_menu.h"
 #include "mapsharing.h"
 #include "memory_fast.h"
+#include "loading_ui.h"
+#include "multiplayer_command_executor.h"
+#include "multiplayer_player_runtime.h"
+#include "multiplayer_runtime_mode.h"
+#include "multiplayer_scene.h"
+#include "multiplayer_server.h"
+#include "multiplayer_server_config.h"
+#include "multiplayer_server_log.h"
 #include "options.h"
 #include "ordered_static_globals.h"
 #include "output.h"
@@ -61,6 +74,7 @@
 #include "translations.h"
 #include "type_id.h"
 #include "ui_manager.h"
+#include "worldfactory.h"
 #include "cata_imgui.h"
 #if defined(MACOSX) || defined(__CYGWIN__)
 #   include <unistd.h> // getpid()
@@ -272,6 +286,12 @@ void process_args( const char **argv, int argc, const std::vector<arg_handler> &
     }
 }
 
+enum class server_config_operation : std::uint8_t {
+    none,
+    check,
+    initialize
+};
+
 struct cli_opts {
     int seed = time( nullptr );
     bool verifyexit = false;
@@ -280,6 +300,9 @@ struct cli_opts {
     std::vector<std::string> opts;
     std::string world; /** if set try to load first save in this world on startup */
     bool disable_ascii_art = false;
+    server_config_operation server_config_action = server_config_operation::none;
+    std::string server_config_path;
+    multiplayer_runtime_mode runtime_mode = multiplayer_runtime_mode::local_client;
 };
 
 cli_opts parse_commandline( int argc, const char **argv )
@@ -290,6 +313,7 @@ cli_opts parse_commandline( int argc, const char **argv )
     constexpr std::string_view section_map_sharing = "Map sharing";
     constexpr std::string_view section_user_directory = "User directories";
     constexpr std::string_view section_accessibility = "Accessibility";
+    constexpr std::string_view section_multiplayer_server = "Multiplayer server";
     const std::vector<arg_handler> first_pass_arguments = {{
             {
                 "--seed", "<string of letters and or numbers>",
@@ -433,6 +457,57 @@ cli_opts parse_commandline( int argc, const char **argv )
                     result.disable_ascii_art = true;
                     return 0;
                 }
+            },
+            {
+                "--server", "<config path>",
+                "Run the dedicated multiplayer server",
+                section_multiplayer_server,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    if( result.server_config_action != server_config_operation::none ||
+                        result.runtime_mode != multiplayer_runtime_mode::local_client ||
+                        !result.server_config_path.empty() )
+                    {
+                        return -1;
+                    }
+                    result.runtime_mode = multiplayer_runtime_mode::dedicated_server;
+                    result.server_config_path = params[0];
+                    return 1;
+                }
+            },
+            {
+                "--check-server-config", "<path>",
+                "Validate a multiplayer server configuration and exit",
+                section_multiplayer_server,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    if( result.server_config_action != server_config_operation::none ||
+                        result.runtime_mode != multiplayer_runtime_mode::local_client ||
+                        !result.server_config_path.empty() )
+                    {
+                        return -1;
+                    }
+                    result.server_config_action = server_config_operation::check;
+                    result.server_config_path = params[0];
+                    return 1;
+                }
+            },
+            {
+                "--init-server-config", "<path>",
+                "Write a safe default multiplayer server configuration and exit",
+                section_multiplayer_server,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    if( result.server_config_action != server_config_operation::none ||
+                        result.runtime_mode != multiplayer_runtime_mode::local_client ||
+                        !result.server_config_path.empty() )
+                    {
+                        return -1;
+                    }
+                    result.server_config_action = server_config_operation::initialize;
+                    result.server_config_path = params[0];
+                    return 1;
+                }
             }
         }
     };
@@ -573,6 +648,445 @@ bool assure_essential_dirs_exist()
     return true;
 }
 
+volatile std::sig_atomic_t dedicated_server_shutdown_requested = 0;
+
+void dedicated_server_signal_handler( int )
+{
+    dedicated_server_shutdown_requested = 1;
+}
+
+bool assure_dedicated_server_dirs_exist( std::string &error )
+{
+    for( const std::string &path : {
+             PATH_INFO::config_dir(), PATH_INFO::savedir(), PATH_INFO::templatedir()
+         } ) {
+        if( !assure_dir_exist( path ) ) {
+            error = "unable to create dedicated server directory: " + path;
+            return false;
+        }
+    }
+    error.clear();
+    return true;
+}
+
+void log_dedicated_server_startup_error( const std::string &message,
+        const std::string &world_id = std::string() )
+{
+    multiplayer_server_log_fields fields = { { "message", message } };
+    if( !world_id.empty() ) {
+        fields.emplace_back( "world_id", world_id );
+    }
+    std::cerr << multiplayer_server_log_json(
+                  multiplayer_server_log_severity::error, "startup_failed", fields ) << '\n';
+}
+
+bool prepare_dedicated_server_world( const multiplayer_server_config &config, std::string &error )
+{
+    world_generator->init();
+    std::vector<mod_id> configured_mods;
+    configured_mods.reserve( config.world.mods.size() );
+    for( const std::string &mod : config.world.mods ) {
+        const mod_id id( mod );
+        if( !id.is_valid() ) {
+            error = "configured world mod is not installed: " + mod;
+            return false;
+        }
+        configured_mods.push_back( id );
+    }
+
+    const bool created = !world_generator->has_world( config.world.name );
+    WORLD *world = created ? nullptr : world_generator->get_world( config.world.name );
+    if( created ) {
+        world = world_generator->make_new_world( config.world.name, configured_mods );
+        if( world == nullptr ) {
+            error = "unable to create configured multiplayer world";
+            return false;
+        }
+    } else if( world->active_mod_order != configured_mods ) {
+        error = "existing multiplayer world mod order differs from server config";
+        return false;
+    }
+
+    for( const auto &configured_option : config.world.options ) {
+        const auto option = world->WORLD_OPTIONS.find( configured_option.first );
+        if( option == world->WORLD_OPTIONS.end() ) {
+            error = "configured multiplayer world option is unknown: " + configured_option.first;
+            return false;
+        }
+        if( option->second.getValue( true ) != configured_option.second ) {
+            if( !created ) {
+                error = "existing multiplayer world option differs from server config: " +
+                        configured_option.first;
+                return false;
+            }
+            option->second.setValue( configured_option.second );
+        }
+    }
+    if( created && !world->save() ) {
+        error = "unable to save configured multiplayer world metadata";
+        return false;
+    }
+
+    world_generator->set_active_world( world );
+    if( !g->start_dedicated_world() ) {
+        error = world->world_saves.size() > 1 ?
+                "existing world has multiple legacy avatar saves; dedicated import is ambiguous" :
+                "unable to initialize or load the multiplayer world avatar";
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
+int run_dedicated_server( const multiplayer_server_config &config,
+                          const std::filesystem::path &config_path )
+{
+    dedicated_server_shutdown_requested = 0;
+    std::signal( SIGINT, dedicated_server_signal_handler );
+    std::signal( SIGTERM, dedicated_server_signal_handler );
+
+    if( !g->active_avatar().getID().is_valid() ||
+        !g->active_player_runtime().player_id().is_valid() ) {
+        std::cerr << multiplayer_server_log_json(
+        multiplayer_server_log_severity::error, "startup_failed", {
+            { "message", "dedicated avatar has no stable server identity" },
+            { "world_id", config.world.name }
+        } ) << '\n';
+        return 1;
+    }
+    multiplayer_server_player_identity identity;
+    identity.player_id = g->active_player_runtime().player_id().str();
+    identity.character_id = std::to_string( g->active_avatar().getID().get_value() );
+    multiplayer_dedicated_server server( config, config_path, getVersionString(), {}, identity );
+    std::string error;
+    if( !server.start( error ) ) {
+        std::cerr << multiplayer_server_log_json(
+                      multiplayer_server_log_severity::error, "startup_failed",
+        { { "message", error }, { "world_id", config.world.name } } ) << '\n';
+        return 1;
+    }
+    std::cout << multiplayer_server_log_json(
+    multiplayer_server_log_severity::info, "listening", {
+        { "listen", config.network.listen }, { "world_id", config.world.name },
+        { "build_id", getVersionString() },
+        { "bound_port", std::to_string( server.bound_port() ) }
+    } ) << std::endl;
+    DebugLog( D_INFO, D_MAIN ) << "Dedicated multiplayer server started on " <<
+                               config.network.listen;
+
+    struct active_remote_session {
+        multiplayer_connection_id connection = 0;
+        multiplayer_session_id session = {};
+        std::string player_id;
+        std::string character_id;
+        std::uint64_t generation = 0;
+    } active_session;
+    struct cached_remote_command {
+        multiplayer_transport_payload payload;
+        multiplayer_command_result result;
+    };
+    std::uint64_t server_revision = 1;
+    std::map<std::uint64_t, cached_remote_command> command_cache;
+    bool runtime_failed = false;
+    bool game_over = false;
+    std::uint64_t turns_since_save = 0;
+
+    const auto save_world = [&]( const std::string & reason ) -> bool {
+        const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+        if( !g->save() )
+        {
+            error = "authoritative multiplayer world save failed";
+            return false;
+        }
+        const std::int64_t duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started ).count();
+        std::cout << multiplayer_server_log_json(
+                      multiplayer_server_log_severity::info, "save_completed",
+        {   { "reason", reason }, { "world_id", config.world.name },
+            { "revision", std::to_string( server_revision ) },
+            { "duration_ms", std::to_string( duration_ms ) }
+        } ) << '\n';
+        turns_since_save = 0;
+        return true;
+    };
+
+    const auto send_scene = [&]() -> bool {
+        if( active_session.connection == 0 )
+        {
+            return true;
+        }
+        multiplayer_scene_snapshot snapshot;
+        if( !multiplayer_build_visible_scene( *g, active_session.player_id,
+                                              active_session.character_id, server_revision, 30, snapshot, error ) )
+        {
+            return false;
+        }
+        multiplayer_protocol_envelope envelope;
+        envelope.message_type = multiplayer_protocol_message_type::scene_snapshot;
+        envelope.session = active_session.session;
+        envelope.sequence = server_revision;
+        if( !multiplayer_build_scene_snapshot_payload( snapshot, envelope.payload, error ) )
+        {
+            return false;
+        }
+        return server.send( active_session.connection, envelope, error );
+    };
+    const auto send_command_result = [&]( const multiplayer_command_result & result ) -> bool {
+        multiplayer_protocol_envelope envelope;
+        envelope.message_type = multiplayer_protocol_message_type::command_result;
+        envelope.session = active_session.session;
+        envelope.sequence = result.client_sequence;
+        if( !multiplayer_build_command_result_payload( result, envelope.payload, error ) )
+        {
+            return false;
+        }
+        return server.send( active_session.connection, envelope, error );
+    };
+    const auto log_command_result = [&]( const multiplayer_player_command & command,
+                                         const multiplayer_command_result & result,
+    const std::int64_t duration_us ) {
+        std::cout << multiplayer_server_log_json(
+                      result.status == multiplayer_command_status::rejected ?
+                      multiplayer_server_log_severity::warning :
+                      multiplayer_server_log_severity::info,
+        "command_result", {
+            { "player_id", active_session.player_id },
+            { "client_sequence", std::to_string( command.client_sequence ) },
+            { "command_type", std::to_string( static_cast<int>( command.kind ) ) },
+            { "status", std::to_string( static_cast<int>( result.status ) ) },
+            { "rejection", std::to_string( static_cast<int>( result.rejection ) ) },
+            { "revision", std::to_string( result.server_revision ) },
+            { "moves_spent", std::to_string( result.moves_spent ) },
+            { "duration_us", std::to_string( duration_us ) }
+        } ) << '\n';
+    };
+
+    while( dedicated_server_shutdown_requested == 0 && !runtime_failed && !game_over ) {
+        bool turn_had_action = false;
+        const bool stopped = g->do_turn_remote( [&]() -> std::optional<bool> {
+            while( dedicated_server_shutdown_requested == 0 )
+            {
+                if( !server.poll_once( multiplayer_dedicated_server::clock::now(), error ) ) {
+                    runtime_failed = true;
+                    return std::nullopt;
+                }
+                while( std::optional<multiplayer_server_lobby_event> event = server.poll_event() ) {
+                    multiplayer_server_log_fields fields = {
+                        { "player_id", event->player_id },
+                        { "character_id", event->character_id },
+                        { "session_generation", std::to_string( event->session_generation ) }
+                    };
+                    if( event->type == multiplayer_server_lobby_event_type::authenticated ||
+                        event->type == multiplayer_server_lobby_event_type::resumed ) {
+                        if( event->player_id != identity.player_id ||
+                            event->character_id != identity.character_id ) {
+                            server.disconnect( event->connection,
+                                               "authenticated identity is not the server avatar" );
+                            continue;
+                        }
+                        active_session = { event->connection, event->session, event->player_id,
+                                           event->character_id, event->session_generation
+                                         };
+                        if( event->type == multiplayer_server_lobby_event_type::authenticated ) {
+                            // A fresh authentication starts a new command sequence epoch.  A
+                            // resume keeps the cache so an uncertain last command can be replayed.
+                            command_cache.clear();
+                        }
+                        std::cout << multiplayer_server_log_json(
+                                      multiplayer_server_log_severity::info,
+                                      event->type == multiplayer_server_lobby_event_type::authenticated ?
+                                      "player_authenticated" : "player_resumed", fields ) << '\n';
+                        if( !send_scene() ) {
+                            runtime_failed = true;
+                            return std::nullopt;
+                        }
+                        continue;
+                    }
+                    if( event->type == multiplayer_server_lobby_event_type::disconnected ) {
+                        std::cout << multiplayer_server_log_json(
+                                      multiplayer_server_log_severity::info,
+                                      "player_disconnected", fields ) << '\n';
+                        if( event->connection == active_session.connection ) {
+                            active_session = {};
+                        }
+                        continue;
+                    }
+                    if( event->message.message_type ==
+                        multiplayer_protocol_message_type::resync_request ) {
+                        multiplayer_resync_request request;
+                        if( !multiplayer_parse_resync_request_payload(
+                                event->message, request, error ) ||
+                            request.client_revision > server_revision ) {
+                            server.disconnect( event->connection, "invalid resync request" );
+                            continue;
+                        }
+                        std::cout << multiplayer_server_log_json(
+                                      multiplayer_server_log_severity::info,
+                        "resync_requested", {
+                            { "player_id", active_session.player_id },
+                            {
+                                "client_revision", std::to_string(
+                                    request.client_revision )
+                            },
+                            { "server_revision", std::to_string( server_revision ) }
+                        } ) << '\n';
+                        if( !send_scene() ) {
+                            runtime_failed = true;
+                            return std::nullopt;
+                        }
+                        continue;
+                    }
+                    if( event->message.message_type !=
+                        multiplayer_protocol_message_type::player_command ) {
+                        fields.emplace_back( "message_type", std::to_string(
+                                                 static_cast<int>( event->message.message_type ) ) );
+                        fields.emplace_back( "sequence", std::to_string( event->message.sequence ) );
+                        std::cout << multiplayer_server_log_json(
+                                      multiplayer_server_log_severity::warning,
+                                      "unsupported_application_message", fields ) << '\n';
+                        continue;
+                    }
+
+                    const std::chrono::steady_clock::time_point command_started =
+                        std::chrono::steady_clock::now();
+                    multiplayer_player_command command;
+                    if( !multiplayer_parse_player_command_payload( event->message, command, error ) ) {
+                        server.disconnect( event->connection, "invalid semantic player command" );
+                        continue;
+                    }
+                    const auto duplicate = command_cache.find( command.client_sequence );
+                    if( duplicate != command_cache.end() ) {
+                        if( duplicate->second.payload != event->message.payload ) {
+                            std::cout << multiplayer_server_log_json(
+                                          multiplayer_server_log_severity::warning,
+                            "command_sequence_conflict", {
+                                { "player_id", active_session.player_id },
+                                {
+                                    "client_sequence", std::to_string(
+                                        command.client_sequence )
+                                }
+                            } ) << '\n';
+                            server.disconnect( event->connection,
+                                               "client sequence reused for a different command" );
+                            continue;
+                        }
+                        multiplayer_command_result cached = duplicate->second.result;
+                        if( cached.status == multiplayer_command_status::accepted ) {
+                            cached.status = multiplayer_command_status::duplicate;
+                        }
+                        const std::int64_t duration_us =
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - command_started ).count();
+                        log_command_result( command, cached, duration_us );
+                        if( !send_command_result( cached ) || !send_scene() ) {
+                            runtime_failed = true;
+                            return std::nullopt;
+                        }
+                        continue;
+                    }
+
+                    multiplayer_command_result result;
+                    result.client_sequence = command.client_sequence;
+                    result.server_revision = server_revision;
+                    bool action_taken = false;
+                    if( command.base_revision != server_revision ) {
+                        result.status = multiplayer_command_status::rejected;
+                        result.rejection = multiplayer_protocol_rejection::stale_revision;
+                        result.message = "command base revision is stale";
+                    } else {
+                        const multiplayer_command_execution execution =
+                            multiplayer_execute_basic_command( *g, g->active_avatar(), command );
+                        result.status = execution.status;
+                        result.rejection = execution.rejection;
+                        result.moves_spent = execution.moves_spent;
+                        result.message = execution.message;
+                        action_taken = execution.action_taken;
+                        if( action_taken ) {
+                            if( server_revision == std::numeric_limits<std::uint64_t>::max() ) {
+                                error = "server scene revision exhausted";
+                                runtime_failed = true;
+                                return std::nullopt;
+                            }
+                            ++server_revision;
+                            result.server_revision = server_revision;
+                            turn_had_action = true;
+                        }
+                    }
+                    command_cache.emplace( command.client_sequence,
+                                           cached_remote_command{ event->message.payload, result } );
+                    while( command_cache.size() > 256 ) {
+                        command_cache.erase( command_cache.begin() );
+                    }
+                    const std::int64_t duration_us =
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - command_started ).count();
+                    log_command_result( command, result, duration_us );
+                    if( !send_command_result( result ) || !send_scene() ) {
+                        runtime_failed = true;
+                        return std::nullopt;
+                    }
+                    if( action_taken ) {
+                        return true;
+                    }
+                }
+                std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+            }
+            return std::nullopt;
+        } );
+
+        if( runtime_failed || dedicated_server_shutdown_requested != 0 ) {
+            break;
+        }
+        if( stopped ) {
+            // The callback only requests a stop for signal/runtime failure, both handled above.
+            // A remaining stop therefore comes from the authoritative avatar reaching game over.
+            game_over = true;
+            break;
+        }
+        if( turn_had_action ) {
+            ++turns_since_save;
+            if( server_revision == std::numeric_limits<std::uint64_t>::max() ) {
+                error = "server scene revision exhausted";
+                runtime_failed = true;
+                break;
+            }
+            ++server_revision;
+            if( !send_scene() ) {
+                runtime_failed = true;
+                break;
+            }
+            if( config.save.interval_turns > 0 &&
+                turns_since_save >= static_cast<std::uint64_t>( config.save.interval_turns ) &&
+                !save_world( "interval" ) ) {
+                runtime_failed = true;
+                break;
+            }
+        }
+    }
+    server.stop();
+    if( !runtime_failed && ( game_over || dedicated_server_shutdown_requested != 0 ) &&
+        !save_world( game_over ? "game_over" : "shutdown" ) ) {
+        runtime_failed = true;
+    }
+    if( runtime_failed ) {
+        std::cerr << multiplayer_server_log_json(
+                      multiplayer_server_log_severity::error, "runtime_failed",
+        { { "message", error }, { "world_id", config.world.name } } ) << '\n';
+        return 1;
+    }
+    if( game_over ) {
+        std::cerr << multiplayer_server_log_json(
+                      multiplayer_server_log_severity::error, "game_over",
+        { { "world_id", config.world.name } } ) << '\n';
+        return 1;
+    }
+    std::cout << multiplayer_server_log_json(
+                  multiplayer_server_log_severity::info, "shutdown",
+    { { "reason", "signal" }, { "world_id", config.world.name } } ) << '\n';
+    DebugLog( D_INFO, D_MAIN ) << "Dedicated multiplayer server stopped cleanly.";
+    return 0;
+}
+
 }  // namespace
 
 #if defined(EMSCRIPTEN)
@@ -693,13 +1207,76 @@ int main( int argc, const char *argv[] )
 
     cli_opts cli = parse_commandline( argc, const_cast<const char **>( argv ) );
 
+    if( cli.server_config_action != server_config_operation::none ) {
+        json_error_output_colors = json_error_output_colors_t::no_colors;
+        const std::filesystem::path config_path =
+            std::filesystem::u8path( cli.server_config_path );
+        if( cli.server_config_action == server_config_operation::initialize ) {
+            std::string error;
+            if( !initialize_multiplayer_server_files( config_path, error ) ) {
+                std::cerr << "Server config initialization failed: " << error << '\n';
+                return 1;
+            }
+            std::cout << "Created multiplayer server config: " << config_path.u8string() << '\n';
+            return 0;
+        }
+        const multiplayer_server_config_result config =
+            load_multiplayer_server_config( config_path );
+        if( !config ) {
+            std::cerr << "Server config validation failed: " << config.error << '\n';
+            return 1;
+        }
+        std::cout << "Multiplayer server config is valid: " << config_path.u8string() << '\n';
+        return 0;
+    }
+
+    const bool dedicated_server =
+        cli.runtime_mode == multiplayer_runtime_mode::dedicated_server;
+    set_multiplayer_runtime_mode( cli.runtime_mode );
+    std::optional<multiplayer_server_config> dedicated_server_config;
+    const std::filesystem::path dedicated_server_config_path =
+        std::filesystem::u8path( cli.server_config_path );
+    if( dedicated_server ) {
+        if( cli.verifyexit || cli.check_mods || !cli.world.empty() ) {
+            log_dedicated_server_startup_error(
+                "dedicated server mode cannot be combined with verification, mod checks, or --world" );
+            return 1;
+        }
+        json_error_output_colors = json_error_output_colors_t::no_colors;
+        multiplayer_server_config_result loaded =
+            load_multiplayer_server_config( dedicated_server_config_path );
+        if( !loaded ) {
+            log_dedicated_server_startup_error( "server config rejected: " + loaded.error );
+            return 1;
+        }
+        dedicated_server_config = std::move( *loaded.config );
+        std::string directory_error;
+        if( !assure_dedicated_server_dirs_exist( directory_error ) ) {
+            log_dedicated_server_startup_error( directory_error,
+                                                dedicated_server_config->world.name );
+            return 1;
+        }
+    }
+
     if( !dir_exist( PATH_INFO::datadir() ) ) {
+        if( dedicated_server ) {
+            log_dedicated_server_startup_error(
+                "gameplay data directory is unavailable: " + PATH_INFO::datadir(),
+                dedicated_server_config->world.name );
+            return 1;
+        }
         printf( "Fatal: Can't find data directory \"%s\"\nPlease ensure the current working directory is correct or specify data directory with --datadir.  Perhaps you meant to start \"cataclysm-launcher\"?\n",
                 PATH_INFO::datadir().c_str() );
         exit( 1 );
     }
 
     if( !assure_dir_exist( PATH_INFO::user_dir() ) ) {
+        if( dedicated_server ) {
+            log_dedicated_server_startup_error(
+                "user directory is unavailable: " + PATH_INFO::user_dir(),
+                dedicated_server_config->world.name );
+            return 1;
+        }
         printf( "Can't open or create %s. Check permissions.\n",
                 PATH_INFO::user_dir().c_str() );
         exit( 1 );
@@ -710,8 +1287,12 @@ int main( int argc, const char *argv[] )
 #else
     setupDebug( DebugOutput::file );
 #endif
+    set_debugmsg_prompt_suppression( dedicated_server );
+    loading_ui::set_suppressed( dedicated_server );
+    set_popup_suppression( dedicated_server );
     // NOLINTNEXTLINE(cata-tests-must-restore-global-state)
-    json_error_output_colors = json_error_output_colors_t::color_tags;
+    json_error_output_colors = dedicated_server ? json_error_output_colors_t::no_colors :
+                               json_error_output_colors_t::color_tags;
 
     /**
      * OS X does not populate locale env vars correctly (they usually default to
@@ -730,8 +1311,16 @@ int main( int argc, const char *argv[] )
                 // default to basic C locale
                 std::locale::global( std::locale::classic() );
             } catch( const std::exception &err ) {
-                debugmsg( "%s", err.what() );
-                exit_handler( -999 );
+                if( dedicated_server ) {
+                    log_dedicated_server_startup_error(
+                        "unable to initialize locale: " + std::string( err.what() ),
+                        dedicated_server_config->world.name );
+                    deinitDebug();
+                    return 1;
+                } else {
+                    debugmsg( "%s", err.what() );
+                    exit_handler( -999 );
+                }
             }
         }
 #if !defined(MACOSX)
@@ -742,7 +1331,7 @@ int main( int argc, const char *argv[] )
     DebugLog( D_INFO, DC_ALL ) << "[main] C++ locale set to " << std::locale().name();
 
 #if defined(TILES) || defined(SDL_SOUND)
-    {
+    if( !dedicated_server ) {
         const SDLVersionInfo compiled = GetCompiledSDLVersion();
         DebugLog( D_INFO, DC_ALL ) << "SDL version used during compile is "
                                    << compiled.major << "."
@@ -760,10 +1349,19 @@ int main( int argc, const char *argv[] )
 #if !defined(TILES)
     get_options().init();
     get_options().load();
+#else
+    if( dedicated_server ) {
+        get_options().init();
+        get_options().load();
+    }
 #endif
 
+    if( dedicated_server ) {
+        init_colors();
+    }
+
     // in test mode don't initialize curses to avoid escape sequences being inserted into output stream
-    if( !test_mode ) {
+    if( !test_mode && !dedicated_server ) {
         try {
             // set minimum FULL_SCREEN sizes
             FULL_SCREEN_WIDTH = EVEN_MINIMUM_TERM_WIDTH;
@@ -782,9 +1380,14 @@ int main( int argc, const char *argv[] )
 
     set_language_from_options();
 
-    rng_set_engine_seed( cli.seed );
+    const int engine_seed = dedicated_server ? djb2_hash(
+                                reinterpret_cast<const unsigned char *>(
+                                    dedicated_server_config->world.seed.c_str() ) ) : cli.seed;
+    rng_set_engine_seed( engine_seed );
 
-    game_ui::init_ui();
+    if( !dedicated_server ) {
+        game_ui::init_ui();
+    }
 
     g = std::make_unique<game>();
 
@@ -801,8 +1404,34 @@ int main( int argc, const char *argv[] )
             exit( g->check_mod_data( mods ) && !debug_has_error_been_observed() ? 0 : 1 );
         }
     } catch( const std::exception &err ) {
-        debugmsg( "%s", err.what() );
-        exit_handler( -999 );
+        if( dedicated_server ) {
+            log_dedicated_server_startup_error(
+                "gameplay data loading failed: " + std::string( err.what() ),
+                dedicated_server_config->world.name );
+            g.reset();
+            deinitDebug();
+            return 1;
+        } else {
+            debugmsg( "%s", err.what() );
+            exit_handler( -999 );
+        }
+    }
+
+    if( dedicated_server ) {
+        std::string world_error;
+        if( !prepare_dedicated_server_world( *dedicated_server_config, world_error ) ) {
+            log_dedicated_server_startup_error(
+                "world loading failed: " + world_error,
+                dedicated_server_config->world.name );
+            g.reset();
+            deinitDebug();
+            return 1;
+        }
+        const int result = run_dedicated_server( *dedicated_server_config,
+                           dedicated_server_config_path );
+        g.reset();
+        deinitDebug();
+        return result;
     }
 
     // Load the colors of ImGui to match the colors set by the user.

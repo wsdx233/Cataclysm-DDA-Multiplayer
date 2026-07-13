@@ -63,9 +63,10 @@ See the plan sections on authority, threading, state scope, scheduling, action/U
 
 ## Current Phase
 
-Phase 0 closed with recorded evidence on 2026-07-12. The project is now in **Phase 1: headless runtime and protocol
-skeleton**. Do not skip ahead to remote gameplay executors or describe the existing transport spike as production
-networking.
+Phase 0 closed with recorded evidence on 2026-07-12. The project is now in **Phase 2: the single-remote-player vertical slice**. Phase 1's local implementation and
+exit smoke are complete; the current source still needs its hosted Linux/Windows/Android evidence recorded before the
+Phase 1 hosted gate is called green. Do not skip ahead to the Phase 3 two-player scheduler or describe the isolated
+`tools/` transport spike as production networking.
 
 Completed Phase 0 gates:
 
@@ -82,17 +83,20 @@ Completed Phase 0 gates:
 - `game::do_turn()` has five observable phase boundaries and a source audit for world-phase active-player getters;
   see `doc/multiplayer/DO_TURN_PHASE_AUDIT.md` and `STATUS.md` for exact evidence.
 
-The active Phase 1 work, in order, is:
+The active work, in order, is:
 
-1. Add a testable `runtime_mode`, strict versioned server config, and CLI operations with loopback-safe defaults.
-2. Add a dedicated-server startup path that loads required data but never initializes curses, SDL, ImGui, sound,
-   popups or the main menu; add graceful signal-driven shutdown.
-3. Integrate a production transport boundary separate from the `tools/` spike, with bounded immutable queues,
-   framing, rate/size limits and in-process loopback tests.
-4. Add the pinned FlatBuffers schema/generation check, version/capability handshake, incompatibility rejection,
-   content manifest and structured server logs.
+1. Push the current source and record the complete hosted baseline plus multiplayer transport/protocol workflow results;
+   fix any MSVC, Android or Linux failure before closing the Phase 1 hosted gate.
+2. Add a production graphical `multiplayer_client` connection/replica boundary for Windows: local input resolves to
+   semantic commands and remote scenes render through local tiles/UI without running game rules client-side.
+3. Add the equivalent Android touch/tiles connection, pause/resume and reconnect smoke.
+4. Keep the server slice hardened: full-scene size budget, visibility leak tests, resync/idempotency/save/restart and
+   unsupported-action rejection. Do not enable `players.max > 1`, portable characters or multiple save generations
+   until their planned phases are implemented.
 
-Linux curses is only the current non-SDL build baseline. It is not a multiplayer server and must not be described or shipped as one.
+The Linux curses artifact is still the non-SDL packaging baseline, but the same binary now has an explicitly selected
+`--server` runtime path. Do not ship it as a production dedicated-server package until hosted evidence, operational docs
+and the later release/operations gates are complete.
 
 ## Build Baseline
 

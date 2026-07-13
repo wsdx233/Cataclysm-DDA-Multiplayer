@@ -868,15 +868,17 @@ void game::reenter_fullscreen()
 /*
  * Initialize more stuff after mapbuffer is loaded.
  */
-void game::setup()
+void game::setup( const bool show_loading_ui )
 {
     new_game = true;
-    {
+    if( show_loading_ui ) {
         static_popup popup;
         popup.message( "%s", _( "Please wait while the world data loads…\nLoading core data" ) );
         ui_manager::redraw();
         refresh_display();
 
+        load_core_data();
+    } else {
         load_core_data();
     }
 
@@ -940,6 +942,27 @@ void game::setup()
     // back to menu for save loading, new game etc
 }
 
+bool game::start_dedicated_world()
+{
+    if( world_generator->active_world == nullptr ) {
+        return false;
+    }
+    DebugLog( D_INFO, D_MAIN ) << "Loading dedicated multiplayer world content.";
+    setup( false );
+    DebugLog( D_INFO, D_MAIN ) << "Dedicated multiplayer world content loaded.";
+    const std::vector<save_t> &world_saves = world_generator->active_world->world_saves;
+    if( world_saves.empty() ) {
+        DebugLog( D_INFO, D_MAIN ) << "Creating initial dedicated multiplayer avatar.";
+        if( !active_avatar().create_dedicated() ) {
+            return false;
+        }
+        DebugLog( D_INFO, D_MAIN ) << "Generating initial dedicated multiplayer world.";
+        return start_game( false );
+    }
+    DebugLog( D_INFO, D_MAIN ) << "Loading existing dedicated multiplayer avatar save.";
+    return world_saves.size() == 1 && load( world_saves.front() );
+}
+
 bool game::has_gametype() const
 {
     return gamemode && gamemode->id() != special_game_type::NONE;
@@ -973,7 +996,7 @@ void game::legacy_migrate_npctalk_var_prefix( global_variables::impl_t &map_of_v
 }
 
 // Set up all default values for a new game
-bool game::start_game()
+bool game::start_game( const bool show_loading_ui )
 {
     if( !gamemode ) {
         gamemode = std::make_unique<special_game>();
@@ -991,11 +1014,15 @@ bool game::start_game()
     //Needs to be explicitly cleared so a previously loaded world state doesn't leak into the new game
     dimension_prefix.clear();
 
-    background_pane background;
-    static_popup popup;
-    popup.message( "%s", _( "Please wait as we build your world" ) );
-    ui_manager::redraw();
-    refresh_display();
+    std::optional<background_pane> background;
+    std::optional<static_popup> popup;
+    if( show_loading_ui ) {
+        background.emplace();
+        popup.emplace();
+        popup->message( "%s", _( "Please wait as we build your world" ) );
+        ui_manager::redraw();
+        refresh_display();
+    }
 
     load_master();
     overmap_buffer.current_region_type = "default";

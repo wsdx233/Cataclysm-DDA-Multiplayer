@@ -1,176 +1,192 @@
 # CDDA 多人 fork 当前状态
 
-- 更新日期：2026-07-12
+- 更新日期：2026-07-13
 - 分支：`multiplayer/main`
-- 当前阶段：Phase 1，headless 运行模式与协议骨架
-- 当前 HEAD：本文件所在提交；已验证并推送的父提交为
-  `a39e06eb8620b377f515b6a8a7c8731b30543ebe`
+- 当前阶段：**Phase 2，单远程玩家垂直切片**；Phase 1 的本地退出门禁已满足，当前提交的 hosted
+  Linux/Windows/Android 结果仍待推送后记录
+- 当前基线父提交：`9860e01`（`test: establish multiplayer turn phase boundaries`）
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
 
-## Phase 0 关闭结论
+## 当前结论
 
-Phase 0 的三项退出门禁均有完成证据，ADR-0003 和 ADR-0005 已从 `待验证` 更新为 `已接受`：
+Phase 0 关闭结论保持不变：地址稳定的 avatar/player-runtime bridge、turn phase 边界、standalone Asio
+三平台 spike 和 baseline artifacts 均已有证据，ADR-0001 至 ADR-0009 的当前决策未被本批实现推翻。
 
-- 地址稳定的 avatar/player-runtime bridge 作出 **go** 决策。正向 release 与联合 sanitizer 矩阵均为
-  274/274 assertions；完整 avatar move-swap 继续保留恰好 3 个预期 `!mayfail` identity 失败。
-- standalone Asio/TCP spike 在 Linux GCC 13、Clang 18、Windows MSVC 和 Android NDK arm64 通过。
-- Linux/Android/Windows 完整 baseline artifacts 在同一个提交上构建、上传并完成独立内容核对。
+Phase 1 的实现和本地退出标准现已完成：真实游戏 binary 可以在无终端交互、无 curses/SDL/ImGui/sound
+初始化的 dedicated mode 中创建/加载世界、监听、严格握手、拒绝不兼容客户端、处理 signal、保存并退出。
+生产 transport 位于 `src/multiplayer_transport.*`，不是 `tools/` spike 的扩展。
 
-该结论不表示生产 transport、嵌入式 TLS、服务器循环、远程客户端或 canonical generation save 已完成。
-`tools/multiplayer/transport_spike/` 保持隔离，只是可行性和回归工具。
+Phase 2 已形成**服务器侧单远程玩家纵向切片**：一个 headless test client 可以控制服务器唯一
+server-owned avatar 的 `wait`/八方向平面 `move`，获得 visibility-filtered full scene、revision、command
+result、ping/pong、resync、disconnect/resume 和 exactly-once replay 行为。尚无 Windows/Android 图形 network
+client、remote avatar replica 或本地 tiles/touch renderer，因此不能宣称 Phase 2 退出标准已经完成。
 
-## Hosted 构建证据
+## 本批实现
 
-完整 baseline run `29205262759`（run number `#5`，提交 `a39e06e`）全部成功：
+### Headless runtime、配置和 canonical bootstrap
 
-| 平台 | Job | Artifact ID | GitHub digest |
-| --- | ---: | ---: | --- |
-| Linux curses x64 | `86683564355` | `8263767548` | `4359fd56ddcb6948da9fffc38a5e37bf2a2457b748715aad30cdfebe5797235e` |
-| Android arm64 | `86683694535` | `8263779993` | `414789e43381505c3dbcca5efe5b5f4acca21ccdce6cf989fe7a29a4470cc14a` |
-| Windows client x64 | `86683694524` | `8263854364` | `dc9ee8104ee91c6195ad6a566961a4a97010f6fa4b6527f6bca74476c0c91d97` |
+- `multiplayer_runtime_mode` 提供 `local_client`、`network_client`、`dedicated_server`、`test` 边界；当前 CLI
+  实现 `--init-server-config`、`--check-server-config` 和 `--server`。
+- schema 1 config 使用严格 unknown-member/path/security/resource 校验；默认只监听 `127.0.0.1:27999`。
+  plaintext 非 loopback 必须显式声明 trusted-LAN 例外，WAN 仍要求外部认证加密隧道。
+- config/token 使用 exclusive create，POSIX 生成权限为 `0600`，不会覆盖已有文件；token 读取拒绝 group/other
+  权限和非法格式。
+- 当前只交付一个 remote player、`server_owned` 和单一 canonical save generation，因此 parser 明确拒绝
+  `players.max > 1`、`portable_lease`、`copy_in` 和 `save.keep_generations > 1`，避免配置伪装为已实现能力。
+- dedicated bootstrap 使用配置的 world seed/mod order/options，创建或加载唯一 avatar save；SIGINT/SIGTERM、
+  game over 和 `save.interval_turns` 都进入服务器保存路径。重启 smoke 已证明保存后加载同一个 avatar save。
 
-下载到 `/tmp` 后核对结果：
+### Headless/UI 隔离和 turn loop
 
-- Linux tar 内部 SHA-256 为
-  `48f804153aa611350da3cbefaa474ce8e954b07a210184d480560180af3cde02`，9,291 个 entries，
-  version smoke 为 `-tiles, -sound`。
-- Android APK 内部 SHA-256 为
-  `9b806ffab240500efd0776dcfab1954f9ce5ea611648ac36337c6415fecf0b99`；所有 6 个原生库均位于
-  `arm64-v8a/`，其中 `libmain.so` 是 ELF64 AArch64。APK 包含 `android.permission.INTERNET`，且按设计未签名。
-- Windows 内层 ZIP SHA-256 为
-  `09eab6ee7c4e74dcbfa0d201d9d46d438485706ba3fc34fb58df1ca8aa1f984c`，含 9,048 个 files；
-  `cataclysm-tiles.exe` 是 PE32+ x86-64 GUI executable。原生 `--version` 输出在 CRLF 归一化后逐行
-  精确包含 `+tiles, +sound`。
+- `game::do_turn()` 与 `game::do_turn_remote()` 共用 `do_turn_impl()`；remote callback 只在 simulation thread 的
+  player-input phase 执行，transport/lobby 不直接接触 live game objects。
+- remote path 跳过 renderer recovery、music/SFX、autosave、截图、blocking activity input、progress UI、
+  `FORCE_REDRAW` 和本地 game-over cleanup。dedicated runtime 统一抑制 explosion/bullet/hit 动画，并抑制
+  popup、debug prompt 和 loading UI。
+- local pause/move 与 remote wait/move 共用 `multiplayer_command_executor`。remote move 在进入 legacy move
+  executor 前拒绝 safe mode、remote control、车辆驾驶、友好 NPC menu；legacy executor 还以
+  `allow_interactive_ui=false` 拒绝高速跳车和需要确认的深水进入，不进入 `query_yn()`、NPC menu 或 peek UI。
+- 当前循环只有一个 active remote session 和一个 server-owned active avatar；它不是 ADR-0002 的多玩家
+  shared turn barrier，也没有跳过 Phase 3 的 scheduler/world-phase ownership 工作。
 
-Transport spike run `29205262750`（提交 `a39e06e`）三个 jobs 全部成功：
+### Transport、协议、身份和幂等性
 
-| 平台 | Artifact ID | GitHub digest | 内部 binary SHA-256 |
-| --- | ---: | --- | --- |
-| Linux GCC/Clang | `8263559175` | `f4d6e90086264b4989f0b6d21f4156caff15b7eb862cfa18dcbd025771e0cce4` | GCC `073dc02c23141c5a98fb395a4ef5bd0004e36cfb7a5646ad7666fbba3b31c0db` / Clang `a0603778b09ad1fcb6dcde7c2c777ff1d7386f12ea562999c33c80c8d789ad42` |
-| Android arm64 | `8263560332` | `bbbba83a2053e4cc2a49ea43abba6b9306d70f19900553cf086bc1b659c9c197` | `5065fdb41b6ec45f18d165d28bf5e36d75b6e7bc4c58e10980a3c669bc380b46` |
-| Windows MSVC | `8263560944` | `f9dd8750b4543f39d24e1efc1da327fc77afc71db7856f1423956d0996a04aa1` | `5c974a5459acab28267b8a5b067220d6942ff18de78d76ed9972ca88229343fb` |
+- vendored standalone Asio 固定为 `1.38.1`，生产 server transport 使用 1 MiB frame cap、有界 inbound/
+  outbound queues、per-connection write bounds、半关闭处理和有序 shutdown；I/O worker 只交换 immutable bytes/DTO。
+- FlatBuffers schema 固定用 `flatc 1.12.0` 生成。hello 严格比较 protocol major/minor、build ID、ordered
+  content manifest、server-state schema、savegame version 39 和 required capabilities。
+- content manifest 对 `data/core` 和配置 mod order 的每个普通文件按 root ID、规范相对路径、长度和内容计算
+  deterministic SHA-256；拒绝 symlink 和非普通文件。真实 `dda` manifest 覆盖 3,000+ files、40 MiB+ 数据。
+- bearer auth 返回 canonical server player UUID/character ID；resume 轮换 session ID 并递增 generation。
+  lobby 强制递增 envelope sequence、认证/消息/字节限流和有界 simulation event queue。
+- command cache 保留最近 256 个结果。resume 可重放不确定的最后命令；相同 sequence+相同 payload 返回
+  `duplicate`，相同 sequence+不同 payload 记录 `command_sequence_conflict` 并断开。fresh auth/旧 token 到期后
+  开始新的 sequence epoch。
+- stale `base_revision` 返回 typed rejection。有效 action 发布 action revision，随后完整 world phase 再发布
+  post-world revision；resync payload 经过边界和 UTF-8/control-character 校验，client revision 不得领先 server。
 
-Linux GCC/Clang 与 Windows MSVC 原生 loopback 均报告：
+### Visible scene 和日志
 
-```text
-transport spike passed: fragmentation, coalescing, half-close, cancellation, queue-full, ordered-shutdown
-```
+- full scene 只包含请求半径内且 authoritative avatar 实际可见的 terrain、furniture、可见 trap、player 和
+  monster；墙后 monster 不泄漏。player/monster health、attitude、absolute position 和 appearance ID 来自
+  server state。
+- monster 使用 creature-tracker shared ownership 驱动的进程内稳定 scene ID；增加其他 monster 不会改变既有 ID。
+- server stdout/stderr 为单行 JSON：startup/listening/auth/resume/disconnect/resync/command/save/shutdown/error。
+  command 日志包括 player、client sequence、command type、status/rejection、revision、moves 和 duration；
+  不记录 bearer/resume token。
 
-Asio 固定为 `1.38.1` / `asio-1-38-1` / commit
-`dfd7b3e3145bac5d0e91a99fde69c6ae1442f971`，archive SHA-256 为
-`2827b229972be80cdb14e5497962fa393d1adf036b5869e2b9c99f644daadacc`，许可证为 BSL-1.0。
+## 验证证据
 
-## Player Bridge 实现
-
-- `multiplayer_player_registry` 以真实 shared ownership 持有地址稳定的 runtime/avatar，并索引稳定
-  `player_id`、`character_id` 和位置；human avatar 参与 creature 查询但不进入 NPC AI。
-- `multiplayer_player_runtime` 持有 RFC 4122 v4 `player_id`、session generation、
-  `importing/active/offline/dead` 生命周期、messages、stats/achievements、safe mode 和 remote vehicle cache。
-- `multiplayer_active_player_guard` 只允许模拟线程在安全点使用，成对切换完整玩家上下文，支持严格 LIFO
-  嵌套、提前返回和异常恢复，不 move-swap `avatar`/`Character`。
-- movement、teleport、`map::shift()`、mount、vehicle passenger/driver、grab 和 remote control 保持多玩家
-  身份。map shift 同步全部 runtime 的 route/remote 坐标，vehicle cache rebuild 后按玩家重新解析。
-- player snapshot schema version 1 严格验证 UUID、character ID、safe mode、schema 和 generation exhaustion；
-  加载 runtime 保持 `importing`，registry 完成唯一性验证后才开始新 session。
-- 单人存档的旧字段名和 JSON 结构保持不变。player snapshot 只是 Phase 0 边界，不是 ADR-0007 的
-  canonical generation world save。
-
-## `do_turn()` 阶段证据
-
-新增 `multiplayer_turn_phase` 的线程局部可选 observer，真实 `game::do_turn()` 依次记录：
-
-1. `turn_begin`
-2. `player_begin`
-3. `player_input`
-4. `world`
-5. `player_end`
-
-observer 未安装时只有固定数量的空指针分支且不读取 `steady_clock`，不改变 turn 控制流。release 和联合
-ASan/UBSan/LSan 的 `[turn_phase]` 测试均为 8/8 assertions。禁用 autosave 后的单次本地诊断样本约为
-`0.048 / 0.017 / 0.011 / 3.339 / 0.131 ms`；这不是 p95，也不是性能预算。
-
-源码审计在记录时找到 1,354 个 active-player getter 匹配，分布在 159 个文件。高风险 world-phase 类别
-包括 monster/NPC target、scent、field、vehicle、sound、mission、timed event 和 visibility；具体所有权与
-后续门禁见 `DO_TURN_PHASE_AUDIT.md`。
-
-## 本地验证
-
-Release bridge 回归：
+### GCC 13 release
 
 ```bash
-./tests/cata_test '[stable_context]' \
-  --user-dir test_user_dir_multiplayer_turn_phase_stable_release --rng-seed 0
+source build-scripts/activate-multiplayer-build-env.sh
+make -j"$(nproc)" \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 \
+  cataclysm tests
+./tests/cata_test '[multiplayer]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-final-suite
 ```
 
-结果：1 个用例，274/274 assertions 通过。
+结果：构建成功；30 test cases，996 assertions，其中 993 通过，恰好 3 个完整 avatar move-swap reference
+identity assertions 按既有 `[!mayfail]` 设计失败。其余 28 cases 全部通过。
 
-Turn phase release 与 sanitizer：
+### ASan/UBSan/LSan
 
 ```bash
-./tests/cata_test '[turn_phase]' \
-  --user-dir test_user_dir_multiplayer_turn_phase_release --rng-seed 0
-
+make -j8 AUTO_BUILD_PREFIX=1 \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 \
+  SANITIZE=address,undefined \
+  WARNINGS='-Wall -Wextra -Wno-error=array-bounds' tests
 ASAN_OPTIONS='detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1:abort_on_error=1' \
 UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1' \
-./tests/asan-ubsan-cata_test '[turn_phase]' \
-  --user-dir test_user_dir_multiplayer_turn_phase_sanitizer --rng-seed 0
+./tests/release-local-back-sanitize-cata_test '[multiplayer]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-final-sanitize
 ```
 
-结果：两次均为 8/8 assertions；sanitizer 无 ASan、UBSan、LSan 或 stack-use-after-return finding。
+结果：同样为 30 cases / 996 assertions / 3 个预期 `!mayfail`；无 ASan、UBSan、LSan 或
+stack-use-after-return finding。构建时 GCC 13 对两个既有 initializer-list 路径产生 `-Warray-bounds`
+优化告警，因此 sanitizer 专用构建关闭该告警的 `-Werror`，未修改上游业务代码。
 
-Android NDK 当前工作树：
+### 真实 server/client 进程和 restart
+
+最终 smoke 根目录：`/tmp/cdda-mp-final-process.J0QcHP`。
+
+`tools/multiplayer/headless_client_smoke.cpp` 对真实 `./cataclysm --server` 依次验证：
+
+1. incompatible hello typed rejection，再以 server compatibility axes 完成 hello；
+2. token auth、canonical identity、initial full scene 和 explicit resync；
+3. authoritative wait、accepted command result、action scene 和 post-world scene；
+4. disconnect/resume、相同 payload duplicate replay；
+5. 相同 sequence 不同 payload 被断开；
+6. SIGTERM save/shutdown；同一 userdir 第二次启动加载已有 avatar save，再次干净保存退出。
+
+两次 stdout/stderr 每个非空行均可由 JSON parser 读取且没有 ANSI escape。默认 config/token 均为 `0600`，
+默认 `players.max=1`、`character_policy=server_owned`、`keep_generations=1`。第二次 debug log 包含
+`Loading existing dedicated multiplayer avatar save.`，世界目录中仍只有一个 `.sav.zzip`。
+缺失 config 的 `--server` 失败路径也返回 status 1 和单行 `startup_failed` JSON。
+
+### Android arm64
 
 ```bash
+source build-scripts/activate-multiplayer-build-env.sh
+./build-scripts/check-multiplayer-build-env.sh android
 cd android
-./gradlew -Pj=6 \
+./gradlew -Pj="$(nproc)" \
   -Pabi_arm_32=false -Pabi_arm_64=true \
   -Pabi_x86_32=false -Pabi_x86_64=false \
   -Plocalize=false assembleExperimentalDebug
 ```
 
-结果：`BUILD SUCCESSFUL in 14m 59s`，39 tasks（14 executed、25 up-to-date）。新 phase observer 和
-`do_turn.cpp` 均进入 arm64 native target。
+结果：环境门禁通过；最终构建 `BUILD SUCCESSFUL in 6m 6s`，39 tasks（8 executed、31 up-to-date）。
+这证明当前 shared C++ source 进入 Android NDK arm64 target；不是 Android 图形 network-client 运行证据。
 
-本批 C++ 文件经 AStyle 3.1 dry-run 均为 `Unchanged`；`git diff --check` 通过。此前受影响回归结果仍为
-stats 261、messages 27、saves 26、map/teleport/vehicle/load 139,624 assertions 全部通过。
+### 依赖、schema 和静态检查
 
-## 当前限制
+- `FLATC=/tmp/flatbuffers-1.12.0-build/flatc tools/multiplayer/protocol/generate.sh --check`：通过。
+- pinned Asio archive SHA-256 为
+  `2827b229972be80cdb14e5497962fa393d1adf036b5869e2b9c99f644daadacc`；vendored headers/license 与 archive
+  `cmp`/`diff -qr` 一致。
+- AStyle 3.1 对全部 changed non-vendored C++ dry-run 无输出；`git diff --check` 通过。
+- workflow YAML 可解析，所有 Linux `run:` block 经 `bash -n` 通过。环境没有本地 `actionlint` binary；
+  hosted workflow parser 结果需在推送后记录。
 
-- 尚无 `runtime_mode`、server CLI/config、headless startup、生产 transport、FlatBuffers schema、握手、
-  content manifest、server loop 或 network client。
-- 没有嵌入式 TLS backend。默认只能 plaintext loopback；受信 LAN 必须显式启用，WAN 必须使用
-  WireGuard/Tailscale 等外部认证加密隧道。
-- phase observer 只提供测试和 profiling 边界，没有把 `do_turn()` 改造成多人 scheduler。
-- world phase 仍有大量隐式 active-player getter；必须按审计逐组显式化，不能把 guard 当作“所有世界逻辑
-  已支持多人”的证明。
-- player snapshot 不保存 world、RNG 或 generation。server restart consistency 仍属于 Phase 5。
-- 本文件所在提交的新 phase observer 已在本地 GCC/Android NDK 验证；提交后的 hosted MSVC/baseline
-  rerun 尚需记录，不能把父提交 artifact 当成新文件的 MSVC 编译证据。
+## Hosted 基线
 
-## 下一步，按顺序
+已验证父提交 `a39e06e` 的历史证据保持有效：baseline run `29205262759` 和 transport run
+`29205262750` 已覆盖 Linux curses、Windows MSVC、Android arm64 及 standalone transport。它们不能替代
+本批生产 source 的 hosted 编译证据。
 
-1. 在 `src/multiplayer_runtime_mode.*` 和 `src/multiplayer_server_config.*` 增加可测试的 runtime mode、严格
-   versioned JSON config、安全 listener 校验，以及 `--server`、`--check-server-config`、
-   `--init-server-config` CLI。
-2. 重构 `src/main.cpp` startup，使 dedicated server 跳过 curses、SDL/ImGui、sound、popup、language menu
-   和 main menu，同时保留静态数据加载、结构化错误输出和 signal-driven graceful shutdown。
-3. 将 standalone Asio 以固定生产依赖边界接入游戏构建；不要链接或复制 spike main。实现有界 frame/
-   connection transport 和 in-process loopback server/two-client harness。
-4. 增加 pinned FlatBuffers schema、generated-header check、version/capability handshake、content manifest 和
-   不兼容客户端拒绝测试。
+当前 workflow 已扩展为：Linux GCC 13 构建真实 `cataclysm`/`tests`、运行完整 `[multiplayer]`、编译 smoke
+client 并执行真实 process auth/scene/command/resume/save；同时保留 GCC/Clang/Windows/Android transport
+和 FlatBuffers regeneration gates。推送本批提交后必须在本节记录新的 baseline/transport run ID、结果和失败。
+在证据出现前，不把 Phase 1 的 hosted 平台门禁标记为关闭。
 
-第一条代码调查命令：
+## 已知限制和明确未完成项
+
+- **没有图形 network client**：Windows/Android 目前不能 connect/render remote scene；Phase 2 尚未关闭。
+- **只有一个 remote player**：没有第二 human avatar scheduler、round-robin barrier、tether/group shift、
+  双玩家冲突、monster multi-human targeting 或 per-player message/safe-mode isolation。配置会拒绝 `max > 1`。
+- scene 只有 full snapshot；没有 delta/chunk/compression、items/fields/vehicles/overlays、per-player messages 或
+  sound events。当前半径 30 的 full scene 必须保持在 1 MiB frame cap 内。
+- save 使用现有 canonical single-avatar `game::save()`；没有 generation manifest-last、RNG engine state、
+  multi-player barrier save、kill -9/disk-full recovery 或 old-save migration matrix。
+- `portable_lease`/`copy_in`、ID/item UID remap 和人物包签名未实现并被配置拒绝。
+- 没有嵌入式 TLS。默认 plaintext 仅 loopback；trusted LAN 需显式配置，WAN 需要外部 authenticated tunnel。
+- hosted MSVC 和 baseline artifacts 对当前 source 尚未验证；这是当前唯一平台证据缺口，不是可忽略失败。
+
+## 下一门禁和首个动作
+
+1. 推送当前 source，等待并记录 `multiplayer-baseline` 与 `multiplayer transport/protocol gates` 的完整结果；
+   任一 job 失败先修复，不关闭 Phase 1 hosted gate。
+2. Phase 2 下一实现门禁是建立生产 `multiplayer_client` connection/replica 边界，并先做 Windows graphical
+   client 的 local input → semantic command、scene → local renderer smoke；不得让客户端调用 game rules。
+3. 随后接 Android touch/local tiles renderer、app pause/resume 和 reconnect smoke，完成 Phase 2 平台退出标准。
+4. 只有 Phase 2 客户端闭环和平台证据完成后才进入 Phase 3；第一条 scheduler 调查命令为：
 
 ```bash
-rg -n "cli_opts|parse_commandline|init_interface|init_ui|cataimgui|opening_screen|exit_handler" \
-  src/main.cpp src/game_ui.cpp src/cata_imgui.cpp
+rg -n "do_turn_remote|do_turn_impl|multiplayer_players|active_player_guard|all_monsters|monmove" \
+  src/do_turn.cpp src/game.cpp src/game.h src/multiplayer_* tests/multiplayer_*
 ```
 
-提交后先运行并记录新的 hosted baseline；第一个实现文件应从 `src/main.cpp`、
-`src/multiplayer_runtime_mode.*` 和 `src/multiplayer_server_config.*` 开始。
-
-## 工作区说明
-
-- `test_user_dir_*`、`tests/asan-ubsan-cata_test`、Android Gradle/CMake outputs 和其他对象/包是忽略或未跟踪
-  的验证生成物，不得提交，也不要在没有用户指示时批量删除。
-- 所有下载的 CI artifacts 都位于 `/tmp/multiplayer-*-run-*`，不在仓库中。
+不得把当前 single-avatar process smoke 描述为两玩家/shared-barrier 或完整游戏客户端。

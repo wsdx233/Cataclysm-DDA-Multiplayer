@@ -1,4 +1,4 @@
-name: Multiplayer transport spike
+name: Multiplayer transport and protocol gates
 
 on:
   workflow_dispatch:
@@ -7,12 +7,64 @@ on:
       - multiplayer/main
     paths:
       - '.github/workflows/multiplayer-transport-spike.yml'
+      - 'msvc-full-features/Cataclysm-common.props'
+      - 'src/multiplayer_*'
+      - 'src/animation.cpp'
+      - 'src/avatar.h'
+      - 'src/avatar_action.cpp'
+      - 'src/avatar_action.h'
+      - 'src/character.h'
+      - 'src/debug.cpp'
+      - 'src/debug.h'
+      - 'src/do_turn.cpp'
+      - 'src/game.cpp'
+      - 'src/game.h'
+      - 'src/handle_action.cpp'
+      - 'src/loading_ui.cpp'
+      - 'src/loading_ui.h'
+      - 'src/main.cpp'
+      - 'src/newcharacter.cpp'
+      - 'src/output.cpp'
+      - 'src/output.h'
+      - 'src/third-party/multiplayer_protocol_generated.h'
+      - 'src/third-party/asio.hpp'
+      - 'src/third-party/asio/**'
+      - 'tests/multiplayer_*'
+      - 'tools/multiplayer/README.md'
+      - 'tools/multiplayer/headless_client_smoke.cpp'
+      - 'tools/multiplayer/protocol/**'
       - 'tools/multiplayer/transport_spike/**'
   pull_request:
     branches:
       - multiplayer/main
     paths:
       - '.github/workflows/multiplayer-transport-spike.yml'
+      - 'msvc-full-features/Cataclysm-common.props'
+      - 'src/multiplayer_*'
+      - 'src/animation.cpp'
+      - 'src/avatar.h'
+      - 'src/avatar_action.cpp'
+      - 'src/avatar_action.h'
+      - 'src/character.h'
+      - 'src/debug.cpp'
+      - 'src/debug.h'
+      - 'src/do_turn.cpp'
+      - 'src/game.cpp'
+      - 'src/game.h'
+      - 'src/handle_action.cpp'
+      - 'src/loading_ui.cpp'
+      - 'src/loading_ui.h'
+      - 'src/main.cpp'
+      - 'src/newcharacter.cpp'
+      - 'src/output.cpp'
+      - 'src/output.h'
+      - 'src/third-party/multiplayer_protocol_generated.h'
+      - 'src/third-party/asio.hpp'
+      - 'src/third-party/asio/**'
+      - 'tests/multiplayer_*'
+      - 'tools/multiplayer/README.md'
+      - 'tools/multiplayer/headless_client_smoke.cpp'
+      - 'tools/multiplayer/protocol/**'
       - 'tools/multiplayer/transport_spike/**'
 
 concurrency:
@@ -27,6 +79,8 @@ env:
   ASIO_TAG: asio-1-38-1
   ASIO_COMMIT: dfd7b3e3145bac5d0e91a99fde69c6ae1442f971
   ASIO_SHA256: 2827b229972be80cdb14e5497962fa393d1adf036b5869e2b9c99f644daadacc
+  FLATBUFFERS_VERSION: 1.12.0
+  FLATBUFFERS_SHA256: 62f2223fb9181d1d6338451375628975775f7522185266cd5296571ac152bc45
 
 jobs:
   linux:
@@ -46,7 +100,26 @@ jobs:
       - name: Install compilers
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-18 g++-13
+          sudo apt-get install -y \
+            clang-18 g++-13 gettext libbz2-dev libncurses-dev zlib1g-dev
+
+      - name: Verify pinned FlatBuffers schema generation
+        run: |
+          mkdir -p build
+          archive="build/flatbuffers-${FLATBUFFERS_VERSION}.tar.gz"
+          curl --fail --location --retry 3 \
+            "https://github.com/google/flatbuffers/archive/refs/tags/v${FLATBUFFERS_VERSION}.tar.gz" \
+            --output "$archive"
+          test "$(sha256sum "$archive" | cut -d' ' -f1)" = "$FLATBUFFERS_SHA256"
+          tar -xzf "$archive" -C build
+          cmake \
+            -S "build/flatbuffers-${FLATBUFFERS_VERSION}" \
+            -B build/flatbuffers-host \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFLATBUFFERS_BUILD_TESTS=OFF
+          cmake --build build/flatbuffers-host --config Release --parallel --target flatc
+          FLATC="$PWD/build/flatbuffers-host/flatc" \
+            tools/multiplayer/protocol/generate.sh --check
 
       - name: Build and run with GCC 13
         run: |
@@ -59,6 +132,128 @@ jobs:
           ctest --test-dir build/transport-spike-gcc --output-on-failure
           mkdir -p artifacts
           build/transport-spike-gcc/multiplayer_transport_spike | tee artifacts/gcc-loopback.txt
+
+      - name: Verify vendored Asio against the pinned archive
+        run: |
+          upstream=build/transport-spike-gcc/_deps/multiplayer_asio-src
+          test "$(sha256sum "$upstream/LICENSE_1_0.txt" | cut -d' ' -f1)" = \
+            c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566
+          cmp "$upstream/include/asio.hpp" src/third-party/asio.hpp
+          diff -qr \
+            --exclude=LICENSE_1_0.txt \
+            --exclude=VENDORED.md \
+            "$upstream/include/asio" src/third-party/asio
+          cmp "$upstream/LICENSE_1_0.txt" src/third-party/asio/LICENSE_1_0.txt
+
+      - name: Build production multiplayer game tests with GCC 13
+        run: |
+          make -j2 \
+            COMPILER=g++-13 \
+            RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 \
+            cataclysm tests
+          mkdir -p build/multiplayer-smoke
+          g++-13 \
+            -std=c++17 -O2 -Wall -Wextra -Werror \
+            -Isrc -isystem src/third-party \
+            tools/multiplayer/headless_client_smoke.cpp \
+            src/multiplayer_protocol.cpp \
+            src/multiplayer_transport.cpp \
+            src/multiplayer_crypto.cpp \
+            -pthread \
+            -o build/multiplayer-smoke/headless_client_smoke
+
+      - name: Run production multiplayer game tests
+        run: |
+          ./tests/cata_test '[multiplayer]' \
+            --rng-seed 0 \
+            --user-dir test_user_dir_multiplayer_ci \
+            | tee artifacts/gcc-production-multiplayer-tests.txt
+
+      - name: Run actual headless server command/resume smoke
+        run: |
+          set -euo pipefail
+          root="$PWD/build/multiplayer-process-smoke"
+          rm -rf "$root"
+          mkdir -p "$root"
+          ./cataclysm \
+            --userdir "$root/user" \
+            --init-server-config "$root/server.json" \
+            >"$root/init.stdout" 2>"$root/init.stderr"
+          test "$(stat -c '%a' "$root/server.json")" = 600
+          test "$(stat -c '%a' "$root/server-auth-token.txt")" = 600
+          port="$(python3 - "$root/server.json" <<'PY'
+          import json
+          import socket
+          import sys
+          path = sys.argv[1]
+          with open(path, encoding="utf-8") as source:
+              config = json.load(source)
+          assert config["players"]["max"] == 1
+          assert config["players"]["character_policy"] == "server_owned"
+          assert config["save"]["keep_generations"] == 1
+          with socket.socket() as listener:
+              listener.bind(("127.0.0.1", 0))
+              port = listener.getsockname()[1]
+          config["network"]["listen"] = f"127.0.0.1:{port}"
+          with open(path, "w", encoding="utf-8") as output:
+              json.dump(config, output, indent=2)
+              output.write("\n")
+          print(port)
+          PY
+          )"
+          ./cataclysm \
+            --userdir "$root/user" \
+            --server "$root/server.json" \
+            >"$root/server.stdout" 2>"$root/server.stderr" &
+          server_pid=$!
+          cleanup() {
+            if kill -0 "$server_pid" 2>/dev/null; then
+              kill -TERM "$server_pid"
+              wait "$server_pid" || true
+            fi
+          }
+          trap cleanup EXIT
+          for attempt in $(seq 1 900); do
+            if grep -q '"event":"listening"' "$root/server.stdout"; then
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              cat "$root/server.stdout"
+              cat "$root/server.stderr" >&2
+              exit 1
+            fi
+            sleep 0.1
+          done
+          grep -q '"event":"listening"' "$root/server.stdout"
+          build/multiplayer-smoke/headless_client_smoke \
+            127.0.0.1 "$port" "$root/server-auth-token.txt" \
+            | tee "$root/client.stdout"
+          kill -TERM "$server_pid"
+          wait "$server_pid"
+          trap - EXIT
+          python3 - "$root" <<'PY'
+          import json
+          import pathlib
+          import sys
+          root = pathlib.Path(sys.argv[1])
+          for name in ("server.stdout", "server.stderr"):
+              data = (root / name).read_bytes()
+              assert b"\x1b[" not in data
+              for line in data.splitlines():
+                  if line.strip():
+                      json.loads(line)
+          output = (root / "server.stdout").read_text(encoding="utf-8")
+          for event in (
+              "player_authenticated", "resync_requested", "command_result",
+              "player_resumed", "command_sequence_conflict", "save_completed", "shutdown"
+          ):
+              assert f'"event":"{event}"' in output, event
+          assert '"status":"0"' in output
+          assert '"status":"2"' in output
+          PY
+          cp "$root/client.stdout" artifacts/gcc-headless-client-smoke.txt
+          cp "$root/server.stdout" artifacts/gcc-headless-server-smoke.jsonl
+          cp "$root/server.stderr" artifacts/gcc-headless-server-smoke.stderr.jsonl
 
       - name: Build and run with Clang 18
         run: |

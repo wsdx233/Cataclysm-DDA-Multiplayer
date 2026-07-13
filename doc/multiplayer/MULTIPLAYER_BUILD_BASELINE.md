@@ -220,4 +220,10 @@ Linux 和 Windows 原生 artifacts 的 loopback 输出、所有内部 binary has
 Asio pin 和 BSL-1.0 license 已核对。Android 是交叉编译门禁，不宣称在 hosted Android 设备上运行。该
 spike 没有 TLS backend；发布安全限制见 ADR-0003。
 
+2026-07-13 的当前未推送 Phase 1/2 source 已额外通过本地 GCC 13 release `cataclysm tests`、完整
+`[multiplayer]`（30 cases / 996 assertions，3 个既有 `!mayfail` 对照）和 Android NDK arm64 debug APK
+构建（`BUILD SUCCESSFUL in 6m 6s`）。这证明 Android source integration，但不能替代 hosted MSVC 或规范
+artifact。`multiplayer-transport-spike.yml` 现还会在 Linux 构建真实 game/tests，并对真实
+`cataclysm --server` 执行 auth/scene/command/resume/save process smoke。
+
 本地生成物位于仓库默认的忽略目录中，不作为源码提交。规范产物和 hash 以 fork 上的 `multiplayer-baseline` workflow 为准。

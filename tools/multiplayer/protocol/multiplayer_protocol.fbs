@@ -1,0 +1,296 @@
+namespace cdda.multiplayer.protocol;
+
+enum ClientKind : ubyte {
+  Unknown = 0,
+  GraphicalDesktop = 1,
+  GraphicalAndroid = 2,
+  HeadlessTest = 3
+}
+
+enum RejectionCode : ushort {
+  None = 0,
+  MalformedMessage = 1,
+  ProtocolMajorMismatch = 2,
+  ProtocolMinorMismatch = 3,
+  MissingCapability = 4,
+  ContentMismatch = 5,
+  AuthenticationRequired = 6,
+  AuthenticationFailed = 7,
+  SessionExpired = 8,
+  ServerFull = 9,
+  RateLimited = 10,
+  InvalidState = 11,
+  PermissionDenied = 12,
+  InvalidCommand = 13,
+  StaleRevision = 14,
+  ResourceLimit = 15,
+  InternalError = 16,
+  BuildMismatch = 17,
+  ServerStateSchemaMismatch = 18,
+  SavegameVersionMismatch = 19
+}
+
+enum CommandKind : ushort {
+  None = 0,
+  Wait = 1,
+  Move = 2,
+  Open = 3,
+  Close = 4,
+  Examine = 5,
+  Pickup = 6,
+  Drop = 7,
+  Wield = 8,
+  Wear = 9,
+  TakeOff = 10,
+  Fire = 11,
+  Reload = 12,
+  Use = 13,
+  Talk = 14,
+  StartActivity = 15,
+  CancelActivity = 16,
+  ChoiceResponse = 17,
+  Chat = 18
+}
+
+enum CommandStatus : ubyte {
+  Accepted = 0,
+  Rejected = 1,
+  Duplicate = 2,
+  PendingChoice = 3
+}
+
+enum EntityKind : ubyte {
+  Unknown = 0,
+  Player = 1,
+  Npc = 2,
+  Monster = 3,
+  Vehicle = 4,
+  Item = 5
+}
+
+enum Attitude : ubyte {
+  Unknown = 0,
+  Friendly = 1,
+  Neutral = 2,
+  Hostile = 3
+}
+
+table Capability {
+  id:string (required);
+  version:uint = 1;
+  required:bool = false;
+}
+
+table ClientHello {
+  protocol_major:ushort;
+  minimum_minor:ushort;
+  maximum_minor:ushort;
+  client_kind:ClientKind = Unknown;
+  build_id:string (required);
+  content_manifest:string (required);
+  capabilities:[Capability];
+  client_nonce:[ubyte];
+  server_state_schema:uint;
+  savegame_version:int;
+}
+
+table ServerHello {
+  accepted:bool = false;
+  protocol_major:ushort;
+  protocol_minor:ushort;
+  build_id:string;
+  server_state_schema:uint;
+  world_id:string;
+  content_manifest:string;
+  capabilities:[Capability];
+  server_nonce:[ubyte];
+  rejection:RejectionCode = None;
+  message:string;
+  savegame_version:int;
+}
+
+table Authenticate {
+  player_id:string;
+  character_id:string;
+  display_name:string (required);
+  bearer_token:string;
+  challenge_response:[ubyte];
+}
+
+table AuthenticationResult {
+  accepted:bool = false;
+  player_id:string;
+  character_id:string;
+  resume_token:string;
+  session_generation:ulong;
+  rejection:RejectionCode = None;
+  message:string;
+}
+
+table ResumeRequest {
+  resume_token:string (required);
+  last_server_revision:ulong;
+  last_client_sequence:ulong;
+}
+
+table ResumeResult {
+  accepted:bool = false;
+  player_id:string;
+  character_id:string;
+  session_generation:ulong;
+  replay_from_sequence:ulong;
+  full_snapshot_required:bool = true;
+  rejection:RejectionCode = None;
+  message:string;
+}
+
+table Ping {
+  nonce:ulong;
+  monotonic_milliseconds:ulong;
+}
+
+table Pong {
+  nonce:ulong;
+  monotonic_milliseconds:ulong;
+}
+
+table DisconnectNotice {
+  code:RejectionCode = None;
+  message:string;
+}
+
+struct AbsolutePosition {
+  x:int;
+  y:int;
+  z:int;
+}
+
+struct Direction {
+  dx:byte;
+  dy:byte;
+  dz:byte;
+}
+
+table EntityRef {
+  kind:EntityKind = Unknown;
+  stable_id:string (required);
+  revision:ulong;
+}
+
+table PlayerCommand {
+  client_sequence:ulong;
+  base_revision:ulong;
+  kind:CommandKind = None;
+  direction:Direction;
+  target_position:AbsolutePosition;
+  target_entity:EntityRef;
+  item_uid:string;
+  text:string;
+  choice_id:string;
+  choice_option:string;
+}
+
+table CommandResult {
+  client_sequence:ulong;
+  status:CommandStatus = Accepted;
+  rejection:RejectionCode = None;
+  server_revision:ulong;
+  moves_spent:int;
+  message:string;
+  choice_id:string;
+}
+
+table VisibleItem {
+  item_uid:string (required);
+  type_id:string (required);
+  display_name:string (required);
+  count:uint = 1;
+  revision:ulong;
+}
+
+table VisibleTile {
+  position:AbsolutePosition (required);
+  terrain_id:string (required);
+  furniture_id:string;
+  visible_trap_id:string;
+  items:[VisibleItem];
+  light_level:ubyte;
+}
+
+table VisibleEntity {
+  kind:EntityKind = Unknown;
+  stable_id:string (required);
+  revision:ulong;
+  position:AbsolutePosition (required);
+  appearance_id:string (required);
+  display_name:string;
+  attitude:Attitude = Unknown;
+  health_percent:ubyte = 100;
+}
+
+table PlayerState {
+  player_id:string (required);
+  character_id:string (required);
+  revision:ulong;
+  position:AbsolutePosition (required);
+  moves:int;
+  pain:int;
+  stamina:int;
+  activity_id:string;
+}
+
+table SceneSnapshot {
+  server_revision:ulong;
+  turn:long;
+  player:PlayerState (required);
+  tiles:[VisibleTile];
+  entities:[VisibleEntity];
+}
+
+table SceneDelta {
+  base_revision:ulong;
+  new_revision:ulong;
+  turn:long;
+  player:PlayerState;
+  changed_tiles:[VisibleTile];
+  removed_tile_positions:[AbsolutePosition];
+  changed_entities:[VisibleEntity];
+  removed_entity_ids:[string];
+}
+
+table ResyncRequest {
+  client_revision:ulong;
+  reason:string;
+}
+
+table ChatMessage {
+  sender_player_id:string;
+  client_sequence:ulong;
+  server_revision:ulong;
+  text:string (required);
+}
+
+union MessagePayload {
+  ClientHello,
+  ServerHello,
+  Authenticate,
+  AuthenticationResult,
+  ResumeRequest,
+  ResumeResult,
+  Ping,
+  Pong,
+  DisconnectNotice,
+  PlayerCommand,
+  CommandResult,
+  SceneSnapshot,
+  SceneDelta,
+  ResyncRequest,
+  ChatMessage
+}
+
+table ProtocolMessage {
+  payload:MessagePayload;
+}
+
+root_type ProtocolMessage;
+file_identifier "CDMP";
