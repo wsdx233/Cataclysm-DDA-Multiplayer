@@ -8,6 +8,7 @@
 - 上一个完整 hosted platform gate 全绿提交：`86336ea847bea45f727fd97d74a811a32712518c`（canonical build-ID hardening）
 - 当前 Phase 3 slice：`src/multiplayer_turn_scheduler.h/.cpp`、`tests/multiplayer_scheduler_test.cpp` 和对应文档更新
 - 当前 Windows 定向修复：`c9b28086e973fa497d5bd9f9a37e64a9ac22e464`；hosted MSVC package 已完整成功
+- 当前分层验证 workflow source：`9a561f6172d9042c1c424f16d923448e0de9152a`；baseline 与 transport runs 全绿
 - 当前下一行动：按 Tier 1 在 Linux 上实现并验证 single-player-preserving phase adapter；`players.max` 保持 `1`
 
 ## 当前结论
@@ -82,6 +83,33 @@ Android job 在与该 Windows 修复无关的 x86_64 debug build 阶段耗尽 ho
   Windows-owned path 只跑 Windows，Android-owned path 只跑 Android，共享 graphical/platform adapter 跑受影响端，
   共享 build-resource contract 跑全矩阵，普通 backend-neutral `src/multiplayer_*` 不触发 package baseline。
   transport workflow 的 Linux job 是 production 主门禁，Windows/Android jobs 仅是 transport-only portability probes。
+
+### 分层门禁实现与验证
+
+- commit `377feba3b22f3ddafbaf259f26c4871791e9fbc6` 落地三层文档与 changed-path package selector；commit
+  `6155cc9603f942ae9c4c86d69dc1d66a5fdc6a94` 将 selector 从 full-history checkout 改为 shallow checkout +
+  按需抓取 event base，抓取或 diff 不可用时仍 fail-open 到全矩阵。首次 hosted selector 由此从超过一分钟的
+  full-history checkout 降为约 7 秒。
+- 独立复审发现 generic filename 中已有的 Win32/Android production branch、单平台手工入口和 Windows-only build
+  script 分类三个缺口；commit `9a561f6172d9042c1c424f16d923448e0de9152a` 已补入 main/locale/mmap/filesystem/
+  path、multiplayer crypto/transport/client UI/server config/log 等关键 platform-owned path，增加
+  `workflow_dispatch target=all|linux|windows|android`，并让 PowerShell/MSVC/windist/Windows/MinGW script 只选
+  Windows。路径 selector 仍只是优化；generic file 内新增 platform conditional 必须按 Tier 2 人工判断。
+- 本地验证：两个 workflow 的 `actionlint` 通过；selector Bash 经 `bash -n`；Android-only、Windows-only、
+  Linux+Android environment、SDL/platform shared、filesystem/locale all-platform、普通 scheduler 不触发 package、
+  generic build script all-platform，以及四种 manual target 的动态分类断言均通过；`git diff --check` 通过。
+- 最终 workflow source `9a561f6` 的 baseline run
+  [`29353291753`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29353291753) 中，selector job
+  `87154675790` 于 9 秒内成功并因 workflow 自身变化正确选择全矩阵；run 已 terminal `success`，四项 resource、
+  Linux curses package job `87154803386`、Windows x64 MSVC package job `87155121109` 与 Android arm64 release +
+  x86_64 compile job `87155121045` 全部成功。较早 run `29351421997` 由后续 selector 修正触发 concurrency
+  cancellation；其 selector/resources/Linux 已成功，Windows/Android 被 superseding run 取消，不是代码失败。
+- transport workflow rename/source `377feba` 的 run
+  [`29351194814`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29351194814) 已 terminal
+  `success`：Primary Linux production tests/process smokes job `87147544024`、Windows MSVC portability probe
+  `87147544054` 与 Android NDK portability probe `87147544050` 均成功。结合上述 baseline，本批 selector、Linux
+  production、Windows/Android portability 与完整 package matrix 均已有绿色证据；这只验证关键 CI 路由里程碑，
+  不改变普通 shared-code 提交的 Tier 1 Linux-first 默认。
 
 ## 本批实现
 

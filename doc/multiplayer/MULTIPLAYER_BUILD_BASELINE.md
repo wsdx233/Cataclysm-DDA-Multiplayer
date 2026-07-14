@@ -513,4 +513,36 @@ run `29344937410` 不能标成 terminal-green 全平台矩阵；它的可用结�
 runner-capacity failure、attempt 2 policy cancellation。Phase 3 退出时仍须按 Tier 3 为同一候选 source 记录必要
 平台矩阵；当前 `players.max` 必须保持 `1`。
 
+### 分层 package selector hosted gate
+
+commit `377feba3b22f3ddafbaf259f26c4871791e9fbc6` 引入 Tier 1/2/3 文档与 package selector，commit
+`6155cc9603f942ae9c4c86d69dc1d66a5fdc6a94` 把 selector 改为 shallow checkout + 按需抓取 event base；最终
+workflow source `9a561f6172d9042c1c424f16d923448e0de9152a` 又补齐已知 platform-owned production source、单平台
+`workflow_dispatch target` 与 Windows-only build-script 分类。
+
+最终 baseline run
+[`29353291753`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29353291753) 从
+`2026-07-14T17:19:37Z` 运行至 `18:04:23Z`，8 个 jobs 全部 terminal `success`。selector job
+[`87154675790`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29353291753/job/87154675790)
+只用 9 秒解析 `6155cc9..9a561f6`，因 workflow 自身变化按规则输出 Linux/Windows/Android 全 true；四项 resource、
+Linux package、Windows MSVC package 与 Android arm64 release/x86_64 compile 都成功。平台 artifact 为：
+
+| Artifact | Artifact ID | Size (bytes) | GitHub artifact digest |
+| --- | ---: | ---: | --- |
+| Linux curses x64 | `8319128325` | `183175299` | `a5ce693cfbcc5eb389f45319577316612bd3d24a416aa7f6875c9e67ba25acb3` |
+| Windows x64 MSVC tiles+sound | `8319911321` | `314221912` | `d9b835b0186f3fef76cf6e3946e70675e0e8a9ae04fb308ad5028b296e289d07` |
+| Android arm64 release | `8320275610` | `180793685` | `48fd29f85c02cce26a408a18f8352dd35748c8a71641fd5190f95af42ecf7c25` |
+| Android x86_64 debug compile evidence | `8320277669` | `286299819` | `c5ecdbb4c2b54b801d4bc02444c7a8858826029c69562ff4798b743bb48b1e8f` |
+
+同批 transport run
+[`29351194814`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29351194814) 也 terminal
+`success`：Linux production tests/process smokes、Windows MSVC portability probe 与 Android NDK portability
+probe 全绿。它们的 artifact IDs 分别为 `8319340742`、`8318224196`、`8318217657`。较早 baseline run
+`29351421997` 因最终 selector 修正推送而被 concurrency 取消；其 selector/resources/Linux 已成功，Windows/Android
+由上述 terminal-success run 取代，不能把该 cancellation 记为代码失败。
+
+这组 evidence 关闭 selector/workflow 自身的关键 CI 里程碑，不重新建立“每个 shared C++ 提交必须全平台 package”
+的旧约束。Android-only、Windows-only、shared graphical/platform、all-platform adapter、Windows-only build script
+和 `workflow_dispatch all|linux|windows|android` 分类已由本地动态断言覆盖；未来实际 Tier 2 仍只运行受影响 target。
+
 本地生成物位于仓库默认的忽略目录中，不作为源码提交。规范产物和 hash 以 fork 上的 `multiplayer-baseline` workflow 为准。
