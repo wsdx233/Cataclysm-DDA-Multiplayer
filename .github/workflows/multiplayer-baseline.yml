@@ -403,6 +403,25 @@ jobs:
             throw "Windows version smoke test produced unexpected output: $versionText"
           }
           $versionText | Set-Content artifacts\windows-version.txt
+          $helpStdout = Join-Path $env:RUNNER_TEMP 'cdda-windows-help.stdout.txt'
+          $helpStderr = Join-Path $env:RUNNER_TEMP 'cdda-windows-help.stderr.txt'
+          $helpProcess = Start-Process `
+            -FilePath (Resolve-Path .\bindist\cataclysm-tiles.exe).Path `
+            -ArgumentList '--help' `
+            -RedirectStandardOutput $helpStdout `
+            -RedirectStandardError $helpStderr `
+            -Wait `
+            -PassThru
+          $helpText = @(
+            if (Test-Path $helpStdout) { Get-Content $helpStdout }
+            if (Test-Path $helpStderr) { Get-Content $helpStderr }
+          ) -join [Environment]::NewLine
+          if ($helpProcess.ExitCode -ne 0 -or
+              $helpText -notmatch [regex]::Escape('--connect <host:port>') -or
+              $helpText -notmatch [regex]::Escape('--connect-token-file <path>')) {
+            throw "Windows multiplayer client CLI smoke failed: $helpText"
+          }
+          $helpText | Set-Content artifacts\windows-help.txt
           & 7z t artifacts\cdda-windows-client-x64-baseline.zip
           if ($LASTEXITCODE -ne 0) {
             throw "Windows package integrity check failed"
@@ -505,23 +524,66 @@ jobs:
             -Poverride_versionCode="${{ github.run_number }}" \
             assembleExperimentalRelease
 
+      - name: Build x86_64 debug client compile gate
+        working-directory: android
+        run: |
+          ./gradlew \
+            -Pj="$(nproc)" \
+            -Pabi_arm_32=false \
+            -Pabi_arm_64=false \
+            -Pabi_x86_32=false \
+            -Pabi_x86_64=true \
+            -Plocalize=false \
+            assembleExperimentalDebug
+
       - name: Smoke test and record provenance
         run: |
-          mkdir -p artifacts
-          package="$(find android/app/build/outputs/apk/experimental/release -type f -name '*.apk' -print -quit)"
+          mkdir -p artifacts artifacts-x86
+          package="$(find android/app/build/outputs/apk/experimental/release -type f -name '*arm64-v8a*.apk' -print -quit)"
           test -n "$package"
           cp "$package" artifacts/cdda-android-arm64-baseline-unsigned.apk
           unzip -t artifacts/cdda-android-arm64-baseline-unsigned.apk
           unzip -l artifacts/cdda-android-arm64-baseline-unsigned.apk | grep -q 'lib/arm64-v8a/libmain.so'
-          if unzip -l artifacts/cdda-android-arm64-baseline-unsigned.apk | grep -q 'lib/armeabi-v7a/'; then
-            echo 'Unexpected armeabi-v7a library in arm64-only APK' >&2
-            exit 1
-          fi
+          for unexpected_abi in armeabi-v7a x86 x86_64; do
+            if unzip -l artifacts/cdda-android-arm64-baseline-unsigned.apk \
+              | grep -q "lib/$unexpected_abi/"; then
+              echo "Unexpected $unexpected_abi library in arm64-only APK" >&2
+              exit 1
+            fi
+          done
           aapt_path="$ANDROID_HOME/build-tools/34.0.0/aapt"
           test -x "$aapt_path"
           "$aapt_path" dump badging artifacts/cdda-android-arm64-baseline-unsigned.apk | tee artifacts/android-badging.txt
           "$aapt_path" dump permissions artifacts/cdda-android-arm64-baseline-unsigned.apk | tee artifacts/android-permissions.txt
           grep -q "android.permission.INTERNET" artifacts/android-permissions.txt
+          "$aapt_path" dump resources artifacts/cdda-android-arm64-baseline-unsigned.apk \
+            | tee artifacts/android-resources.txt
+          grep -q 'string/launchModeTitle' artifacts/android-resources.txt
+          grep -q 'string/multiplayerConnectTitle' artifacts/android-resources.txt
+          grep -q 'string/multiplayerSecurityNotice' artifacts/android-resources.txt
+          x86_package="$(find android/app/build/outputs/apk/experimental/debug -type f -name '*x86_64*.apk' -print -quit)"
+          test -n "$x86_package"
+          cp "$x86_package" artifacts-x86/cdda-android-x86_64-debug.apk
+          unzip -t artifacts-x86/cdda-android-x86_64-debug.apk
+          unzip -l artifacts-x86/cdda-android-x86_64-debug.apk \
+            | grep -q 'lib/x86_64/libmain.so'
+          for unexpected_abi in armeabi-v7a arm64-v8a x86; do
+            if unzip -l artifacts-x86/cdda-android-x86_64-debug.apk \
+              | grep -q "lib/$unexpected_abi/"; then
+              echo "Unexpected $unexpected_abi library in x86_64-only debug APK" >&2
+              exit 1
+            fi
+          done
+          {
+            echo "artifact=cdda-android-x86_64-debug.apk"
+            echo "sha256=$(sha256sum artifacts-x86/cdda-android-x86_64-debug.apk | cut -d' ' -f1)"
+            echo "source_commit=$GITHUB_SHA"
+            echo "runner_image=ubuntu-24.04"
+            echo "android_platform=35"
+            echo "android_ndk=28.1.13356709"
+            echo "android_abi=x86_64"
+            echo "build_command=./gradlew assembleExperimentalDebug x86_64-only"
+          } > artifacts-x86/android-x86_64-build-manifest.txt
           {
             echo "artifact=cdda-android-arm64-baseline-unsigned.apk"
             echo "sha256=$(sha256sum artifacts/cdda-android-arm64-baseline-unsigned.apk | cut -d' ' -f1)"
@@ -539,11 +601,20 @@ jobs:
             echo "build_command=./gradlew assembleExperimentalRelease arm64-only"
           } > artifacts/android-build-manifest.txt
 
-      - name: Upload Android package
+      - name: Upload Android arm64 package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: multiplayer-baseline-android-arm64-${{ github.sha }}
           path: artifacts
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload Android x86_64 compile evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: multiplayer-baseline-android-x86_64-${{ github.sha }}
+          path: artifacts-x86
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

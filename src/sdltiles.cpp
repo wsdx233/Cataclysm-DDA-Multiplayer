@@ -67,6 +67,7 @@
 #include "map_extras.h"
 #include "mapbuffer.h"
 #include "mission.h"
+#include "multiplayer_client_ui.h"
 #include "npc.h"
 #include "options.h"
 #include "output.h"
@@ -3657,7 +3658,20 @@ void cata_cursesport::curses_drawwindow( const catacurses::window &w )
     // Stale against the render epoch after a renderer rebuild: redraw in full.
     const bool force_full = win->last_render_epoch != curses_render_epoch;
     bool update = false;
-    if( g && w == g->w_terrain && use_tiles ) {
+    if( use_tiles && multiplayer_client_is_remote_scene_window( w ) ) {
+        if( const multiplayer_scene_snapshot *scene = multiplayer_client_scene_for_render() ) {
+            tilecontext->draw_remote_scene(
+                point( win->pos.x * fontwidth, win->pos.y * fontheight ), *scene,
+                getmaxx( w ) * font->width, getmaxy( w ) * font->height );
+            win->draw = false;
+            update = true;
+        } else {
+            // The remote-scene window exists before authentication completes.  Render its
+            // curses waiting text instead of falling through to the local world renderer,
+            // which would query simulation state that a network client never initializes.
+            update = draw_window( font, w, force_full );
+        }
+    } else if( g && w == g->w_terrain && use_tiles ) {
         // color blocks overlay; drawn on top of tiles and on top of overlay strings (if any).
         color_block_overlay_container color_blocks;
 

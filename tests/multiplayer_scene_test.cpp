@@ -90,3 +90,45 @@ TEST_CASE( "multiplayer_visible_scene_contains_only_visible_terrain_player_and_m
         return entity.kind == multiplayer_visible_entity_kind::monster;
     } ) == 2 );
 }
+
+TEST_CASE( "multiplayer_visible_scene_is_reduced_to_the_mobile_payload_budget",
+           "[multiplayer][scene]" )
+{
+    multiplayer_scene_snapshot snapshot;
+    snapshot.server_revision = 1;
+    snapshot.player.player_id = "12345678-1234-4234-9234-123456789abc";
+    snapshot.player.character_id = "budget-character";
+    snapshot.player.revision = snapshot.server_revision;
+    snapshot.player.position = { 0, 0, 0 };
+    const std::string terrain_id = "t_" + std::string( 125, 'a' );
+    for( int y = -30; y <= 30; ++y ) {
+        for( int x = -30; x <= 30; ++x ) {
+            snapshot.tiles.push_back( { { x, y, 0 }, terrain_id, "", "", 0 } );
+        }
+    }
+    snapshot.entities.push_back( { multiplayer_visible_entity_kind::player,
+                                   "player-budget-character", snapshot.server_revision,
+                                   snapshot.player.position, "avatar", "Budget Player",
+                                   multiplayer_visible_attitude::friendly, 100 } );
+
+    multiplayer_transport_payload payload;
+    std::string error;
+    REQUIRE( multiplayer_fit_scene_snapshot_to_payload_budget( snapshot, payload, error ) );
+    CHECK( payload.size() <= multiplayer_scene_snapshot_maximum_payload_size );
+    CHECK( snapshot.tiles.size() < 61 * 61 );
+    CHECK( std::all_of( snapshot.tiles.begin(), snapshot.tiles.end(),
+    []( const multiplayer_visible_tile & tile ) {
+        return std::max( std::abs( tile.position.x ), std::abs( tile.position.y ) ) < 30;
+    } ) );
+    REQUIRE( snapshot.entities.size() == 1 );
+    CHECK( snapshot.entities.front().kind == multiplayer_visible_entity_kind::player );
+
+    multiplayer_protocol_envelope envelope;
+    envelope.message_type = multiplayer_protocol_message_type::scene_snapshot;
+    envelope.sequence = snapshot.server_revision;
+    envelope.payload = std::move( payload );
+    multiplayer_scene_snapshot parsed;
+    REQUIRE( multiplayer_parse_scene_snapshot_payload( envelope, parsed, error ) );
+    CHECK( parsed.tiles.size() == snapshot.tiles.size() );
+    REQUIRE( parsed.entities.size() == 1 );
+}

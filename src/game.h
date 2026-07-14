@@ -255,6 +255,8 @@ class game
 
         /** Loads core data and mods from the active world. May throw. */
         void load_world_modfiles();
+        /** Loads only local definitions needed to render a remote authoritative scene. */
+        void load_multiplayer_client_data( const std::vector<mod_id> &mods );
         /**
          *  Load content packs
          *  @param msg string to display whilst loading prompt

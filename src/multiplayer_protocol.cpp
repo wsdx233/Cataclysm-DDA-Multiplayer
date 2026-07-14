@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <set>
 #include <string>
@@ -340,6 +341,19 @@ bool validate_resume_result( const multiplayer_resume_result &result, std::strin
     return true;
 }
 
+bool validate_disconnect_notice( const multiplayer_disconnect_notice &notice,
+                                 std::string &error )
+{
+    if( notice.code < multiplayer_protocol_rejection::none ||
+        notice.code > multiplayer_protocol_rejection::savegame_version_mismatch ||
+        ( !notice.message.empty() &&
+          !is_safe_display_text( notice.message, maximum_protocol_message_bytes ) ) ) {
+        error = "disconnect notice contains an invalid code or message";
+        return false;
+    }
+    return true;
+}
+
 bool validate_resync_request( const multiplayer_resync_request &request, std::string &error )
 {
     if( request.reason.size() > maximum_resync_reason_bytes ||
@@ -406,6 +420,18 @@ bool validate_scene_identifier( const std::string &value )
     return is_valid_identifier( value, maximum_scene_identifier_bytes );
 }
 
+bool scene_position_is_bounded( const multiplayer_protocol_position &position,
+                                const multiplayer_protocol_position &center )
+{
+    constexpr std::int64_t maximum_scene_axis_distance = 128;
+    const std::int64_t dx = static_cast<std::int64_t>( position.x ) - center.x;
+    const std::int64_t dy = static_cast<std::int64_t>( position.y ) - center.y;
+    const std::int64_t dz = static_cast<std::int64_t>( position.z ) - center.z;
+    return std::abs( dx ) <= maximum_scene_axis_distance &&
+           std::abs( dy ) <= maximum_scene_axis_distance &&
+           std::abs( dz ) <= maximum_scene_axis_distance;
+}
+
 bool validate_scene_snapshot( const multiplayer_scene_snapshot &snapshot, std::string &error )
 {
     if( snapshot.server_revision == 0 || !is_uuid_v4( snapshot.player.player_id ) ||
@@ -422,7 +448,8 @@ bool validate_scene_snapshot( const multiplayer_scene_snapshot &snapshot, std::s
         return false;
     }
     for( const multiplayer_visible_tile &tile : snapshot.tiles ) {
-        if( !validate_scene_identifier( tile.terrain_id ) ||
+        if( !scene_position_is_bounded( tile.position, snapshot.player.position ) ||
+            !validate_scene_identifier( tile.terrain_id ) ||
             ( !tile.furniture_id.empty() && !validate_scene_identifier( tile.furniture_id ) ) ||
             ( !tile.visible_trap_id.empty() && !validate_scene_identifier( tile.visible_trap_id ) ) ) {
             error = "scene snapshot tile identifier is invalid";
@@ -430,7 +457,8 @@ bool validate_scene_snapshot( const multiplayer_scene_snapshot &snapshot, std::s
         }
     }
     for( const multiplayer_visible_entity &entity : snapshot.entities ) {
-        if( entity.kind <= multiplayer_visible_entity_kind::unknown ||
+        if( !scene_position_is_bounded( entity.position, snapshot.player.position ) ||
+            entity.kind <= multiplayer_visible_entity_kind::unknown ||
             entity.kind > multiplayer_visible_entity_kind::item ||
             !validate_scene_identifier( entity.stable_id ) ||
             !validate_scene_identifier( entity.appearance_id ) ||
@@ -1003,6 +1031,45 @@ bool multiplayer_parse_pong_payload( const multiplayer_protocol_envelope &envelo
     return true;
 }
 
+bool multiplayer_build_disconnect_notice_payload( const multiplayer_disconnect_notice &notice,
+        multiplayer_transport_payload &payload, std::string &error )
+{
+    if( !validate_disconnect_notice( notice, error ) ) {
+        return false;
+    }
+    flatbuffers::FlatBufferBuilder builder;
+    const auto root = protocol::CreateDisconnectNoticeDirect(
+                          builder, static_cast<protocol::RejectionCode>( notice.code ),
+                          notice.message.empty() ? nullptr : notice.message.c_str() );
+    const auto message = protocol::CreateProtocolMessage(
+                             builder, protocol::MessagePayload::DisconnectNotice, root.Union() );
+    protocol::FinishProtocolMessageBuffer( builder, message );
+    return finish_payload( builder, payload, error );
+}
+
+bool multiplayer_parse_disconnect_notice_payload( const multiplayer_protocol_envelope &envelope,
+        multiplayer_disconnect_notice &notice, std::string &error )
+{
+    if( envelope.message_type != multiplayer_protocol_message_type::disconnect_notice ) {
+        error = "protocol message is not a disconnect notice";
+        return false;
+    }
+    if( !verify_payload( envelope.message_type, envelope.payload, error ) ) {
+        return false;
+    }
+    const protocol::DisconnectNotice *input =
+        protocol::GetProtocolMessage( envelope.payload.data() )->payload_as_DisconnectNotice();
+    multiplayer_disconnect_notice parsed;
+    parsed.code = static_cast<multiplayer_protocol_rejection>( input->code() );
+    parsed.message = input->message() == nullptr ? std::string() : input->message()->str();
+    if( !validate_disconnect_notice( parsed, error ) ) {
+        return false;
+    }
+    notice = std::move( parsed );
+    error.clear();
+    return true;
+}
+
 bool multiplayer_build_resync_request_payload( const multiplayer_resync_request &request,
         multiplayer_transport_payload &payload, std::string &error )
 {
@@ -1191,6 +1258,10 @@ bool multiplayer_build_scene_snapshot_payload( const multiplayer_scene_snapshot 
     const auto message = protocol::CreateProtocolMessage(
                              builder, protocol::MessagePayload::SceneSnapshot, root.Union() );
     protocol::FinishProtocolMessageBuffer( builder, message );
+    if( builder.GetSize() > multiplayer_scene_snapshot_maximum_payload_size ) {
+        error = multiplayer_scene_snapshot_budget_error;
+        return false;
+    }
     return finish_payload( builder, payload, error );
 }
 
@@ -1199,6 +1270,10 @@ bool multiplayer_parse_scene_snapshot_payload( const multiplayer_protocol_envelo
 {
     if( envelope.message_type != multiplayer_protocol_message_type::scene_snapshot ) {
         error = "protocol message is not a scene snapshot";
+        return false;
+    }
+    if( envelope.payload.size() > multiplayer_scene_snapshot_maximum_payload_size ) {
+        error = multiplayer_scene_snapshot_budget_error;
         return false;
     }
     if( !verify_payload( envelope.message_type, envelope.payload, error ) ) {

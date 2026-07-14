@@ -58,6 +58,7 @@ class memorized_tile;
 class monster;
 class nc_color;
 class pixel_minimap;
+struct multiplayer_scene_snapshot;
 struct sprite_screen_bounds;
 struct tint_sprite_record;
 enum class direction : unsigned int;
@@ -588,6 +589,9 @@ class cata_tiles
         void draw( const point &dest, const tripoint_bub_ms &center, int width, int height,
                    std::multimap<point, formatted_text> &overlay_strings,
                    color_block_overlay_container &color_blocks );
+        /** Draw a server-filtered semantic multiplayer scene without client world simulation. */
+        void draw_remote_scene( const point &dest, const multiplayer_scene_snapshot &scene,
+                                int width, int height );
         void draw_om( const point &dest, const tripoint_abs_omt &center_abs_omt, bool blink );
 
         /** Minimap functionality */

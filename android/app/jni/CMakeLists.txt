@@ -17,6 +17,29 @@ set(TILES ON)
 set(USE_SDL3 ON)
 set(DYNAMIC_LINKING ON)
 
+# CMake 3.22 does not add Prefab's x86_64 package directory to its config
+# search because that Android library architecture collides with the host
+# architecture.  Add the generated Prefab cmake root explicitly for every ABI.
+if(ANDROID)
+  if(ANDROID_ABI STREQUAL "arm64-v8a")
+    set(_android_prefab_triplet "aarch64-linux-android")
+  elseif(ANDROID_ABI STREQUAL "armeabi-v7a")
+    set(_android_prefab_triplet "arm-linux-androideabi")
+  elseif(ANDROID_ABI STREQUAL "x86")
+    set(_android_prefab_triplet "i686-linux-android")
+  elseif(ANDROID_ABI STREQUAL "x86_64")
+    set(_android_prefab_triplet "x86_64-linux-android")
+  endif()
+  if(DEFINED _android_prefab_triplet)
+    foreach(root IN LISTS CMAKE_FIND_ROOT_PATH)
+      if(IS_DIRECTORY "${root}/lib/${_android_prefab_triplet}/cmake")
+        list(PREPEND CMAKE_PREFIX_PATH
+             "${root}/lib/${_android_prefab_triplet}/cmake")
+      endif()
+    endforeach()
+  endif()
+endif()
+
 find_package(SDL3 CONFIG REQUIRED)
 find_package(SDL3_image CONFIG REQUIRED)
 find_package(SDL3_ttf CONFIG REQUIRED)
@@ -44,7 +67,8 @@ list(REMOVE_DUPLICATES _sdl3_subdir_inc)
 
 add_subdirectory(${CATA_REPO_ROOT}/src/third-party third-party)
 
-file(GLOB CATA_SOURCES ${CATA_REPO_ROOT}/src/*.cpp
+file(GLOB CATA_SOURCES CONFIGURE_DEPENDS
+     ${CATA_REPO_ROOT}/src/*.cpp
      ${CATA_REPO_ROOT}/src/cata_allocator_c.c)
 
 add_library(main SHARED ${CATA_SOURCES})
@@ -60,6 +84,7 @@ target_compile_definitions(
           USE_SDL3
           BACKTRACE
           LOCALIZE
+          NO_STALE_DATA_WARN
           ZSTD_STATIC_LINKING_ONLY
           ZSTD_DISABLE_ASM)
 

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <clocale>
 #include <csignal>
 #include <cstdio>
@@ -19,7 +20,9 @@
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -28,6 +31,9 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
 #if defined(_WIN32)
 #include "cata_allocator.h"
 #include "platform_win.h"
@@ -58,7 +64,11 @@
 #include "mapsharing.h"
 #include "memory_fast.h"
 #include "loading_ui.h"
+#include "mod_manager.h"
+#include "multiplayer_client_ui.h"
 #include "multiplayer_command_executor.h"
+#include "multiplayer_content_manifest.h"
+#include "multiplayer_crypto.h"
 #include "multiplayer_player_runtime.h"
 #include "multiplayer_runtime_mode.h"
 #include "multiplayer_scene.h"
@@ -302,6 +312,10 @@ struct cli_opts {
     bool disable_ascii_art = false;
     server_config_operation server_config_action = server_config_operation::none;
     std::string server_config_path;
+    std::string multiplayer_server_endpoint;
+    std::string multiplayer_token_file;
+    std::vector<std::string> multiplayer_mods;
+    bool allow_insecure_multiplayer_lan = false;
     multiplayer_runtime_mode runtime_mode = multiplayer_runtime_mode::local_client;
 };
 
@@ -313,6 +327,7 @@ cli_opts parse_commandline( int argc, const char **argv )
     constexpr std::string_view section_map_sharing = "Map sharing";
     constexpr std::string_view section_user_directory = "User directories";
     constexpr std::string_view section_accessibility = "Accessibility";
+    constexpr std::string_view section_multiplayer_client = "Multiplayer client";
     constexpr std::string_view section_multiplayer_server = "Multiplayer server";
     const std::vector<arg_handler> first_pass_arguments = {{
             {
@@ -455,6 +470,57 @@ cli_opts parse_commandline( int argc, const char **argv )
                 0,
                 [&result]( int, const char ** ) -> int {
                     result.disable_ascii_art = true;
+                    return 0;
+                }
+            },
+            {
+                "--connect", "<host:port>",
+                "Connect the graphical client to an authoritative multiplayer server",
+                section_multiplayer_client,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    if( result.server_config_action != server_config_operation::none ||
+                        result.runtime_mode != multiplayer_runtime_mode::local_client ||
+                        !result.server_config_path.empty() )
+                    {
+                        return -1;
+                    }
+                    result.runtime_mode = multiplayer_runtime_mode::network_client;
+                    result.multiplayer_server_endpoint = params[0];
+                    return 1;
+                }
+            },
+            {
+                "--connect-token-file", "<path>",
+                "Read the multiplayer bearer token from a private file",
+                section_multiplayer_client,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    if( !result.multiplayer_token_file.empty() )
+                    {
+                        return -1;
+                    }
+                    result.multiplayer_token_file = params[0];
+                    return 1;
+                }
+            },
+            {
+                "--connect-mod", "<mod id>",
+                "Add one server-selected gameplay mod in authoritative load order (default: dda)",
+                section_multiplayer_client,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    result.multiplayer_mods.emplace_back( params[0] );
+                    return 1;
+                }
+            },
+            {
+                "--allow-insecure-client-lan", {},
+                "Explicitly allow plaintext client transport beyond loopback on a trusted LAN",
+                section_multiplayer_client,
+                0,
+                [&result]( int, const char ** ) -> int {
+                    result.allow_insecure_multiplayer_lan = true;
                     return 0;
                 }
             },
@@ -648,6 +714,137 @@ bool assure_essential_dirs_exist()
     return true;
 }
 
+bool multiplayer_client_host_is_loopback( std::string host )
+{
+    std::transform( host.begin(), host.end(), host.begin(), []( const unsigned char ch ) {
+        return static_cast<char>( std::tolower( ch ) );
+    } );
+    return host == "localhost" || host == "127.0.0.1" || host == "::1";
+}
+
+bool load_multiplayer_client_token( const std::filesystem::path &path,
+                                    std::string &token, std::string &error )
+{
+    std::error_code filesystem_error;
+    const std::filesystem::file_status status = std::filesystem::symlink_status(
+                path, filesystem_error );
+    if( filesystem_error || status.type() != std::filesystem::file_type::regular ) {
+        error = "multiplayer client token path is not a regular file";
+        return false;
+    }
+    const std::uintmax_t token_size = std::filesystem::file_size( path, filesystem_error );
+    if( filesystem_error || token_size > 128 ) {
+        error = "unable to read a bounded multiplayer client token file";
+        return false;
+    }
+#if !defined(_WIN32)
+    struct stat file_status = {};
+    if( stat( path.c_str(), &file_status ) != 0 || ( file_status.st_mode & 0077 ) != 0 ) {
+        error = "multiplayer client token file must have mode 0600 or stricter";
+        return false;
+    }
+#endif
+    std::ifstream input( path, std::ios::binary );
+    if( !input ) {
+        error = "unable to read multiplayer client token file";
+        return false;
+    }
+    token.assign( std::istreambuf_iterator<char>( input ), std::istreambuf_iterator<char>() );
+    while( !token.empty() && ( token.back() == '\n' || token.back() == '\r' ) ) {
+        token.pop_back();
+    }
+    if( !multiplayer_is_valid_bearer_token( token ) ) {
+        error = "multiplayer client token file does not contain one valid bearer token";
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
+bool prepare_multiplayer_client( cli_opts &cli, multiplayer_client_settings &settings,
+                                 std::string &error )
+{
+    multiplayer_server_listen_endpoint endpoint;
+    if( const std::optional<std::string> endpoint_error =
+            parse_multiplayer_server_listen_endpoint( cli.multiplayer_server_endpoint, endpoint ) ) {
+        error = "invalid multiplayer server endpoint: " + *endpoint_error;
+        return false;
+    }
+    if( !multiplayer_client_host_is_loopback( endpoint.host ) &&
+        !cli.allow_insecure_multiplayer_lan ) {
+        error = "non-loopback plaintext client transport requires "
+                "--allow-insecure-client-lan or a loopback tunnel endpoint";
+        return false;
+    }
+    if( cli.multiplayer_token_file.empty() ||
+        !load_multiplayer_client_token( std::filesystem::u8path( cli.multiplayer_token_file ),
+                                        settings.bearer_token, error ) ) {
+        if( error.empty() ) {
+            error = "--connect-token-file is required for the multiplayer client";
+        }
+        return false;
+    }
+    if( cli.multiplayer_mods.empty() ) {
+        cli.multiplayer_mods.emplace_back( "dda" );
+    }
+
+    world_generator->init();
+    std::vector<mod_id> mods;
+    std::vector<multiplayer_content_root> roots;
+    mods.reserve( cli.multiplayer_mods.size() );
+    roots.reserve( cli.multiplayer_mods.size() + 1 );
+    roots.push_back( { "core-engine", PATH_INFO::jsondir().get_unrelative_path() } );
+    bool has_core = false;
+    for( const std::string &configured_mod : cli.multiplayer_mods ) {
+        const mod_id id( configured_mod );
+        if( !id.is_valid() ) {
+            error = "multiplayer client content mod is unavailable: " + configured_mod;
+            return false;
+        }
+        if( std::find( mods.begin(), mods.end(), id ) != mods.end() ) {
+            error = "multiplayer client content mod order contains a duplicate: " + configured_mod;
+            return false;
+        }
+        mods.emplace_back( id );
+        has_core = has_core || id->core;
+        roots.push_back( { "mod-" + configured_mod, id->path.get_unrelative_path() } );
+    }
+    if( !has_core ) {
+        error = "multiplayer client content order must contain a core mod";
+        return false;
+    }
+
+    multiplayer_content_manifest_stats manifest_stats;
+    if( !multiplayer_build_content_manifest( roots, settings.content_manifest,
+            manifest_stats, error ) ) {
+        return false;
+    }
+    // The network client loads definitions before ImGui's fonts are baked.  The
+    // regular tiles loading surface would dereference an incomplete font atlas,
+    // so keep this definition-only phase non-interactive on every backend.
+    loading_ui::set_suppressed( true );
+    try {
+        g->load_multiplayer_client_data( mods );
+    } catch( const std::exception &exception ) {
+        loading_ui::set_suppressed( false );
+        error = "multiplayer client content loading failed: " + std::string( exception.what() );
+        return false;
+    }
+    loading_ui::set_suppressed( false );
+
+    settings.endpoint = { endpoint.host, endpoint.port };
+#if defined(__ANDROID__)
+    settings.client_kind = multiplayer_protocol_client_kind::graphical_android;
+#else
+    settings.client_kind = multiplayer_protocol_client_kind::graphical_desktop;
+#endif
+    settings.build_id = getVersionString();
+    settings.savegame_version = savegame_version;
+    settings.display_name = "CDDA Graphical Client";
+    error.clear();
+    return true;
+}
+
 volatile std::sig_atomic_t dedicated_server_shutdown_requested = 0;
 
 void dedicated_server_signal_handler( int )
@@ -825,7 +1022,7 @@ int run_dedicated_server( const multiplayer_server_config &config,
         envelope.message_type = multiplayer_protocol_message_type::scene_snapshot;
         envelope.session = active_session.session;
         envelope.sequence = server_revision;
-        if( !multiplayer_build_scene_snapshot_payload( snapshot, envelope.payload, error ) )
+        if( !multiplayer_fit_scene_snapshot_to_payload_budget( snapshot, envelope.payload, error ) )
         {
             return false;
         }
@@ -897,6 +1094,15 @@ int run_dedicated_server( const multiplayer_server_config &config,
                                       event->type == multiplayer_server_lobby_event_type::authenticated ?
                                       "player_authenticated" : "player_resumed", fields ) << '\n';
                         if( !send_scene() ) {
+                            runtime_failed = true;
+                            return std::nullopt;
+                        }
+                        continue;
+                    }
+                    if( event->type ==
+                        multiplayer_server_lobby_event_type::graceful_disconnect_requested ) {
+                        bool completed = false;
+                        if( !server.complete_graceful_disconnect( *event, completed, error ) ) {
                             runtime_failed = true;
                             return std::nullopt;
                         }
@@ -1014,7 +1220,7 @@ int run_dedicated_server( const multiplayer_server_config &config,
                     }
                     command_cache.emplace( command.client_sequence,
                                            cached_remote_command{ event->message.payload, result } );
-                    while( command_cache.size() > 256 ) {
+                    while( command_cache.size() > multiplayer_server_command_replay_window ) {
                         command_cache.erase( command_cache.begin() );
                     }
                     const std::int64_t duration_us =
@@ -1232,8 +1438,24 @@ int main( int argc, const char *argv[] )
 
     const bool dedicated_server =
         cli.runtime_mode == multiplayer_runtime_mode::dedicated_server;
+    const bool network_client =
+        cli.runtime_mode == multiplayer_runtime_mode::network_client;
+    if( network_client &&
+        ( cli.verifyexit || cli.check_mods || !cli.world.empty() ||
+          cli.multiplayer_server_endpoint.empty() ) ) {
+        std::cerr << "Multiplayer client mode cannot be combined with verification, mod checks, "
+                  << "--world, or an empty endpoint.\n";
+        return 1;
+    }
+    if( !network_client &&
+        ( !cli.multiplayer_server_endpoint.empty() || !cli.multiplayer_token_file.empty() ||
+          !cli.multiplayer_mods.empty() || cli.allow_insecure_multiplayer_lan ) ) {
+        std::cerr << "Multiplayer client options require --connect.\n";
+        return 1;
+    }
     set_multiplayer_runtime_mode( cli.runtime_mode );
     std::optional<multiplayer_server_config> dedicated_server_config;
+    std::optional<multiplayer_client_settings> network_client_settings;
     const std::filesystem::path dedicated_server_config_path =
         std::filesystem::u8path( cli.server_config_path );
     if( dedicated_server ) {
@@ -1417,6 +1639,18 @@ int main( int argc, const char *argv[] )
         }
     }
 
+    if( network_client ) {
+        multiplayer_client_settings settings;
+        std::string client_error;
+        if( !prepare_multiplayer_client( cli, settings, client_error ) ) {
+            popup( _( "Unable to prepare multiplayer client: %s" ), client_error );
+            g.reset();
+            deinitDebug();
+            return 1;
+        }
+        network_client_settings = std::move( settings );
+    }
+
     if( dedicated_server ) {
         std::string world_error;
         if( !prepare_dedicated_server_world( *dedicated_server_config, world_error ) ) {
@@ -1492,6 +1726,20 @@ int main( int argc, const char *argv[] )
     }
 #endif
     replay_buffered_debugmsg_prompts();
+
+    if( network_client ) {
+        std::string client_error;
+        const int client_result = run_multiplayer_client_ui(
+                                      std::move( *network_client_settings ), client_error );
+        if( client_result != 0 && !client_error.empty() ) {
+            popup( _( "Multiplayer client stopped: %s" ), client_error );
+        }
+        g.reset();
+        deinitDebug();
+        catacurses::endwin();
+        imclient.reset();
+        return client_result;
+    }
 
     main_menu::queued_world_to_load = std::move( cli.world );
 

@@ -17,6 +17,11 @@ constexpr std::uint32_t multiplayer_server_state_schema_version = 1;
 constexpr std::size_t multiplayer_protocol_envelope_size = 48;
 constexpr std::size_t multiplayer_protocol_maximum_payload_size =
     multiplayer_transport_maximum_frame_size - multiplayer_protocol_envelope_size;
+// Full semantic scenes must remain comfortably below the transport frame ceiling so
+// reconnect snapshots cannot monopolize bounded queues on mobile clients.
+constexpr std::size_t multiplayer_scene_snapshot_maximum_payload_size = 512 * 1024;
+inline constexpr char multiplayer_scene_snapshot_budget_error[] =
+    "scene snapshot exceeds the 512 KiB full-scene budget";
 
 using multiplayer_session_id = std::array<std::uint8_t, 16>;
 
@@ -158,6 +163,11 @@ struct multiplayer_protocol_heartbeat {
     std::uint64_t monotonic_milliseconds = 0;
 };
 
+struct multiplayer_disconnect_notice {
+    multiplayer_protocol_rejection code = multiplayer_protocol_rejection::none;
+    std::string message;
+};
+
 struct multiplayer_resync_request {
     std::uint64_t client_revision = 0;
     std::string reason;
@@ -292,6 +302,10 @@ bool multiplayer_build_pong_payload( const multiplayer_protocol_heartbeat &pong,
                                      multiplayer_transport_payload &payload, std::string &error );
 bool multiplayer_parse_pong_payload( const multiplayer_protocol_envelope &envelope,
                                      multiplayer_protocol_heartbeat &pong, std::string &error );
+bool multiplayer_build_disconnect_notice_payload( const multiplayer_disconnect_notice &notice,
+        multiplayer_transport_payload &payload, std::string &error );
+bool multiplayer_parse_disconnect_notice_payload( const multiplayer_protocol_envelope &envelope,
+        multiplayer_disconnect_notice &notice, std::string &error );
 bool multiplayer_build_resync_request_payload( const multiplayer_resync_request &request,
         multiplayer_transport_payload &payload, std::string &error );
 bool multiplayer_parse_resync_request_payload( const multiplayer_protocol_envelope &envelope,

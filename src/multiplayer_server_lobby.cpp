@@ -24,6 +24,7 @@ bool session_is_empty( const multiplayer_session_id &session )
 bool client_application_message_type( const multiplayer_protocol_message_type type )
 {
     return type == multiplayer_protocol_message_type::ping ||
+           type == multiplayer_protocol_message_type::disconnect_notice ||
            type == multiplayer_protocol_message_type::player_command ||
            type == multiplayer_protocol_message_type::resync_request;
 }
@@ -117,7 +118,7 @@ std::vector<multiplayer_server_lobby_action> multiplayer_server_lobby::handle_tr
         found->second.stage = connection_stage::closing;
         return { disconnect_action( event.connection, "peer half-closed the protocol stream" ) };
     }
-    handle_closed_connection( event.connection, now );
+    handle_closed_connection( event, now );
     return {};
 }
 
@@ -125,6 +126,14 @@ std::vector<multiplayer_server_lobby_action> multiplayer_server_lobby::handle_fr
     const multiplayer_connection_id connection, connection_state &state,
     const multiplayer_transport_payload &payload, const clock::time_point now )
 {
+    if( state.stage == connection_stage::draining ) {
+        state.stage = connection_stage::closing;
+        return { disconnect_action( connection,
+                                    "client sent a message after requesting graceful disconnect" ) };
+    }
+    if( state.stage == connection_stage::releasing ) {
+        return {};
+    }
     if( state.stage == connection_stage::closing ) {
         return {};
     }
@@ -142,7 +151,7 @@ std::vector<multiplayer_server_lobby_action> multiplayer_server_lobby::handle_fr
                 return handle_resume( connection, state, envelope, now );
             }
             return handle_authenticate( connection, state, envelope, now );
-        case connection_stage::authenticated:
+        case connection_stage::authenticated: {
             if( envelope.protocol_major != multiplayer_protocol_current_major ||
                 envelope.protocol_minor != multiplayer_protocol_current_minor ||
                 envelope.session != state.session ) {
@@ -161,16 +170,69 @@ std::vector<multiplayer_server_lobby_action> multiplayer_server_lobby::handle_fr
                 state.stage = connection_stage::closing;
                 return { disconnect_action( connection, "client application message rate exceeded" ) };
             }
-            if( !application_event_capacity_available() ) {
+            const auto record_entry = resume_records_.find( state.resume_token );
+            if( record_entry == resume_records_.end() ||
+                record_entry->second.active_connection != connection ||
+                record_entry->second.session != state.session ||
+                record_entry->second.session_generation != state.session_generation ) {
                 state.stage = connection_stage::closing;
-                return { disconnect_action( connection, "server application event queue is full" ) };
+                return { disconnect_action( connection, "authenticated resume record is unavailable" ) };
+            }
+            resume_record &record = record_entry->second;
+            if( state.resume_replay_high_water != 0 &&
+                envelope.sequence <= state.resume_replay_high_water ) {
+                const bool known_player_command =
+                    envelope.message_type == multiplayer_protocol_message_type::player_command &&
+                    std::find( record.recent_player_command_sequences.begin(),
+                               record.recent_player_command_sequences.end(), envelope.sequence ) !=
+                    record.recent_player_command_sequences.end();
+                if( !known_player_command ) {
+                    state.stage = connection_stage::closing;
+                    return { disconnect_action(
+                                 connection,
+                                 "resumed sequence is not a retained player command" ) };
+                }
+            }
+            if( envelope.message_type == multiplayer_protocol_message_type::player_command ) {
+                multiplayer_player_command command;
+                if( !multiplayer_parse_player_command_payload( envelope, command, error ) ) {
+                    state.stage = connection_stage::closing;
+                    return { disconnect_action( connection,
+                                                "invalid semantic player command" ) };
+                }
+            }
+            if( envelope.message_type != multiplayer_protocol_message_type::disconnect_notice &&
+                !application_event_capacity_available() ) {
+                state.stage = connection_stage::closing;
+                return { disconnect_action( connection,
+                                            "server application event queue is full" ) };
             }
             state.last_inbound_sequence = envelope.sequence;
+            record.observed_application_high_water = std::max(
+                        record.observed_application_high_water, envelope.sequence );
+            if( envelope.message_type == multiplayer_protocol_message_type::player_command &&
+                std::find( record.recent_player_command_sequences.begin(),
+                           record.recent_player_command_sequences.end(), envelope.sequence ) ==
+                record.recent_player_command_sequences.end() ) {
+                record.recent_player_command_sequences.push_back( envelope.sequence );
+                if( record.recent_player_command_sequences.size() >
+                    multiplayer_server_command_replay_window ) {
+                    record.minimum_command_replay_floor =
+                        record.recent_player_command_sequences.front();
+                    record.recent_player_command_sequences.pop_front();
+                }
+            }
+            if( envelope.message_type == multiplayer_protocol_message_type::disconnect_notice ) {
+                return handle_disconnect_notice( connection, state, envelope );
+            }
             events_.push_back( { multiplayer_server_lobby_event_type::application_message,
                                  connection, state.session, state.player_id, state.character_id,
                                  state.display_name, state.session_generation, 0, 0,
                                  std::move( envelope ) } );
             return {};
+        }
+        case connection_stage::draining:
+        case connection_stage::releasing:
         case connection_stage::closing:
             return {};
     }
@@ -218,6 +280,78 @@ std::vector<multiplayer_server_lobby_action> multiplayer_server_lobby::handle_cl
     }
     state.stage = connection_stage::awaiting_authentication;
     state.deadline = now + settings_.handshake_timeout;
+    return { std::move( send ) };
+}
+
+std::vector<multiplayer_server_lobby_action>
+multiplayer_server_lobby::handle_disconnect_notice(
+    const multiplayer_connection_id connection, connection_state &state,
+    const multiplayer_protocol_envelope &envelope )
+{
+    multiplayer_disconnect_notice request;
+    std::string error;
+    if( !multiplayer_parse_disconnect_notice_payload( envelope, request, error ) ||
+        request.code != multiplayer_protocol_rejection::none ) {
+        state.stage = connection_stage::closing;
+        return { disconnect_action( connection, "invalid graceful disconnect request" ) };
+    }
+    if( events_.size() >= settings_.maximum_pending_events ) {
+        state.stage = connection_stage::closing;
+        return { disconnect_action( connection, "server control event queue is full" ) };
+    }
+    state.stage = connection_stage::draining;
+    events_.push_back( { multiplayer_server_lobby_event_type::graceful_disconnect_requested,
+                         connection, state.session, state.player_id, state.character_id,
+                         state.display_name, state.session_generation, 0, 0, envelope } );
+    return {};
+}
+
+std::vector<multiplayer_server_lobby_action>
+multiplayer_server_lobby::complete_graceful_disconnect(
+    const multiplayer_server_lobby_event &request )
+{
+    const auto found = connections_.find( request.connection );
+    if( request.type != multiplayer_server_lobby_event_type::graceful_disconnect_requested ||
+        found == connections_.end() ) {
+        return {};
+    }
+    connection_state &state = found->second;
+    if( state.stage != connection_stage::draining || request.session != state.session ||
+        request.session_generation != state.session_generation ||
+        request.message.message_type != multiplayer_protocol_message_type::disconnect_notice ||
+        request.message.session != state.session ||
+        request.message.sequence != state.last_inbound_sequence ) {
+        return {};
+    }
+    const auto record = resume_records_.find( state.resume_token );
+    if( record == resume_records_.end() || record->second.active_connection != request.connection ||
+        record->second.session != state.session ||
+        record->second.session_generation != state.session_generation ) {
+        return {};
+    }
+
+    multiplayer_protocol_envelope response;
+    response.message_type = multiplayer_protocol_message_type::disconnect_notice;
+    response.session = state.session;
+    response.sequence = request.message.sequence;
+    std::string error;
+    if( !multiplayer_build_disconnect_notice_payload(
+{ multiplayer_protocol_rejection::none, "multiplayer session released" },
+response.payload, error ) ) {
+        state.stage = connection_stage::closing;
+        return { disconnect_action( request.connection,
+                                    "graceful disconnect response failed" ) };
+    }
+    multiplayer_server_lobby_action send;
+    if( !build_send_action( request.connection, std::move( response ), send, error ) ) {
+        state.stage = connection_stage::closing;
+        return { disconnect_action( request.connection,
+                                    "graceful disconnect response failed" ) };
+    }
+
+    send.type = multiplayer_server_lobby_action_type::send_and_disconnect;
+    send.reason = multiplayer_graceful_release_transport_reason;
+    state.stage = connection_stage::releasing;
     return { std::move( send ) };
 }
 
@@ -354,6 +488,11 @@ std::vector<multiplayer_server_lobby_action> multiplayer_server_lobby::handle_re
                               "resume session is unavailable" );
     }
     resume_record &record = record_entry->second;
+    if( request.last_client_sequence < record.minimum_command_replay_floor ) {
+        resume_records_.erase( record_entry );
+        return reject_resume( connection, state, multiplayer_protocol_rejection::session_expired,
+                              "resume replay window has expired" );
+    }
     if( !application_event_capacity_available() ) {
         return reject_resume( connection, state, multiplayer_protocol_rejection::resource_limit,
                               "server event queue is full" );
@@ -363,10 +502,13 @@ std::vector<multiplayer_server_lobby_action> multiplayer_server_lobby::handle_re
         return reject_resume( connection, state, multiplayer_protocol_rejection::internal_error,
                               "resume session generation failed" );
     }
+    const std::uint64_t replay_high_water = record.observed_application_high_water;
     ++record.session_generation;
     record.session = state.session;
     record.expires_at = now + settings_.resume_token_lifetime;
     record.active_connection = connection;
+    record.observed_application_high_water = std::max(
+                record.observed_application_high_water, request.last_client_sequence );
     state.stage = connection_stage::authenticated;
     state.resume_token = request.resume_token;
     state.player_id = record.player_id;
@@ -374,6 +516,7 @@ std::vector<multiplayer_server_lobby_action> multiplayer_server_lobby::handle_re
     state.display_name = record.display_name;
     state.session_generation = record.session_generation;
     state.last_inbound_sequence = request.last_client_sequence;
+    state.resume_replay_high_water = replay_high_water;
 
     multiplayer_resume_result result;
     result.accepted = true;
@@ -407,22 +550,35 @@ std::vector<multiplayer_server_lobby_action> multiplayer_server_lobby::handle_re
 }
 
 void multiplayer_server_lobby::handle_closed_connection(
-    const multiplayer_connection_id connection, const clock::time_point now )
+    const multiplayer_transport_event &event, const clock::time_point now )
 {
-    const auto found = connections_.find( connection );
+    const auto found = connections_.find( event.connection );
     if( found == connections_.end() ) {
         return;
     }
     const connection_state state = found->second;
     if( !state.resume_token.empty() ) {
         const auto record = resume_records_.find( state.resume_token );
-        if( record != resume_records_.end() && record->second.active_connection == connection ) {
-            record->second.active_connection.reset();
-            record->second.expires_at = now + settings_.resume_token_lifetime;
-            push_control_event( { multiplayer_server_lobby_event_type::disconnected, connection,
-                                  state.session, record->second.player_id,
-                                  record->second.character_id, record->second.display_name,
-                                  record->second.session_generation, 0, 0, {} } );
+        if( record != resume_records_.end() &&
+            record->second.active_connection == event.connection ) {
+            const bool graceful_release_completed =
+                state.stage == connection_stage::releasing &&
+                event.type == multiplayer_transport_event_type::disconnected &&
+                event.detail == multiplayer_graceful_release_transport_reason;
+            const std::string player_id = record->second.player_id;
+            const std::string character_id = record->second.character_id;
+            const std::string display_name = record->second.display_name;
+            const std::uint64_t session_generation = record->second.session_generation;
+            if( graceful_release_completed ) {
+                resume_records_.erase( record );
+            } else {
+                record->second.active_connection.reset();
+                record->second.expires_at = now + settings_.resume_token_lifetime;
+            }
+            push_control_event( { multiplayer_server_lobby_event_type::disconnected,
+                                  event.connection, state.session, player_id,
+                                  character_id, display_name, session_generation,
+                                  0, 0, {} } );
         }
     }
     connections_.erase( found );

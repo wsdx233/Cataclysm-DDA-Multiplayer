@@ -62,6 +62,15 @@ struct multiplayer_server_transport_settings {
     std::size_t pending_write_bytes_per_connection = 8 * 1024 * 1024;
 };
 
+struct multiplayer_client_transport_settings {
+    std::size_t inbound_event_count = 128;
+    std::size_t inbound_payload_bytes = 8 * 1024 * 1024;
+    std::size_t outbound_command_count = 128;
+    std::size_t outbound_payload_bytes = 8 * 1024 * 1024;
+    std::size_t pending_writes = 32;
+    std::size_t pending_write_bytes = 4 * 1024 * 1024;
+};
+
 enum class multiplayer_transport_send_result : std::uint8_t {
     queued,
     stopped,
@@ -81,12 +90,38 @@ class multiplayer_server_transport
         bool start( const multiplayer_transport_endpoint &endpoint, std::string &error );
         void stop();
         bool running() const;
+        std::string failure_detail() const;
         std::uint16_t bound_port() const;
 
         std::optional<multiplayer_transport_event> poll_event();
         multiplayer_transport_send_result send( multiplayer_connection_id connection,
                                                 multiplayer_transport_payload payload );
+        multiplayer_transport_send_result send_and_disconnect(
+            multiplayer_connection_id connection, multiplayer_transport_payload payload,
+            std::string reason );
         bool disconnect( multiplayer_connection_id connection, std::string reason );
+
+    private:
+        class impl;
+        std::unique_ptr<impl> impl_;
+};
+
+class multiplayer_client_transport
+{
+    public:
+        explicit multiplayer_client_transport( multiplayer_client_transport_settings settings = {} );
+        ~multiplayer_client_transport();
+
+        multiplayer_client_transport( const multiplayer_client_transport & ) = delete;
+        multiplayer_client_transport &operator=( const multiplayer_client_transport & ) = delete;
+
+        bool start( const multiplayer_transport_endpoint &endpoint, std::string &error );
+        void stop();
+        bool running() const;
+        bool connected() const;
+
+        std::optional<multiplayer_transport_event> poll_event();
+        multiplayer_transport_send_result send( multiplayer_transport_payload payload );
 
     private:
         class impl;

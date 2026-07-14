@@ -3,6 +3,7 @@ package com.cleverraven.cataclysmdda;
 import org.libsdl.app.SDLActivity;
 
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.Insets;
@@ -19,6 +20,9 @@ import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.Toast;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class CataclysmDDA extends SDLActivity {
     private static final String TAG = "CDDA";
     public static final String PREF_SYSTEM_UI_MODE = "Android system UI mode";
@@ -26,6 +30,14 @@ public class CataclysmDDA extends SDLActivity {
     public static final String SYSTEM_UI_MODE_SYSTEM_BARS = "system_bars";
     public static final String SYSTEM_UI_MODE_FULLSCREEN = "fullscreen";
     public static final String SYSTEM_UI_MODE_EDGE_TO_EDGE = "edge_to_edge";
+    public static final String EXTRA_MULTIPLAYER_ENDPOINT =
+        "com.cleverraven.cataclysmdda.MULTIPLAYER_ENDPOINT";
+    public static final String EXTRA_MULTIPLAYER_MODE =
+        "com.cleverraven.cataclysmdda.MULTIPLAYER_MODE";
+    public static final String EXTRA_MULTIPLAYER_TOKEN_FILE =
+        "com.cleverraven.cataclysmdda.MULTIPLAYER_TOKEN_FILE";
+    public static final String EXTRA_MULTIPLAYER_ALLOW_INSECURE_LAN =
+        "com.cleverraven.cataclysmdda.MULTIPLAYER_ALLOW_INSECURE_LAN";
 
     private NativeUI nativeUI = new NativeUI(CataclysmDDA.this);
     private int lastImeLeft = -1;
@@ -53,6 +65,44 @@ public class CataclysmDDA extends SDLActivity {
     }
 
     @Override
+    protected String[] getArguments() {
+        Intent intent = getIntent();
+        if (intent == null ||
+            !intent.getBooleanExtra(EXTRA_MULTIPLAYER_MODE, false)) {
+            return new String[0];
+        }
+        if (!isCompleteMultiplayerIntent(intent)) {
+            // Keep native startup fail-closed so the command-line validator rejects this
+            // malformed internal launch without starting a local game.
+            return new String[] { "--connect", "invalid-multiplayer-intent" };
+        }
+        String endpoint = intent == null ? null :
+            intent.getStringExtra(EXTRA_MULTIPLAYER_ENDPOINT);
+        String tokenFile = intent == null ? null :
+            intent.getStringExtra(EXTRA_MULTIPLAYER_TOKEN_FILE);
+
+        List<String> arguments = new ArrayList<>();
+        arguments.add("--connect");
+        arguments.add(endpoint);
+        arguments.add("--connect-token-file");
+        arguments.add(tokenFile);
+        if (intent.getBooleanExtra(EXTRA_MULTIPLAYER_ALLOW_INSECURE_LAN, false)) {
+            arguments.add("--allow-insecure-client-lan");
+        }
+        return arguments.toArray(new String[0]);
+    }
+
+    private boolean isCompleteMultiplayerIntent(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_MULTIPLAYER_MODE, false)) {
+            return true;
+        }
+        String endpoint = intent.getStringExtra(EXTRA_MULTIPLAYER_ENDPOINT);
+        String tokenFile = intent.getStringExtra(EXTRA_MULTIPLAYER_TOKEN_FILE);
+        return endpoint != null && !endpoint.isEmpty() &&
+            tokenFile != null && !tokenFile.isEmpty();
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         if (mLayout != null) {
@@ -60,6 +110,14 @@ public class CataclysmDDA extends SDLActivity {
         }
         setImeInsetListener();
         applySystemUiMode();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        // SDL native argv is fixed when this singleInstance activity starts.  Do not
+        // silently replace a running local/client process with a new launch request.
+        Toast.makeText(this, R.string.multiplayerExistingSession, Toast.LENGTH_LONG).show();
     }
 
     @Override

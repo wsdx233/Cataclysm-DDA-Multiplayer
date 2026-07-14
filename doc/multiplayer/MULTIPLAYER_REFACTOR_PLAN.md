@@ -618,15 +618,22 @@ License 1.0。Linux GCC/Clang、Windows MSVC 和 Android NDK arm64 编译门禁�
 - `ChatMessage`
 - `ServerNotice`
 - `Ping` / `Pong`
-- `GracefulDisconnect`
+- `DisconnectNotice`（客户端请求与服务端确认使用同一 typed message，sequence 必须精确匹配）
 
 ### 12.5 顺序、幂等与 revision
 
 - 每个客户端 command 带递增 `client_seq`。
 - 服务器缓存最近 N 个 command result，重发同一 seq 时返回相同结果，不重复执行。
+- server command-result cache 与 resume 可重放 `PlayerCommand` sequence 使用同一个有界 N；application
+  high-water 单调记录已见业务序列。只有仍保留且原类型为 `PlayerCommand` 的 sequence 可以重放；ping、
+  sequence gap、解析/入队失败和已淘汰 command 的 sequence 不得在重连后跨类型复用，过旧 replay floor 必须
+  令 session 过期而不是把旧 sequence 当新命令执行。
 - command 带 `base_revision`；依赖旧场景的动作在 revision 不匹配时重新验证或拒绝。
 - delta 带 `base_revision` 与 `new_revision`；客户端缺失中间 delta 时请求 full snapshot。
 - TCP 有序不等于业务幂等，重连时仍必须处理“服务器执行成功但客户端未收到确认”的情况。
+- clean `DisconnectNotice` 必须在 simulation FIFO 中晚于既有 command/result/scene；服务端只有在 ACK bytes
+  写完且 transport 报告精确 ordered-close completion 后才能删除 resume record，任何 queue/read/write/peer-close
+  failure 都保留 resume 能力。
 
 ## 13. 版本与内容兼容
 
@@ -752,7 +759,9 @@ cataclysm --check-server-config server.json
 cataclysm --server server.json
 ```
 
-图形客户端连接命令仍属于 Phase 2 后续工作，预期形式为 `cataclysm-tiles --connect example.org:27999`。
+图形/终端客户端现已在 Phase 2 实现 `cataclysm --connect example.org:27999` /
+`cataclysm-tiles --connect example.org:27999`，并通过
+`--connect-token-file` 从私有文件读取 bearer token；非 loopback plaintext 仍需显式 LAN 例外。
 首个阶段由现有 curses/tiles binary 增加 `--server` 并跳过界面初始化，即使仍链接 UI backend。之后再增加独立
 `cataclysm-server` target，去除运行时窗口依赖。不要把“完全不链接 curses”作为第一个联机切片的阻塞项。
 
@@ -1139,9 +1148,15 @@ TCP 不会乱序交付同一连接中的字节，但业务测试仍要覆盖重�
 - 4 玩家共享 bubble 时，普通 turn server p95 小于 100 ms，不计玩家等待。
 - LAN command 到确认 p95 小于 100 ms。
 - 常规压缩 delta 中位数小于 64 KiB。
-- full scene/avatar snapshot 尽量控制在 2 MiB 压缩后，并支持 chunk。
+- 长期 full scene/avatar snapshot 目标控制在 2 MiB 压缩后并支持 chunk。Phase 2 当前先执行更严格的
+  512 KiB 未压缩 scene payload 上限，超限时从外圈缩减可见半径并保留中心/player anchor；这是移动端
+  安全门禁，不替代后续 delta/chunk/zstd 和明确的 reduced-viewport metadata。
 - snapshot 构建不得让模拟线程产生超过 50 ms 的额外停顿；超出后需要增量和缓存。
 - 慢客户端不能拖垮其他客户端，发送队列达到上限后断开慢连接。
+- server transport 的 admission slot 绑定完整 logical connection lifecycle：socket 关闭后仍占用 slot，直到
+  simulation thread 消费该连接的 terminal event。frame queue 必须为每个 admitted lifecycle 保留 connected 与
+  terminal control capacity，使 connect/reset churn 无法复用 slot 并挤掉较早 terminal event。若理论上不可达的
+  control enqueue failure 仍发生，transport 必须在停止前持久发布独立于普通 inbound queue 的全局 fatal detail。
 
 ## 22. 分阶段实施路线
 
@@ -1162,7 +1177,7 @@ Phase 0 已于 2026-07-12 按证据关闭：稳定地址 bridge 在 GCC release 
 274/274 正向 assertions，完整 move-swap 保留 3 个预期失败对照；hosted baseline run `29205262759`
 验证 Linux、Android arm64 和 Windows MSVC artifacts；transport run `29205262750` 验证 GCC 13、
 Clang 18、MSVC 和 Android NDK arm64。ADR-0003 与 ADR-0005 已接受。嵌入式 TLS、生产 transport、
-canonical generation save 和实际远程命令均未被 Phase 0 spike 冒充完成，项目现已进入 Phase 1。
+canonical generation save 和实际远程命令均未被 Phase 0 spike 冒充完成；项目当时由此进入 Phase 1。
 
 ### Phase 1：Headless 运行模式与协议骨架（3 至 5 周）
 
@@ -1175,10 +1190,11 @@ canonical generation save 和实际远程命令均未被 Phase 0 spike 冒充完
 
 退出标准：服务器可无终端交互启动、监听、握手、拒绝不兼容客户端并优雅退出。
 
-截至 2026-07-13，Phase 1 的本地实现和退出 smoke 已满足：生产有界 Asio transport、固定 FlatBuffers
+截至 2026-07-13，Phase 1 已按本地与 hosted 证据关闭：生产有界 Asio transport、固定 FlatBuffers
 schema/handshake、真实 ordered content SHA-256、严格 config/token、headless world bootstrap、JSON log、signal
-save/shutdown 和真实进程 loopback 均已验证。当前 source 的 hosted MSVC/Android/Linux artifacts 必须在推送后
-补证，结果记录在 `STATUS.md`；在该证据完成前不把 hosted gate 标成绿色。
+save/shutdown 和真实进程 loopback 均已验证；baseline run `29219328448` 与 transport/protocol run
+`29219953446` 分别覆盖 Linux package、Windows MSVC tiles+sound、Android arm64 APK，以及 GCC 13、Clang 18、
+MSVC 和 Android NDK gates。后续客户端提交仍需自己的 hosted 结果，不能复用 Phase 1 run 冒充新代码证据。
 
 ### Phase 2：单远程玩家垂直切片（4 至 7 周）
 
@@ -1193,9 +1209,20 @@ save/shutdown 和真实进程 loopback 均已验证。当前 source 的 hosted M
 退出标准：一个客户端可以远程控制服务器唯一 avatar，画面不依赖服务端图形环境。
 
 当前服务器侧纵向切片已完成 wait/move shared executor、simulation-thread remote turn callback、terrain/
-furniture/player/monster visible scene、full snapshot、revision、command result、ping、resync、resume 和幂等重放；
-真实 headless smoke client 可驱动唯一 server-owned avatar。Windows/Android 图形 network client、本地
-keys/touch → semantic command 和 scene → tiles renderer 尚未实现，所以 Phase 2 明确保持进行中。
+furniture/player/monster visible scene、full snapshot、revision、command result、ping、resync、resume 和幂等重放。
+客户端侧现有生产 Asio transport/state machine、严格 auth/resume/revision/sequence 边界、桌面 `--connect`、本地
+keys/touch → semantic wait/move、curses fallback 和 `cata_tiles::draw_remote_scene()`；scene payload 受 512 KiB
+预算约束，客户端有 30 秒 ping/120 秒 deadline、manual resume/fresh retry，以及等待既有 command settlement 后
+按 simulation FIFO 排入 ACK、待 write drain/ordered-close 精确完成才清除 resume record 的 typed
+`DisconnectNotice` session release。服务端/客户端还验证了共享 256-command replay window、跨类型 sequence
+复用拒绝和 pending-scene heartbeat；服务端 logical connection slot 现会保留到 terminal event 被消费，防止
+connect/reset churn 挤掉 terminal control event，防御性 control-enqueue fatal detail 也独立持久化。真实 Linux
+PTY 的最终 release 与 sanitizer binary 均已完成 auth/scene/断线/resume/replay/move/quit smoke，完整
+`[multiplayer]` sanitizer suite 也无 ASan/UBSan/LSan/stack-use-after-return finding。Android arm64/x86_64 debug
+APK 已编译 Java connect 表单和 SDL renderer。Phase 2 仍保持进行中，因为本批尚需对应提交的 hosted
+MSVC/Android 结果，Android 还缺
+emulator/真机最小 pause/resume/network reconnect 证据；完整 lifecycle polish、remote avatar replica 与更完整
+scene layers 属于后续 Phase 4。
 
 ### Phase 3：第二玩家与共享 Scheduler（5 至 8 周）
 
@@ -1216,7 +1243,8 @@ keys/touch → semantic command 和 scene → tiles renderer 尚未实现，所�
 - 添加 per-player messages、sound events、weather animation。
 - 添加 overmap known-state 模型。
 - 客户端 connect/recent servers/compatibility UI。
-- Android pause/resume 与 reconnect。
+- 完善 Android pause/resume、后台超时、进程重启 resume checkpoint 与自动 reconnect/backoff；Phase 2 只要求
+  单客户端 vertical-slice 的最小真实设备 lifecycle smoke。
 
 退出标准：移动、战斗和观察体验与同版本本地单人模式视觉上基本一致，不向客户端泄露隐藏实体。
 

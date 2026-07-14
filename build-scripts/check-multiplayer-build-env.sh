@@ -41,6 +41,8 @@ check_linux()
     require_command make
     require_command cmake
     require_command msgfmt
+    require_command ldd
+    require_command nm
 
     if command -v clang++-18 >/dev/null 2>&1; then
         compiler="$(command -v clang++-18)"
@@ -71,6 +73,36 @@ check_linux()
     if command -v ncursesw6-config >/dev/null 2>&1 ||
        { command -v pkg-config >/dev/null 2>&1 && pkg-config --exists ncursesw; }; then
         ok 'ncursesw development files'
+        if [ -n "$compiler" ]; then
+            local curses_probe=""
+            curses_probe="$(mktemp)"
+            if printf '%s\n' \
+               '#include <curses.h>' \
+               'int main() { initscr(); const bool failed = tparm(const_cast<char *>("x"), 1L) == nullptr; endwin(); return failed; }' |
+               "$compiler" -x c++ - -o "$curses_probe" -lncursesw >/dev/null 2>&1; then
+                local curses_dependencies=""
+                local ncurses_runtime=""
+                local tinfo_runtime=""
+                curses_dependencies="$(ldd "$curses_probe" 2>/dev/null)"
+                ncurses_runtime="$(printf '%s\n' "$curses_dependencies" |
+                    awk '$1 ~ /^libncursesw[.]so/ { print $3; exit }')"
+                tinfo_runtime="$(printf '%s\n' "$curses_dependencies" |
+                    awk '$1 ~ /^libtinfo[.]so/ { print $3; exit }')"
+                if [ -z "$ncurses_runtime" ] || [ -z "$tinfo_runtime" ]; then
+                    fail 'dynamic ncursesw and tinfo runtime libraries'
+                elif [ "${ncurses_runtime%/*}" != "${tinfo_runtime%/*}" ]; then
+                    fail 'compatible ncursesw/tinfo runtime libraries (different runtime roots)'
+                elif nm "$curses_probe" 2>/dev/null |
+                   grep -Eq ' [Tt] _nc_(doalloc|tparm_analyze)$'; then
+                    fail 'compatible ncursesw/tinfo runtime libraries (mixed shared/static link detected)'
+                else
+                    ok 'compatible ncursesw/tinfo runtime libraries'
+                fi
+            else
+                fail 'linkable ncursesw/tinfo runtime libraries'
+            fi
+            rm -f "$curses_probe"
+        fi
     else
         fail 'ncursesw development files'
     fi

@@ -32,13 +32,13 @@ std::string payload_text( const multiplayer_transport_payload &value )
     return { value.begin(), value.end() };
 }
 
+template<typename Transport>
 std::optional<multiplayer_transport_event> wait_for_event(
-    multiplayer_server_transport &server, const std::chrono::milliseconds timeout =
-        std::chrono::seconds( 5 ) )
+    Transport &transport, const std::chrono::milliseconds timeout = std::chrono::seconds( 5 ) )
 {
     const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + timeout;
     do {
-        if( std::optional<multiplayer_transport_event> event = server.poll_event() ) {
+        if( std::optional<multiplayer_transport_event> event = transport.poll_event() ) {
             return event;
         }
         std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
@@ -77,6 +77,27 @@ void connect_client( loopback_client &client, const multiplayer_server_transport
 {
     client.socket.connect( asio::ip::tcp::endpoint( asio::ip::address_v4::loopback(),
                            server.bound_port() ) );
+}
+
+bool wait_for_socket_close( asio::ip::tcp::socket &socket,
+                            const std::chrono::milliseconds timeout = std::chrono::seconds( 2 ) )
+{
+    asio::error_code error;
+    socket.non_blocking( true, error );
+    if( error ) {
+        return false;
+    }
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + timeout;
+    std::array<std::uint8_t, 1> buffer = {};
+    do {
+        error.clear();
+        socket.read_some( asio::buffer( buffer ), error );
+        if( error && error != asio::error::would_block && error != asio::error::try_again ) {
+            return true;
+        }
+        std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+    } while( std::chrono::steady_clock::now() < deadline );
+    return false;
 }
 
 } // namespace
@@ -183,6 +204,189 @@ TEST_CASE( "multiplayer_server_transport_preserves_frames_and_ordered_half_close
 
     server.stop();
     CHECK_FALSE( server.running() );
+}
+
+TEST_CASE( "multiplayer_server_transport_atomically_sends_before_ordered_disconnect",
+           "[multiplayer][transport]" )
+{
+    SECTION( "successful write reports the requested graceful close reason" ) {
+        multiplayer_server_transport server;
+        std::string error;
+        REQUIRE( server.start( { "127.0.0.1", 0 }, error ) );
+        loopback_client client;
+        connect_client( client, server );
+        std::optional<multiplayer_transport_event> event = wait_for_event( server );
+        REQUIRE( event );
+        REQUIRE( event->type == multiplayer_transport_event_type::connected );
+
+        const std::string reason = "atomic ordered close complete";
+        CHECK( server.send_and_disconnect( event->connection, payload( "final-ack" ), reason ) ==
+               multiplayer_transport_send_result::queued );
+        CHECK( payload_text( read_frame( client.socket ) ) == "final-ack" );
+        std::array<std::uint8_t, 1> end = {};
+        asio::error_code read_error;
+        client.socket.read_some( asio::buffer( end ), read_error );
+        CHECK( read_error == asio::error::eof );
+
+        event = wait_for_event( server );
+        REQUIRE( event );
+        CHECK( event->type == multiplayer_transport_event_type::disconnected );
+        CHECK( event->detail == reason );
+        server.stop();
+    }
+
+    SECTION( "per-connection enqueue failure reports a non-graceful transport error" ) {
+        multiplayer_server_transport_settings settings;
+        settings.pending_write_bytes_per_connection = multiplayer_transport_frame_header_size;
+        multiplayer_server_transport server( settings );
+        std::string error;
+        REQUIRE( server.start( { "127.0.0.1", 0 }, error ) );
+        loopback_client client;
+        connect_client( client, server );
+        std::optional<multiplayer_transport_event> event = wait_for_event( server );
+        REQUIRE( event );
+        REQUIRE( event->type == multiplayer_transport_event_type::connected );
+
+        CHECK( server.send_and_disconnect( event->connection, payload( "cannot-fit" ),
+                                           "must-not-be-reported" ) ==
+               multiplayer_transport_send_result::queued );
+        event = wait_for_event( server );
+        REQUIRE( event );
+        CHECK( event->type == multiplayer_transport_event_type::transport_error );
+        CHECK( event->detail.find( "queue is full" ) != std::string::npos );
+        CHECK( event->detail != "must-not-be-reported" );
+        server.stop();
+    }
+}
+
+TEST_CASE( "multiplayer_server_transport_retires_capacity_until_terminal_event_is_consumed",
+           "[multiplayer][transport]" )
+{
+    multiplayer_server_transport_settings settings;
+    settings.maximum_connections = 1;
+    settings.inbound_event_count = 2;
+    multiplayer_server_transport server( settings );
+    std::string error;
+    REQUIRE( server.start( { "127.0.0.1", 0 }, error ) );
+
+    loopback_client first;
+    connect_client( first, server );
+    std::optional<multiplayer_transport_event> event = wait_for_event( server );
+    REQUIRE( event );
+    REQUIRE( event->type == multiplayer_transport_event_type::connected );
+    const multiplayer_connection_id first_connection = event->connection;
+
+    REQUIRE( server.disconnect( first_connection, "retired connection" ) );
+    REQUIRE( wait_for_socket_close( first.socket ) );
+
+    // The socket is gone, but its logical admission slot remains occupied until the
+    // simulation thread consumes the terminal event.  A connection churner therefore
+    // cannot reuse that slot to crowd the terminal event out of the bounded queue.
+    loopback_client rejected;
+    connect_client( rejected, server );
+    REQUIRE( wait_for_socket_close( rejected.socket ) );
+
+    event = wait_for_event( server );
+    REQUIRE( event );
+    CHECK( event->type == multiplayer_transport_event_type::disconnected );
+    CHECK( event->connection == first_connection );
+    CHECK( event->detail == "retired connection" );
+    CHECK( server.running() );
+
+    loopback_client replacement;
+    connect_client( replacement, server );
+    event = wait_for_event( server );
+    REQUIRE( event );
+    CHECK( event->type == multiplayer_transport_event_type::connected );
+    server.stop();
+}
+
+TEST_CASE( "multiplayer_client_transport_connects_and_preserves_bidirectional_frames",
+           "[multiplayer][transport]" )
+{
+    multiplayer_server_transport server;
+    std::string error;
+    REQUIRE( server.start( { "127.0.0.1", 0 }, error ) );
+
+    multiplayer_client_transport client;
+    REQUIRE( client.start( { "127.0.0.1", server.bound_port() }, error ) );
+    std::optional<multiplayer_transport_event> client_event = wait_for_event( client );
+    REQUIRE( client_event );
+    REQUIRE( client_event->type == multiplayer_transport_event_type::connected );
+    CHECK( client.connected() );
+
+    std::optional<multiplayer_transport_event> server_event = wait_for_event( server );
+    REQUIRE( server_event );
+    REQUIRE( server_event->type == multiplayer_transport_event_type::connected );
+    const multiplayer_connection_id connection = server_event->connection;
+
+    CHECK( client.send( payload( "client-to-server" ) ) ==
+           multiplayer_transport_send_result::queued );
+    server_event = wait_for_event( server );
+    REQUIRE( server_event );
+    REQUIRE( server_event->type == multiplayer_transport_event_type::frame );
+    CHECK( payload_text( server_event->payload ) == "client-to-server" );
+
+    CHECK( server.send( connection, payload( "server-to-client" ) ) ==
+           multiplayer_transport_send_result::queued );
+    client_event = wait_for_event( client );
+    REQUIRE( client_event );
+    REQUIRE( client_event->type == multiplayer_transport_event_type::frame );
+    CHECK( payload_text( client_event->payload ) == "server-to-client" );
+
+    REQUIRE( server.disconnect( connection, "client transport test complete" ) );
+    client_event = wait_for_event( client );
+    REQUIRE( client_event );
+    CHECK( ( client_event->type == multiplayer_transport_event_type::peer_half_closed ||
+             client_event->type == multiplayer_transport_event_type::disconnected ) );
+
+    client.stop();
+    server.stop();
+    CHECK_FALSE( client.running() );
+    CHECK_FALSE( client.connected() );
+}
+
+TEST_CASE( "multiplayer_client_transport_reserves_a_terminal_event_under_saturation",
+           "[multiplayer][transport]" )
+{
+    multiplayer_server_transport server;
+    std::string error;
+    REQUIRE( server.start( { "127.0.0.1", 0 }, error ) );
+
+    multiplayer_client_transport_settings settings;
+    settings.inbound_event_count = 3;
+    multiplayer_client_transport client( settings );
+    REQUIRE( client.start( { "127.0.0.1", server.bound_port() }, error ) );
+    std::optional<multiplayer_transport_event> client_event = wait_for_event( client );
+    REQUIRE( client_event );
+    REQUIRE( client_event->type == multiplayer_transport_event_type::connected );
+    std::optional<multiplayer_transport_event> server_event = wait_for_event( server );
+    REQUIRE( server_event );
+    REQUIRE( server_event->type == multiplayer_transport_event_type::connected );
+
+    for( const char value : {
+             'a', 'b', 'c'
+         } ) {
+        REQUIRE( server.send( server_event->connection,
+                              multiplayer_transport_payload{ static_cast<std::uint8_t>( value ) } ) ==
+                 multiplayer_transport_send_result::queued );
+    }
+    std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+    for( const char expected : {
+             'a', 'b'
+         } ) {
+        client_event = wait_for_event( client );
+        REQUIRE( client_event );
+        REQUIRE( client_event->type == multiplayer_transport_event_type::frame );
+        REQUIRE( client_event->payload.size() == 1 );
+        CHECK( client_event->payload.front() == static_cast<std::uint8_t>( expected ) );
+    }
+    client_event = wait_for_event( client );
+    REQUIRE( client_event );
+    CHECK( client_event->type == multiplayer_transport_event_type::transport_error );
+    CHECK( client_event->detail.find( "queue is full" ) != std::string::npos );
+    client.stop();
+    server.stop();
 }
 
 TEST_CASE( "multiplayer_server_transport_rejects_oversized_and_saturated_input",

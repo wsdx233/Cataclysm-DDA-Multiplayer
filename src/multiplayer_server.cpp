@@ -173,6 +173,11 @@ bool multiplayer_dedicated_server::execute_actions(
             transport_.disconnect( action.connection, std::move( action.reason ) );
             continue;
         }
+        if( action.type == multiplayer_server_lobby_action_type::send_and_disconnect ) {
+            transport_.send_and_disconnect( action.connection, std::move( action.payload ),
+                                            std::move( action.reason ) );
+            continue;
+        }
         const multiplayer_transport_send_result result = transport_.send(
                     action.connection, std::move( action.payload ) );
         if( result != multiplayer_transport_send_result::queued ) {
@@ -180,7 +185,10 @@ bool multiplayer_dedicated_server::execute_actions(
         }
     }
     if( !transport_.running() ) {
-        error = "dedicated server transport stopped unexpectedly";
+        error = transport_.failure_detail();
+        if( error.empty() ) {
+            error = "dedicated server transport stopped unexpectedly";
+        }
         running_ = false;
         return false;
     }
@@ -260,6 +268,27 @@ bool multiplayer_dedicated_server::send( const multiplayer_connection_id connect
     if( transport_.send( connection, std::move( encoded ) ) !=
         multiplayer_transport_send_result::queued ) {
         error = "dedicated server outbound queue rejected a protocol message";
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
+bool multiplayer_dedicated_server::complete_graceful_disconnect(
+    const multiplayer_server_lobby_event &request, bool &completed, std::string &error )
+{
+    completed = false;
+    if( !running_ || !lobby_ ) {
+        error = "dedicated server is not running";
+        return false;
+    }
+    std::vector<multiplayer_server_lobby_action> actions =
+        lobby_->complete_graceful_disconnect( request );
+    completed = actions.size() == 1 &&
+                actions.front().type ==
+                multiplayer_server_lobby_action_type::send_and_disconnect;
+    if( !execute_actions( std::move( actions ), error ) ) {
+        completed = false;
         return false;
     }
     error.clear();

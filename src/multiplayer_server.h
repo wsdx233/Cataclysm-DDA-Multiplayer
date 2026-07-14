@@ -48,6 +48,8 @@ class multiplayer_dedicated_server
         std::optional<multiplayer_server_lobby_event> poll_event();
         bool send( multiplayer_connection_id connection,
                    const multiplayer_protocol_envelope &envelope, std::string &error );
+        bool complete_graceful_disconnect( const multiplayer_server_lobby_event &request,
+                                           bool &completed, std::string &error );
         void disconnect( multiplayer_connection_id connection, std::string reason );
 
     private:

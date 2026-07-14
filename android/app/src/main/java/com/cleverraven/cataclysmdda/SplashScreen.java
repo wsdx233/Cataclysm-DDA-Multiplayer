@@ -2,6 +2,7 @@ package com.cleverraven.cataclysmdda;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileReader;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -27,23 +28,35 @@ import android.content.res.AssetManager;
 import android.net.Uri;
 import android.os.*;
 import android.preference.PreferenceManager;
+import android.system.ErrnoException;
+import android.system.Os;
+import android.system.OsConstants;
+import android.text.InputType;
 import android.util.Log;
 import android.view.ViewGroup;
 import android.widget.CheckBox;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.cleverraven.cataclysmdda.CataclysmDDA_Helpers;
 
 public class SplashScreen extends Activity {
     private static final String TAG = "Splash";
     private static final int INSTALL_DIALOG_ID = 0;
+    private static final String PREF_MULTIPLAYER_ENDPOINT = "Multiplayer endpoint";
+    private static final String PREF_MULTIPLAYER_TOKEN_ENDPOINT =
+        "Multiplayer token endpoint";
     private ProgressDialog installDialog;
 
     private AlertDialog accessibilityServicesAlert;
+    private AlertDialog crashAlert;
+    private AlertDialog launchModeAlert;
+    private AlertDialog multiplayerConnectAlert;
 
     public boolean[] mSettingsValues = { false, true, true };
     private int mSystemUiModeIndex = 0;
@@ -60,6 +73,9 @@ public class SplashScreen extends Activity {
     }
 
     private void showCrashAlert() {
+        if (isFinishing() || (crashAlert != null && crashAlert.isShowing())) {
+            return;
+        }
         String externalFilesDir = getExternalFilesDir(null).getPath();
         File crashAlertPrompt = new File(externalFilesDir + "/config/crash.log.prompt");
         try {
@@ -86,20 +102,22 @@ public class SplashScreen extends Activity {
             return;
         }
         final String message = text.toString();
-        this.runOnUiThread(new Runnable() {
-           public void run() {
-                AlertDialog errorAlert = new AlertDialog.Builder(SplashScreen.this)
-                .setTitle(getString(R.string.crashAlert))
-                .setCancelable(false)
-                .setMessage(message)
-                .setPositiveButton("OK", new DialogInterface.OnClickListener() {
-                    public void onClick(DialogInterface dialog, int id) {
-                        SplashScreen.this.startGameActivity(false);
-                    }
-                }).create();
-                errorAlert.show();
-           }
+        final AlertDialog errorAlert = new AlertDialog.Builder(SplashScreen.this)
+            .setTitle(getString(R.string.crashAlert))
+            .setCancelable(false)
+            .setMessage(message)
+            .setPositiveButton("OK", new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface dialog, int id) {
+                    SplashScreen.this.showLaunchModeDialog();
+                }
+            }).create();
+        crashAlert = errorAlert;
+        errorAlert.setOnDismissListener(dialog -> {
+            if (crashAlert == errorAlert) {
+                crashAlert = null;
+            }
         });
+        errorAlert.show();
     }
 
     @Override
@@ -112,13 +130,21 @@ public class SplashScreen extends Activity {
     protected void onPause() {
         Log.e(TAG, "onPause()");
         super.onPause();
-        accessibilityServicesAlert.dismiss();
+        if (accessibilityServicesAlert != null) {
+            accessibilityServicesAlert.dismiss();
+        }
     }
 
     @Override
     protected void onResume() {
         Log.e(TAG, "onResume()");
         super.onResume();
+
+        if ((crashAlert != null && crashAlert.isShowing()) ||
+            (launchModeAlert != null && launchModeAlert.isShowing()) ||
+            (multiplayerConnectAlert != null && multiplayerConnectAlert.isShowing())) {
+            return;
+        }
 
         Context context = getApplicationContext();
         String service_names = CataclysmDDA_Helpers.getEnabledAccessibilityServiceNames(context);
@@ -141,7 +167,7 @@ public class SplashScreen extends Activity {
             if(crashAlertPrompt.exists()) {
                 showCrashAlert();
             } else {
-                startGameActivity(false);
+                showLaunchModeDialog();
             }
         }
         else {
@@ -196,9 +222,210 @@ public class SplashScreen extends Activity {
         }
     }
 
+    private File getMultiplayerTokenFile() throws IOException {
+        File directory = new File(getNoBackupFilesDir(), "multiplayer");
+        if ((!directory.exists() && !directory.mkdirs()) || !directory.isDirectory()) {
+            throw new IOException(getString(R.string.multiplayerTokenStorageError));
+        }
+        File tokenFile = new File(directory, "client-token.txt");
+        String directoryPath = directory.getCanonicalPath() + File.separator;
+        if (!tokenFile.getCanonicalPath().startsWith(directoryPath)) {
+            throw new IOException(getString(R.string.multiplayerTokenStorageError));
+        }
+        return tokenFile;
+    }
+
+    private boolean isValidMultiplayerToken(String token) {
+        return token != null && token.matches("[0-9a-f]{64}");
+    }
+
+    private String loadSavedMultiplayerToken() {
+        try {
+            File tokenFile = getMultiplayerTokenFile();
+            if (!tokenFile.isFile() || tokenFile.length() > 128) {
+                return "";
+            }
+            BufferedReader reader = new BufferedReader(new FileReader(tokenFile));
+            String token = reader.readLine();
+            reader.close();
+            return isValidMultiplayerToken(token) ? token : "";
+        } catch (IOException error) {
+            return "";
+        }
+    }
+
+    private File saveMultiplayerToken(String token) throws IOException {
+        File tokenFile = getMultiplayerTokenFile();
+        File temporaryFile = new File(tokenFile.getParentFile(), "client-token.tmp");
+        if (temporaryFile.exists() && !temporaryFile.delete()) {
+            throw new IOException(getString(R.string.multiplayerTokenStorageError));
+        }
+        FileOutputStream output = new FileOutputStream(temporaryFile, false);
+        try {
+            output.write((token + "\n").getBytes("UTF-8"));
+            output.flush();
+            output.getFD().sync();
+        } finally {
+            output.close();
+        }
+        try {
+            Os.chmod(temporaryFile.getAbsolutePath(),
+                OsConstants.S_IRUSR | OsConstants.S_IWUSR);
+            Os.rename(temporaryFile.getAbsolutePath(), tokenFile.getAbsolutePath());
+            FileDescriptor directoryDescriptor = Os.open(
+                tokenFile.getParentFile().getAbsolutePath(),
+                OsConstants.O_RDONLY, 0);
+            try {
+                Os.fsync(directoryDescriptor);
+            } finally {
+                Os.close(directoryDescriptor);
+            }
+        } catch (ErrnoException error) {
+            temporaryFile.delete();
+            throw new IOException(getString(R.string.multiplayerTokenStorageError), error);
+        }
+        return tokenFile;
+    }
+
+    private void showLaunchModeDialog() {
+        if (isFinishing() || (launchModeAlert != null && launchModeAlert.isShowing())) {
+            return;
+        }
+        launchModeAlert = new AlertDialog.Builder(SplashScreen.this)
+            .setTitle(getString(R.string.launchModeTitle))
+            .setMessage(getString(R.string.launchModeMessage))
+            .setCancelable(false)
+            .setPositiveButton(getString(R.string.startSinglePlayer),
+                new DialogInterface.OnClickListener() {
+                    public void onClick(DialogInterface dialog, int id) {
+                        startGameActivity(false);
+                    }
+                })
+            .setNegativeButton(getString(R.string.connectMultiplayer),
+                new DialogInterface.OnClickListener() {
+                    public void onClick(DialogInterface dialog, int id) {
+                        showMultiplayerConnectDialog();
+                    }
+                })
+            .create();
+        launchModeAlert.show();
+    }
+
+    private void showMultiplayerConnectDialog() {
+        if (isFinishing() ||
+            (multiplayerConnectAlert != null && multiplayerConnectAlert.isShowing())) {
+            return;
+        }
+        SharedPreferences preferences =
+            PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
+        String savedEndpoint = preferences.getString(PREF_MULTIPLAYER_ENDPOINT, "");
+        String tokenEndpoint = preferences.getString(PREF_MULTIPLAYER_TOKEN_ENDPOINT, "");
+        String savedToken = loadSavedMultiplayerToken();
+        LinearLayout layout = new LinearLayout(SplashScreen.this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        int padding = (int)(24 * getResources().getDisplayMetrics().density);
+        layout.setPadding(padding, 0, padding, 0);
+
+        TextView securityNotice = new TextView(SplashScreen.this);
+        securityNotice.setText(getString(R.string.multiplayerSecurityNotice));
+        layout.addView(securityNotice);
+
+        EditText endpointInput = new EditText(SplashScreen.this);
+        endpointInput.setSingleLine(true);
+        endpointInput.setHint(getString(R.string.multiplayerEndpointHint));
+        endpointInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        endpointInput.setText(savedEndpoint);
+        layout.addView(endpointInput);
+
+        EditText tokenInput = new EditText(SplashScreen.this);
+        tokenInput.setSingleLine(true);
+        tokenInput.setHint(!savedToken.isEmpty() && savedEndpoint.equals(tokenEndpoint)
+            ? getString(R.string.multiplayerSavedTokenHint)
+            : getString(R.string.multiplayerTokenHint));
+        tokenInput.setInputType(InputType.TYPE_CLASS_TEXT |
+            InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        layout.addView(tokenInput);
+
+        CheckBox allowInsecureLan = new CheckBox(SplashScreen.this);
+        allowInsecureLan.setText(getString(R.string.multiplayerAllowInsecureLan));
+        // This is a per-connection security exception.  Never carry consent from a
+        // previous endpoint into a later launch.
+        allowInsecureLan.setChecked(false);
+        layout.addView(allowInsecureLan);
+
+        AlertDialog connectDialog = new AlertDialog.Builder(SplashScreen.this)
+            .setTitle(getString(R.string.multiplayerConnectTitle))
+            .setView(layout)
+            .setCancelable(false)
+            .setPositiveButton(getString(R.string.connectMultiplayer), null)
+            .setNegativeButton(android.R.string.cancel, new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface dialog, int id) {
+                    showLaunchModeDialog();
+                }
+            })
+            .create();
+        multiplayerConnectAlert = connectDialog;
+        connectDialog.setOnDismissListener(dialog -> {
+            if (multiplayerConnectAlert == connectDialog) {
+                multiplayerConnectAlert = null;
+            }
+        });
+        connectDialog.setOnShowListener(new OnShowListener() {
+            @Override
+            public void onShow(DialogInterface ignored) {
+                connectDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                    String endpoint = endpointInput.getText().toString().trim();
+                    String token = tokenInput.getText().toString().trim();
+                    if (endpoint.isEmpty() || endpoint.length() > 512 ||
+                        endpoint.indexOf(':') < 0) {
+                        endpointInput.setError(getString(R.string.multiplayerEndpointInvalid));
+                        return;
+                    }
+                    if (token.isEmpty()) {
+                        if (!endpoint.equals(tokenEndpoint) || savedToken.isEmpty()) {
+                            tokenInput.setError(getString(
+                                R.string.multiplayerTokenEndpointChanged));
+                            return;
+                        }
+                        token = savedToken;
+                    }
+                    if (!isValidMultiplayerToken(token)) {
+                        tokenInput.setError(getString(R.string.multiplayerTokenInvalid));
+                        return;
+                    }
+                    try {
+                        File tokenFile = saveMultiplayerToken(token);
+                        preferences.edit()
+                            .putString(PREF_MULTIPLAYER_ENDPOINT, endpoint)
+                            .putString(PREF_MULTIPLAYER_TOKEN_ENDPOINT, endpoint)
+                            .apply();
+                        Intent intent = new Intent(SplashScreen.this, CataclysmDDA.class);
+                        intent.putExtra(CataclysmDDA.EXTRA_MULTIPLAYER_MODE, true);
+                        intent.putExtra(CataclysmDDA.EXTRA_MULTIPLAYER_ENDPOINT, endpoint);
+                        intent.putExtra(CataclysmDDA.EXTRA_MULTIPLAYER_TOKEN_FILE,
+                            tokenFile.getAbsolutePath());
+                        intent.putExtra(CataclysmDDA.EXTRA_MULTIPLAYER_ALLOW_INSECURE_LAN,
+                            allowInsecureLan.isChecked());
+                        connectDialog.dismiss();
+                        startGameActivity(false, intent);
+                    } catch (IOException error) {
+                        Toast.makeText(SplashScreen.this, error.getMessage(),
+                            Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+        });
+        connectDialog.show();
+    }
+
     private void startGameActivity(boolean delay) {
+        startGameActivity(delay, new Intent(SplashScreen.this, CataclysmDDA.class));
+    }
+
+    private void startGameActivity(boolean delay, final Intent intent) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         if (!delay) {
-            runOnUiThread(new StartGameRunnable());
+            runOnUiThread(new StartGameRunnable(intent));
         }
         else {
             // Wait 1.5 seconds, then start game
@@ -206,7 +433,7 @@ public class SplashScreen extends Activity {
             TimerTask gameStartTask = new TimerTask() {
                 @Override
                 public void run() {
-                    runOnUiThread(new StartGameRunnable());
+                    runOnUiThread(new StartGameRunnable(intent));
                 }
             };
             timer.schedule(gameStartTask, 1500);
@@ -214,10 +441,14 @@ public class SplashScreen extends Activity {
     }
 
     private final class StartGameRunnable implements Runnable {
+        private final Intent intent;
+
+        StartGameRunnable(Intent intent) {
+            this.intent = intent;
+        }
+
         @Override
         public void run() {
-            Intent intent = new Intent(SplashScreen.this, CataclysmDDA.class);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
             startActivity(intent);
             finish();
             overridePendingTransition(0, 0);
@@ -281,7 +512,7 @@ public class SplashScreen extends Activity {
                         PreferenceManager.getDefaultSharedPreferences(getApplicationContext()).edit().putString(CataclysmDDA.PREF_SYSTEM_UI_MODE, getSelectedSystemUiMode()).commit();
                         PreferenceManager.getDefaultSharedPreferences(getApplicationContext()).edit().putBoolean("Trap Back button", SplashScreen.this.mSettingsValues[1]).commit();
                         PreferenceManager.getDefaultSharedPreferences(getApplicationContext()).edit().putBoolean("Native Android UI", SplashScreen.this.mSettingsValues[2]).commit();
-                        SplashScreen.this.startGameActivity(false);
+                        SplashScreen.this.showLaunchModeDialog();
                         return;
                     }
                 })

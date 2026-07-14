@@ -177,3 +177,70 @@ bool multiplayer_build_visible_scene( game &simulation, const std::string &playe
     error.clear();
     return true;
 }
+
+bool multiplayer_fit_scene_snapshot_to_payload_budget( multiplayer_scene_snapshot &snapshot,
+        multiplayer_transport_payload &payload, std::string &error )
+{
+    if( multiplayer_build_scene_snapshot_payload( snapshot, payload, error ) ) {
+        return true;
+    }
+    if( error != multiplayer_scene_snapshot_budget_error ) {
+        return false;
+    }
+
+    const multiplayer_protocol_position center = snapshot.player.position;
+    const auto distance_from_center = [&center]( const multiplayer_protocol_position & position ) {
+        const std::int64_t dx = std::abs( static_cast<std::int64_t>( position.x ) - center.x );
+        const std::int64_t dy = std::abs( static_cast<std::int64_t>( position.y ) - center.y );
+        const std::int64_t dz = std::abs( static_cast<std::int64_t>( position.z ) - center.z );
+        return std::max( { dx, dy, dz } );
+    };
+    std::int64_t radius = 0;
+    for( const multiplayer_visible_tile &tile : snapshot.tiles ) {
+        radius = std::max( radius, distance_from_center( tile.position ) );
+    }
+    for( const multiplayer_visible_entity &entity : snapshot.entities ) {
+        radius = std::max( radius, distance_from_center( entity.position ) );
+    }
+
+    while( radius > 0 ) {
+        --radius;
+        snapshot.tiles.erase( std::remove_if( snapshot.tiles.begin(), snapshot.tiles.end(),
+        [&distance_from_center, radius]( const multiplayer_visible_tile & tile ) {
+            return distance_from_center( tile.position ) > radius;
+        } ), snapshot.tiles.end() );
+        snapshot.entities.erase( std::remove_if( snapshot.entities.begin(), snapshot.entities.end(),
+        [&distance_from_center, radius]( const multiplayer_visible_entity & entity ) {
+            return distance_from_center( entity.position ) > radius;
+        } ), snapshot.entities.end() );
+        if( multiplayer_build_scene_snapshot_payload( snapshot, payload, error ) ) {
+            return true;
+        }
+        if( error != multiplayer_scene_snapshot_budget_error ) {
+            return false;
+        }
+    }
+
+    // Production scenes contain one tile and one player entity at the center.  Keep only
+    // those mandatory anchors if a malformed or unusually dense same-cell scene still
+    // exceeds the budget, so one client snapshot can never terminate the server runtime.
+    const auto center_tile = std::find_if( snapshot.tiles.begin(), snapshot.tiles.end(),
+    [&distance_from_center]( const multiplayer_visible_tile & tile ) {
+        return distance_from_center( tile.position ) == 0;
+    } );
+    const auto player_entity = std::find_if( snapshot.entities.begin(), snapshot.entities.end(),
+    []( const multiplayer_visible_entity & entity ) {
+        return entity.kind == multiplayer_visible_entity_kind::player;
+    } );
+    std::vector<multiplayer_visible_tile> minimum_tiles;
+    std::vector<multiplayer_visible_entity> minimum_entities;
+    if( center_tile != snapshot.tiles.end() ) {
+        minimum_tiles.push_back( *center_tile );
+    }
+    if( player_entity != snapshot.entities.end() ) {
+        minimum_entities.push_back( *player_entity );
+    }
+    snapshot.tiles = std::move( minimum_tiles );
+    snapshot.entities = std::move( minimum_entities );
+    return multiplayer_build_scene_snapshot_payload( snapshot, payload, error );
+}

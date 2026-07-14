@@ -298,6 +298,7 @@ TEST_CASE( "multiplayer_protocol_command_and_scene_messages_round_trip_with_revi
     envelope.message_type = multiplayer_protocol_message_type::scene_snapshot;
     envelope.sequence = scene.server_revision;
     REQUIRE( multiplayer_build_scene_snapshot_payload( scene, envelope.payload, error ) );
+    CHECK( envelope.payload.size() < multiplayer_scene_snapshot_maximum_payload_size );
     multiplayer_scene_snapshot parsed_scene;
     REQUIRE( multiplayer_parse_scene_snapshot_payload( envelope, parsed_scene, error ) );
     CHECK( parsed_scene.server_revision == 5 );
@@ -306,6 +307,24 @@ TEST_CASE( "multiplayer_protocol_command_and_scene_messages_round_trip_with_revi
     CHECK( parsed_scene.tiles.front().terrain_id == "t_floor" );
     REQUIRE( parsed_scene.entities.size() == 1 );
     CHECK( parsed_scene.entities.front().stable_id == "player-42" );
+}
+
+TEST_CASE( "multiplayer_protocol_scene_snapshot_has_a_mobile_safe_size_budget",
+           "[multiplayer][protocol]" )
+{
+    multiplayer_scene_snapshot scene;
+    scene.server_revision = 1;
+    scene.player.player_id = "12345678-1234-4234-9234-123456789abc";
+    scene.player.character_id = "budget-character";
+    scene.player.revision = scene.server_revision;
+    const std::string terrain_id = "t_" + std::string( 125, 'a' );
+    for( int index = 0; index < 4096; ++index ) {
+        scene.tiles.push_back( { { index % 64, index / 64, 0 }, terrain_id, "", "", 0 } );
+    }
+    multiplayer_transport_payload payload;
+    std::string error;
+    CHECK_FALSE( multiplayer_build_scene_snapshot_payload( scene, payload, error ) );
+    CHECK( error.find( "512 KiB" ) != std::string::npos );
 }
 
 TEST_CASE( "multiplayer_protocol_authentication_messages_are_bounded_and_typed",
@@ -368,4 +387,33 @@ TEST_CASE( "multiplayer_protocol_authentication_messages_are_bounded_and_typed",
     source_result.message = "authentication failed";
     REQUIRE( multiplayer_build_authentication_result_payload( source_result,
              envelope.payload, error ) );
+}
+
+TEST_CASE( "multiplayer_protocol_disconnect_notice_is_typed_and_bounded",
+           "[multiplayer][protocol]" )
+{
+    multiplayer_disconnect_notice notice;
+    notice.code = multiplayer_protocol_rejection::session_expired;
+    notice.message = "server session expired";
+    multiplayer_protocol_envelope envelope;
+    envelope.message_type = multiplayer_protocol_message_type::disconnect_notice;
+    std::string error;
+    REQUIRE( multiplayer_build_disconnect_notice_payload( notice, envelope.payload, error ) );
+
+    multiplayer_transport_payload encoded;
+    REQUIRE( multiplayer_encode_protocol_envelope( envelope, encoded, error ) );
+    multiplayer_protocol_envelope decoded;
+    REQUIRE( multiplayer_decode_protocol_envelope( encoded, decoded, error ) );
+    multiplayer_disconnect_notice parsed;
+    REQUIRE( multiplayer_parse_disconnect_notice_payload( decoded, parsed, error ) );
+    CHECK( parsed.code == notice.code );
+    CHECK( parsed.message == notice.message );
+
+    notice.message = "bad\nmessage";
+    CHECK_FALSE( multiplayer_build_disconnect_notice_payload( notice, envelope.payload, error ) );
+    notice.message.assign( 513, 'x' );
+    CHECK_FALSE( multiplayer_build_disconnect_notice_payload( notice, envelope.payload, error ) );
+    notice.message.clear();
+    notice.code = static_cast<multiplayer_protocol_rejection>( 999 );
+    CHECK_FALSE( multiplayer_build_disconnect_notice_payload( notice, envelope.payload, error ) );
 }

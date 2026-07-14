@@ -504,6 +504,30 @@ bool game::load( const save_t &name )
     return true;
 }
 
+void game::load_multiplayer_client_data( const std::vector<mod_id> &mods )
+{
+    load_core_data();
+    for( const mod_id &mod : mods ) {
+        if( !mod.is_valid() ) {
+            throw std::runtime_error( "multiplayer client content mod is unavailable: " + mod.str() );
+        }
+    }
+
+    // Mod-interaction loading consults the active world's ordered mod list.  Provide a
+    // non-persistent definition-only world so the graphical client gets the same local
+    // rendering definitions without creating or loading authoritative simulation state.
+    WORLD definition_world( "multiplayer-client-definitions" );
+    definition_world.active_mod_order = mods;
+    WORLD *const previous_world = world_generator->active_world;
+    on_out_of_scope restore_active_world( [previous_world]() {
+        world_generator->set_active_world( previous_world );
+    } );
+    world_generator->set_active_world( &definition_world );
+    load_packs( _( "Loading multiplayer client definitions" ), mods );
+    DynamicDataLoader::get_instance().finalize_loaded_data();
+    loading_ui::done();
+}
+
 void game::load_world_modfiles()
 {
     auto &mods = world_generator->active_world->active_mod_order;

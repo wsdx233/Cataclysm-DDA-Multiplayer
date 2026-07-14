@@ -19,6 +19,7 @@ on:
       - 'src/do_turn.cpp'
       - 'src/game.cpp'
       - 'src/game.h'
+      - 'src/game_io.cpp'
       - 'src/handle_action.cpp'
       - 'src/loading_ui.cpp'
       - 'src/loading_ui.h'
@@ -32,6 +33,7 @@ on:
       - 'tests/multiplayer_*'
       - 'tools/multiplayer/README.md'
       - 'tools/multiplayer/headless_client_smoke.cpp'
+      - 'tools/multiplayer/network_client_ui_smoke.py'
       - 'tools/multiplayer/protocol/**'
       - 'tools/multiplayer/transport_spike/**'
   pull_request:
@@ -51,6 +53,7 @@ on:
       - 'src/do_turn.cpp'
       - 'src/game.cpp'
       - 'src/game.h'
+      - 'src/game_io.cpp'
       - 'src/handle_action.cpp'
       - 'src/loading_ui.cpp'
       - 'src/loading_ui.h'
@@ -64,6 +67,7 @@ on:
       - 'tests/multiplayer_*'
       - 'tools/multiplayer/README.md'
       - 'tools/multiplayer/headless_client_smoke.cpp'
+      - 'tools/multiplayer/network_client_ui_smoke.py'
       - 'tools/multiplayer/protocol/**'
       - 'tools/multiplayer/transport_spike/**'
 
@@ -217,7 +221,7 @@ jobs:
             fi
           }
           trap cleanup EXIT
-          for attempt in $(seq 1 900); do
+          for _ in $(seq 1 900); do
             if grep -q '"event":"listening"' "$root/server.stdout"; then
               break
             fi
@@ -258,6 +262,95 @@ jobs:
           cp "$root/client.stdout" artifacts/gcc-headless-client-smoke.txt
           cp "$root/server.stdout" artifacts/gcc-headless-server-smoke.jsonl
           cp "$root/server.stderr" artifacts/gcc-headless-server-smoke.stderr.jsonl
+
+      - name: Run production local-input network-client UI resume smoke
+        run: |
+          set -euo pipefail
+          root="$PWD/build/multiplayer-client-ui-smoke"
+          rm -rf "$root"
+          mkdir -p "$root"
+          ./cataclysm \
+            --userdir "$root/server-user" \
+            --init-server-config "$root/server.json" \
+            >"$root/init.stdout" 2>"$root/init.stderr"
+          port="$(python3 - "$root/server.json" <<'PY'
+          import json
+          import socket
+          import sys
+          path = sys.argv[1]
+          with open(path, encoding="utf-8") as source:
+              config = json.load(source)
+          with socket.socket() as listener:
+              listener.bind(("127.0.0.1", 0))
+              port = listener.getsockname()[1]
+          config["network"]["listen"] = f"127.0.0.1:{port}"
+          with open(path, "w", encoding="utf-8") as output:
+              json.dump(config, output, indent=2)
+              output.write("\n")
+          print(port)
+          PY
+          )"
+          ./cataclysm \
+            --userdir "$root/server-user" \
+            --server "$root/server.json" \
+            >"$root/server.stdout" 2>"$root/server.stderr" &
+          server_pid=$!
+          cleanup() {
+            if kill -0 "$server_pid" 2>/dev/null; then
+              kill -TERM "$server_pid"
+              wait "$server_pid" || true
+            fi
+          }
+          trap cleanup EXIT
+          for _ in $(seq 1 900); do
+            if grep -q '"event":"listening"' "$root/server.stdout"; then
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              cat "$root/server.stdout"
+              cat "$root/server.stderr" >&2
+              exit 1
+            fi
+            sleep 0.1
+          done
+          grep -q '"event":"listening"' "$root/server.stdout"
+          python3 tools/multiplayer/network_client_ui_smoke.py \
+            --client "$PWD/cataclysm" \
+            --backend-port "$port" \
+            --token-file "$root/server-auth-token.txt" \
+            --user-dir "$root/client-user" \
+            --transcript "$root/client.transcript" \
+            --event-log "$root/client-events.txt"
+          kill -TERM "$server_pid"
+          wait "$server_pid"
+          trap - EXIT
+          python3 - "$root" <<'PY'
+          import json
+          import pathlib
+          import sys
+          root = pathlib.Path(sys.argv[1])
+          for name in ("server.stdout", "server.stderr"):
+              data = (root / name).read_bytes()
+              assert b"\x1b[" not in data
+              for line in data.splitlines():
+                  if line.strip():
+                      json.loads(line)
+          records = [json.loads(line) for line in
+                     (root / "server.stdout").read_text(encoding="utf-8").splitlines()
+                     if line.strip()]
+          events = [record["event"] for record in records]
+          for event in (
+              "player_authenticated", "player_resumed", "command_result",
+              "save_completed", "shutdown"
+          ):
+              assert event in events, event
+          statuses = [record.get("status") for record in records
+                      if record["event"] == "command_result"]
+          assert statuses == ["0", "2", "0"], statuses
+          PY
+          cp "$root/client-events.txt" artifacts/gcc-network-client-ui-events.txt
+          cp "$root/client.transcript" artifacts/gcc-network-client-ui.transcript
+          cp "$root/server.stdout" artifacts/gcc-network-client-ui-server.jsonl
 
       - name: Build and run with Clang 18
         run: |

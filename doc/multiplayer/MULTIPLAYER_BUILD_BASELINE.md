@@ -8,7 +8,8 @@
 - Android arm64 图形客户端 APK。
 - Linux x64 curses 包，作为后续 headless server target 的构建前身。
 
-Linux curses 包不是服务器，也不能作为多人服务运行。它只验证当前无 SDL 构建和打包路径没有被后续改动破坏。
+Linux curses 包仍是无 SDL 的打包基线；同一 binary 已有显式 `--server` 运行路径，但在 hosted evidence、运维文档
+和后续 release gate 完成前仍不能当作生产 dedicated-server 包发布。
 
 初始上游基线固定为 `d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`。
 
@@ -24,9 +25,11 @@ Linux curses 包不是服务器，也不能作为多人服务运行。它只验�
 
 完整 `.po` 不在 Git 仓库中，而是在上游发布时从 Transifex 拉取。基线 workflow 不依赖 fork 私有的 Transifex token；它会校验并从固定的官方基线包提取已编译 `.mo`，供三端打包使用。
 
-独立的 `.github/workflows/multiplayer-transport-spike.yml` 只构建
-`tools/multiplayer/transport_spike/`：Linux 原生 GCC/Clang、Windows 原生 MSVC 执行 loopback CTest，
-Android NDK arm64 执行交叉编译和 ELF/ABI 检查。它不链接游戏目标，也不构成生产 transport 或 TLS。
+独立的 `.github/workflows/multiplayer-transport-spike.yml` 保留
+`tools/multiplayer/transport_spike/` 的 Linux GCC/Clang、Windows MSVC loopback CTest 和 Android NDK arm64
+交叉编译门禁；Linux job 还会构建真实 game/tests，运行完整 `[multiplayer]`、headless process smoke 和生产
+`cataclysm --connect` PTY resume smoke。standalone spike 本身仍不构成生产 transport 或 TLS，生产边界位于
+`src/multiplayer_*`。
 
 ## 3. 固定依赖
 
@@ -65,17 +68,25 @@ CI 会解压 tarball 并执行 `cataclysm --version`。
 - `cdda-windows-client-x64-baseline.zip`
 - `windows-build-manifest.txt`
 - `windows-version.txt`
+- `windows-help.txt`
 
-CI 会执行打包目录中的 `cataclysm-tiles.exe --version`，并使用 `7z t` 检查压缩包。
+CI 会执行打包目录中的 `cataclysm-tiles.exe --version` 与 `--help`，检查 network-client CLI，
+并使用 `7z t` 检查压缩包。
 
 ### Android
 
 - `cdda-android-arm64-baseline-unsigned.apk`
 - `android-build-manifest.txt`
 - `android-badging.txt`
+- `android-permissions.txt`
+- `android-resources.txt`
+- 独立 compile-evidence artifact：`cdda-android-x86_64-debug.apk` 与
+  `android-x86_64-build-manifest.txt`
 
 该 APK 是 release 配置但未签名，适合验证构建内容，不用于安装或发布。CI 会检查 APK 完整性、包信息、
-`arm64-v8a/libmain.so`、`android.permission.INTERNET`，并确认没有混入 32 位 ARM 或 x86 库。
+`arm64-v8a/libmain.so`、`android.permission.INTERNET`、multiplayer launcher resources，并确认没有混入
+任何非 arm64 ABI。x86_64 debug APK 只用于 emulator/client source compile 门禁，必须只包含
+`x86_64/libmain.so`，不属于 arm64 release 产物契约。
 
 ## 5. 本地 Linux 环境
 
@@ -95,7 +106,7 @@ source build-scripts/activate-multiplayer-build-env.sh
 ./build-scripts/check-multiplayer-build-env.sh linux
 ```
 
-激活脚本也支持无 root 的本地工具链目录 `~/.local/toolchains/cdda-linux`。该目录存在时，可以使用其中的 GCC 13、Make、gettext、ncurses、zlib 和 bzip2 开发文件；正式 CI 仍使用 Ubuntu runner 的 Clang 18 系统包。
+激活脚本也支持无 root 的本地工具链目录 `~/.local/toolchains/cdda-linux`。该目录存在时，可以使用其中的 GCC 13、Make、gettext、ncurses、zlib 和 bzip2 开发文件；正式 CI 仍使用 Ubuntu runner 的 Clang 18 系统包。用户级 prefix 必须同时包含或正确指向匹配的 ncursesw/tinfo runtime libraries，不能只解包 development linker script 和 static `libtinfo.a`。否则会把系统 shared ncurses 与 prefix static tinfo 混入同一 executable，并在 `initscr()` 发生 heap corruption。环境检查现会让 probe 同时引用 `initscr()` 与 `tparm()`，通过 `ldd` 要求动态 ncursesw/tinfo 来自同一 runtime root，并用 `nm` 拒绝静态 tinfo 实现混入 executable。
 
 本地快速构建不要求 libbacktrace，可使用：
 
@@ -220,10 +231,42 @@ Linux 和 Windows 原生 artifacts 的 loopback 输出、所有内部 binary has
 Asio pin 和 BSL-1.0 license 已核对。Android 是交叉编译门禁，不宣称在 hosted Android 设备上运行。该
 spike 没有 TLS backend；发布安全限制见 ADR-0003。
 
-2026-07-13 的当前未推送 Phase 1/2 source 已额外通过本地 GCC 13 release `cataclysm tests`、完整
-`[multiplayer]`（30 cases / 996 assertions，3 个既有 `!mayfail` 对照）和 Android NDK arm64 debug APK
-构建（`BUILD SUCCESSFUL in 6m 6s`）。这证明 Android source integration，但不能替代 hosted MSVC 或规范
-artifact。`multiplayer-transport-spike.yml` 现还会在 Linux 构建真实 game/tests，并对真实
-`cataclysm --server` 执行 auth/scene/command/resume/save process smoke。
+Phase 1 生产 source 后续已取得 hosted 绿色证据：baseline run `29219328448`（提交 `cd18703`）成功生成
+Linux curses、Windows MSVC tiles+sound 和 Android arm64 artifacts；transport/protocol run `29219953446`
+（提交 `bc7efe0`）成功通过 Linux GCC 13 production tests/process smoke、Linux GCC 13 与 Clang 18
+standalone transport spike、Windows MSVC 和 Android NDK arm64 gates。该 transport run 的规范 artifacts 为：
+
+| 平台 | Artifact ID | GitHub artifact digest |
+| --- | ---: | --- |
+| Linux GCC 13/Clang 18 + production game/process | `8268340815` | `ff04b8ecb4536e6e2bcc5a0aceaf7c04df8706c0aacf8dcda4f7a35998017d6e` |
+| Windows MSVC | `8267835930` | `e509b6579b874ce57cfbabda488cbff24a48c2757a0ba19a6d3f286a75eaaf78` |
+| Android NDK arm64 | `8267835710` | `1ea5da10ed8e951201d2cae95d58850b4edc982a69f52172ca2c0990ffb6ad5c` |
+
+baseline run 的 artifact IDs/digests 与上述 transport 结果也同步记录在 `STATUS.md`。
+
+2026-07-14 的当前 network-client 批次已通过本地 GCC 13 release `cataclysm tests`、完整 `[multiplayer]`
+（53 cases；51 通过、2 个预期 `!mayfail` cases；3,066 assertions 中 3,063 通过、3 个预期对照），
+focused server_lobby/dedicated_server/transport 17 cases / 1,686 assertions 和 client 12 cases / 711 assertions，
+以及普通 release 的真实 `cataclysm --connect` PTY disconnect/resume/replay/ordered-release smoke；固定 backend
+port 为 38265，command statuses 为 `0, 2, 0`，transcript 为 7,503 bytes。新增 transport regression 证明 logical
+connection slot 会保留到 terminal event 被消费，connect/reset churn 不能挤掉 terminal control event；理论上
+不可达的 control enqueue failure 会先写入独立、持久的 global fatal detail，再停止 transport。
+
+最终 source 的 ASan/UBSan/LSan rebuild 与完整 `[multiplayer]` 同样为 53 cases（51 通过、2 个预期 cases；
+3,066 assertions 中 3,063 通过、3 个预期对照），无 ASan/UBSan/LSan/stack-use-after-return finding。fresh-root
+sanitizer PTY 使用 backend port 37263，客户端返回 0，得到相同 `0, 2, 0` statuses、精确 10 个 events 和
+7,503-byte transcript，且无 sanitizer marker。第一次尝试只超过旧的 180 秒 server-startup allowance；成功重试
+允许 sanitizer server 最多 600 秒启动，客户端交互 timeout 仍为 180 秒。
+
+Android arm64 与 x86_64 debug APK 最终增量构建分别为
+`BUILD SUCCESSFUL in 1m 21s` 与 `1m 19s`，SHA-256 分别为
+`0f6d7324675c4291281d072ba631ab7a2477d9507033eefb3102b9fec6e6da6b` 和
+`06e70f034bd9761aa98f6194798ffcc8706659ec387ebc590494340af1af66d1`；两份 APK 均核对 INTERNET
+permission、单一目标 ABI `libmain.so` 和 multiplayer launcher resources。baseline workflow 现在还会在
+Windows package 中检查 `--connect` CLI，在 Android APK 中检查 connect UI resources；transport workflow
+会运行生产 network-client UI smoke。
+
+这些本地结果不能替代当前客户端提交的 hosted MSVC/Android artifacts。客户端批次推送后仍须在本节和
+`STATUS.md` 记录新 run ID，才能关闭对应平台 gate。Android emulator/真机运行证据也不由 APK compile 自动满足。
 
 本地生成物位于仓库默认的忽略目录中，不作为源码提交。规范产物和 hash 以 fork 上的 `multiplayer-baseline` workflow 为准。

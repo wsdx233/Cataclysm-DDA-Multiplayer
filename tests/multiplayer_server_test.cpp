@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "cata_catch.h"
 #include "cata_scope_helpers.h"
@@ -265,6 +266,7 @@ TEST_CASE( "multiplayer_dedicated_server_runs_transport_handshake_auth_and_ping"
     CHECK( authentication_result.player_id == identity.player_id );
     CHECK( authentication_result.character_id == identity.character_id );
     REQUIRE( response.session != multiplayer_session_id {} );
+    const multiplayer_session_id session = response.session;
 
     std::optional<multiplayer_server_lobby_event> server_event = server.poll_event();
     REQUIRE( server_event );
@@ -306,6 +308,115 @@ TEST_CASE( "multiplayer_dedicated_server_runs_transport_handshake_auth_and_ping"
     REQUIRE( multiplayer_parse_scene_snapshot_payload( response, parsed_snapshot, error ) );
     CHECK( parsed_snapshot.server_revision == snapshot.server_revision );
     CHECK( parsed_snapshot.player.player_id == identity.player_id );
+
+    multiplayer_player_command command;
+    command.client_sequence = 3;
+    command.base_revision = snapshot.server_revision;
+    command.kind = multiplayer_command_kind::wait;
+    request = {};
+    request.message_type = multiplayer_protocol_message_type::player_command;
+    request.session = session;
+    request.sequence = command.client_sequence;
+    REQUIRE( multiplayer_build_player_command_payload( command, request.payload, error ) );
+    send_protocol_frame( client, request );
+
+    request = {};
+    request.message_type = multiplayer_protocol_message_type::disconnect_notice;
+    request.session = session;
+    request.sequence = 4;
+    REQUIRE( multiplayer_build_disconnect_notice_payload(
+    { multiplayer_protocol_rejection::none, "ordered test leave" },
+    request.payload, error ) );
+    send_protocol_frame( client, request );
+
+    std::vector<multiplayer_server_lobby_event> ordered_events;
+    const auto event_deadline = std::chrono::steady_clock::now() + std::chrono::seconds( 5 );
+    do {
+        REQUIRE( server.poll_once( std::chrono::steady_clock::now(), error ) );
+        while( std::optional<multiplayer_server_lobby_event> event = server.poll_event() ) {
+            ordered_events.emplace_back( std::move( *event ) );
+        }
+        if( ordered_events.size() < 2 ) {
+            std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+        }
+    } while( ordered_events.size() < 2 && std::chrono::steady_clock::now() < event_deadline );
+    REQUIRE( ordered_events.size() == 2 );
+    CHECK( ordered_events.front().type ==
+           multiplayer_server_lobby_event_type::application_message );
+    CHECK( ordered_events.front().message.message_type ==
+           multiplayer_protocol_message_type::player_command );
+    CHECK( ordered_events.back().type ==
+           multiplayer_server_lobby_event_type::graceful_disconnect_requested );
+    asio::error_code available_error;
+    CHECK( client.available( available_error ) == 0 );
+    CHECK_FALSE( available_error );
+
+    multiplayer_command_result command_result;
+    command_result.client_sequence = command.client_sequence;
+    command_result.status = multiplayer_command_status::accepted;
+    command_result.server_revision = snapshot.server_revision;
+    server_message = {};
+    server_message.message_type = multiplayer_protocol_message_type::command_result;
+    server_message.session = session;
+    server_message.sequence = command.client_sequence;
+    REQUIRE( multiplayer_build_command_result_payload( command_result,
+             server_message.payload, error ) );
+    REQUIRE( server.send( ordered_events.front().connection, server_message, error ) );
+
+    server_message = {};
+    server_message.message_type = multiplayer_protocol_message_type::scene_snapshot;
+    server_message.session = session;
+    server_message.sequence = snapshot.server_revision;
+    REQUIRE( multiplayer_build_scene_snapshot_payload( snapshot, server_message.payload, error ) );
+    REQUIRE( server.send( ordered_events.front().connection, server_message, error ) );
+
+    bool disconnect_completed = false;
+    REQUIRE( server.complete_graceful_disconnect( ordered_events.back(), disconnect_completed,
+             error ) );
+    REQUIRE( disconnect_completed );
+
+    REQUIRE( pump_until_readable( server, client, error ) );
+    response = read_protocol_frame( client );
+    multiplayer_command_result parsed_result;
+    REQUIRE( multiplayer_parse_command_result_payload( response, parsed_result, error ) );
+    CHECK( parsed_result.client_sequence == command.client_sequence );
+
+    REQUIRE( pump_until_readable( server, client, error ) );
+    response = read_protocol_frame( client );
+    REQUIRE( multiplayer_parse_scene_snapshot_payload( response, parsed_snapshot, error ) );
+
+    REQUIRE( pump_until_readable( server, client, error ) );
+    response = read_protocol_frame( client );
+    multiplayer_disconnect_notice acknowledgement;
+    REQUIRE( multiplayer_parse_disconnect_notice_payload( response, acknowledgement, error ) );
+    CHECK( response.session == session );
+    CHECK( response.sequence == 4 );
+    CHECK( acknowledgement.code == multiplayer_protocol_rejection::none );
+
+    std::array<std::uint8_t, 1> end = {};
+    asio::error_code close_error;
+    client.read_some( asio::buffer( end ), close_error );
+    CHECK( close_error == asio::error::eof );
+
+    std::optional<multiplayer_server_lobby_event> disconnected_event;
+    const auto disconnect_deadline = std::chrono::steady_clock::now() +
+                                     std::chrono::seconds( 5 );
+    do {
+        REQUIRE( server.poll_once( std::chrono::steady_clock::now(), error ) );
+        disconnected_event = server.poll_event();
+        if( !disconnected_event ) {
+            std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+        }
+    } while( !disconnected_event &&
+             std::chrono::steady_clock::now() < disconnect_deadline );
+    REQUIRE( disconnected_event );
+    CHECK( disconnected_event->type == multiplayer_server_lobby_event_type::disconnected );
+    CHECK( disconnected_event->connection == ordered_events.back().connection );
+
+    disconnect_completed = true;
+    REQUIRE( server.complete_graceful_disconnect( ordered_events.back(), disconnect_completed,
+             error ) );
+    CHECK_FALSE( disconnect_completed );
 
     server.stop();
     CHECK_FALSE( server.running() );

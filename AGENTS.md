@@ -63,9 +63,13 @@ See the plan sections on authority, threading, state scope, scheduling, action/U
 
 ## Current Phase
 
-Phase 0 closed with recorded evidence on 2026-07-12. The project is now in **Phase 2: the single-remote-player vertical slice**. Phase 1's local implementation and
-exit smoke are complete; the current source still needs its hosted Linux/Windows/Android evidence recorded before the
-Phase 1 hosted gate is called green. Do not skip ahead to the Phase 3 two-player scheduler or describe the isolated
+Phase 0 closed with recorded evidence on 2026-07-12. The project is now in **Phase 2: the single-remote-player vertical slice**. Phase 1's local and hosted gates
+are green. The current client batch implements production transport/state, desktop/Android connection UI, semantic
+wait/move input, bounded full-scene fitting, heartbeat/manual reconnect, ordered clean session release and local
+remote-scene rendering. The final transport fix also keeps a closed logical connection's admission slot until its
+terminal event is consumed, so reset churn cannot crowd terminal events out of the bounded queue. The batch still needs
+its hosted MSVC/Android evidence and an Android emulator/device lifecycle smoke. Do not skip ahead to the Phase 3
+two-player scheduler or describe the isolated
 `tools/` transport spike as production networking.
 
 Completed Phase 0 gates:
@@ -85,14 +89,15 @@ Completed Phase 0 gates:
 
 The active work, in order, is:
 
-1. Push the current source and record the complete hosted baseline plus multiplayer transport/protocol workflow results;
-   fix any MSVC, Android or Linux failure before closing the Phase 1 hosted gate.
-2. Add a production graphical `multiplayer_client` connection/replica boundary for Windows: local input resolves to
-   semantic commands and remote scenes render through local tiles/UI without running game rules client-side.
-3. Add the equivalent Android touch/tiles connection, pause/resume and reconnect smoke.
-4. Keep the server slice hardened: full-scene size budget, visibility leak tests, resync/idempotency/save/restart and
-   unsupported-action rejection. Do not enable `players.max > 1`, portable characters or multiple save generations
-   until their planned phases are implemented.
+1. Push the current network-client source and record its complete hosted baseline plus multiplayer transport/protocol
+   workflow results; fix any MSVC, Android or Linux failure before closing the Phase 2 platform build gate.
+2. Run the Android touch/tiles client against a real server through app pause/resume, network disconnect and reconnect
+   on an emulator or device; compile-only APK evidence is not a runtime smoke.
+3. Keep the server/client slice hardened: visibility leak tests, resync/idempotency, existing canonical save/restart,
+   graceful-disconnect timeout/error paths and unsupported-action rejection. Durable client process-restart resume
+   checkpointing remains Phase 4 work.
+4. Only after the Phase 2 client/platform evidence is green, begin ADR-0002's second-player shared scheduler. Do not
+   enable `players.max > 1`, portable characters or multiple save generations before their planned gates.
 
 The Linux curses artifact is still the non-SDL packaging baseline, but the same binary now has an explicitly selected
 `--server` runtime path. Do not ship it as a production dedicated-server package until hosted evidence, operational docs
@@ -105,8 +110,9 @@ The fork-specific workflow is [`.github/workflows/multiplayer-baseline.yml`](.gi
 - Linux x64 curses tarball.
 - Windows x64 MSVC SDL3 Tiles+Sound zip.
 - Android arm64 unsigned release APK.
+- Android x86_64 debug APK as an emulator/client compile artifact (not a release package).
 - Pinned default tileset, soundpack, desktop shaders, and compiled translations.
-- Per-artifact provenance, SHA-256, and smoke-test output.
+- Per-artifact provenance, SHA-256, CLI/resource and smoke-test output.
 
 The workflow runs manually and on relevant changes pushed to, or proposed against, `multiplayer/main`. It does not create a GitHub Release and does not need production signing secrets.
 
@@ -149,7 +155,7 @@ Run the environment gate with:
 ./build-scripts/check-multiplayer-build-env.sh all
 ```
 
-The local Linux toolchain uses GCC 13, Make, gettext, ncurses, zlib, and bzip2 from the user prefix because system package installation may not be available. Local `ccache` is optional; CI enables it.
+The local Linux toolchain uses GCC 13, Make, gettext, ncurses, zlib, and bzip2 from the user prefix because system package installation may not be available. The prefix must include matching ncursesw/tinfo runtime libraries as well as development files; the environment gate rejects mixed shared ncurses/static tinfo links. Local `ccache` is optional; CI enables it.
 
 `android/local.properties` is ignored and currently points Gradle at `~/Android/Sdk`. Do not commit machine-specific SDK paths.
 

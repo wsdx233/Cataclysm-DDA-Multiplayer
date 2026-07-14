@@ -645,6 +645,12 @@ bool load_multiplayer_server_bearer_token( const std::filesystem::path &config_p
     const std::filesystem::path token_path = config_path.parent_path() /
             std::filesystem::u8path( config.authentication.token_file );
     std::error_code filesystem_error;
+    const std::filesystem::file_status token_status = std::filesystem::symlink_status(
+                token_path, filesystem_error );
+    if( filesystem_error || token_status.type() != std::filesystem::file_type::regular ) {
+        error = "server authentication token path is not a regular file";
+        return false;
+    }
     const std::uintmax_t size = std::filesystem::file_size( token_path, filesystem_error );
     if( filesystem_error || size > 128 ) {
         error = "unable to read a bounded server authentication token file";

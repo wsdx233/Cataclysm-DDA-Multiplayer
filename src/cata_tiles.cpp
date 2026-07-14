@@ -62,6 +62,7 @@
 #include "monster.h"
 #include "monstergenerator.h"
 #include "mtype.h"
+#include "multiplayer_protocol.h"
 #include "mutation.h"
 #include "npc.h"
 #include "npc_attack.h"
@@ -556,6 +557,65 @@ static std::map<tripoint_bub_ms, int> display_npc_attack_potential()
         effectiveness_map[effectiveness_at_point.target()] = *effectiveness_at_point.value();
     }
     return effectiveness_map;
+}
+
+void cata_tiles::draw_remote_scene( const point &dest,
+                                    const multiplayer_scene_snapshot &scene,
+                                    const int width, const int height )
+{
+    display_buffer_draw_scope draw_scope;
+    if( display_buffer_scope_is_invalid() || width <= 0 || height <= 0 ||
+        tile_width <= 0 || tile_height <= 0 ) {
+        return;
+    }
+
+    has_animated_tiles_ = false;
+    const SDL_Rect clip_rect = { dest.x, dest.y, width, height };
+    RenderSetClipRect( renderer, &clip_rect );
+    geometry->rect( renderer, clip_rect, SDL_Color{ 0, 0, 0, 255 } );
+
+    const point tile_counts = get_window_base_tile_counts( point( width, height ) );
+    op = dest;
+    screentile_width = tile_counts.x;
+    screentile_height = tile_counts.y;
+    o = is_isometric() ? point::zero : point( -tile_counts.x / 2, -tile_counts.y / 2 );
+
+    const auto local_position = [&scene]( const multiplayer_protocol_position & position ) {
+        return tripoint_bub_ms( position.x - scene.player.position.x,
+                                position.y - scene.player.position.y,
+                                position.z - scene.player.position.z );
+    };
+    for( const multiplayer_visible_tile &tile : scene.tiles ) {
+        if( tile.position.z != scene.player.position.z ) {
+            continue;
+        }
+        const tripoint_bub_ms position = local_position( tile.position );
+        draw_from_id_string( tile.terrain_id, TILE_CATEGORY::TERRAIN, empty_string,
+                             position, 0, 0, lit_level::LIT, false );
+        if( !tile.furniture_id.empty() ) {
+            draw_from_id_string( tile.furniture_id, TILE_CATEGORY::FURNITURE, empty_string,
+                                 position, 0, 0, lit_level::LIT, false );
+        }
+        if( !tile.visible_trap_id.empty() ) {
+            draw_from_id_string( tile.visible_trap_id, TILE_CATEGORY::TRAP, empty_string,
+                                 position, 0, 0, lit_level::LIT, false );
+        }
+    }
+    for( const multiplayer_visible_entity &entity : scene.entities ) {
+        if( entity.position.z != scene.player.position.z ) {
+            continue;
+        }
+        const tripoint_bub_ms position = local_position( entity.position );
+        if( entity.kind == multiplayer_visible_entity_kind::monster ) {
+            draw_from_id_string( entity.appearance_id, TILE_CATEGORY::MONSTER, empty_string,
+                                 position, 0, 0, lit_level::LIT, false );
+        } else if( entity.kind == multiplayer_visible_entity_kind::player ) {
+            const std::string id = entity.appearance_id == "avatar" ?
+                                   "player_male" : entity.appearance_id;
+            draw_from_id_string( id, position, 0, 0, lit_level::LIT, false );
+        }
+    }
+    RenderSetClipRect( renderer, nullptr );
 }
 
 void cata_tiles::draw( const point &dest, const tripoint_bub_ms &center, int width, int height,

@@ -18,6 +18,12 @@ It deliberately discovers the running server's compatibility values from a rejec
 
 The CI workflow compiles it directly with the production protocol, transport, and crypto sources. Never print or pass the bearer token as a command-line value; the tool accepts a token **file path** and does not log its contents.
 
+## Production network-client UI smoke
+
+`network_client_ui_smoke.py` starts the real `cataclysm --connect` path in a private PTY and relays it through a bounded test proxy to an already-running dedicated server. It supplies local wait/move/reconnect/quit input, drops the first connection after forwarding the wait command, and verifies resume plus exactly-once replay before a clean UI exit. The transcript contains terminal control sequences and is retained only as a CI diagnostic artifact; the event log contains no bearer token.
+
+This is a Linux curses rendering fallback for deterministic process automation. It exercises the same production client transport/state machine, semantic input boundary, and remote-scene window used by graphical builds, but it does not replace the hosted MSVC tiles build or Android APK gates.
+
 ## Protocol schema
 
 See [`protocol/README.md`](protocol/README.md) for the pinned FlatBuffers generator and schema regeneration contract.

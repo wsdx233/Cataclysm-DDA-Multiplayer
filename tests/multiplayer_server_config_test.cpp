@@ -203,6 +203,15 @@ TEST_CASE( "multiplayer_server_config_file_init_refuses_overwrite",
     CHECK_FALSE( load_multiplayer_server_bearer_token( bundle_path, *bundle_config.config,
                  loaded_token, error ) );
     CHECK( error.find( "group or other" ) != std::string::npos );
+    std::filesystem::permissions( token_path, std::filesystem::perms::owner_read |
+                                  std::filesystem::perms::owner_write,
+                                  std::filesystem::perm_options::replace );
+    const std::filesystem::path real_token_path = directory / "real-token.txt";
+    std::filesystem::rename( token_path, real_token_path );
+    std::filesystem::create_symlink( real_token_path, token_path );
+    CHECK_FALSE( load_multiplayer_server_bearer_token( bundle_path, *bundle_config.config,
+                 loaded_token, error ) );
+    CHECK( error.find( "not a regular file" ) != std::string::npos );
 #endif
     CHECK_FALSE( initialize_multiplayer_server_files( bundle_path, error ) );
     CHECK( error.find( "refusing to overwrite" ) != std::string::npos );
