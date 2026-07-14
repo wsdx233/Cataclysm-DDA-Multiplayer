@@ -37,3 +37,8 @@ multiplayer_active_player_guard::~multiplayer_active_player_guard()
         owner.multiplayer_player_registry_ptr->leave_active_context();
     }
 }
+
+bool multiplayer_active_player_guard::is_engaged() const noexcept
+{
+    return engaged;
+}

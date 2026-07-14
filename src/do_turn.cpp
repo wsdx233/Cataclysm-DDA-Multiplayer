@@ -530,6 +530,63 @@ bool game::do_turn_remote( const std::function<std::optional<bool>()> &action_ha
     return do_turn_impl( action_handler, false );
 }
 
+void game::record_turn_player_action( avatar &player )
+{
+    ++moves_since_last_save;
+    player.action_taken();
+}
+
+std::optional<bool> game::execute_turn_player_action(
+    const std::function<std::optional<bool>()> &remote_action_handler, const bool local_ui )
+{
+    const std::optional<bool> action_result = local_ui ?
+            std::optional<bool>( handle_action() ) : remote_action_handler();
+    if( action_result && *action_result ) {
+        record_turn_player_action( active_avatar() );
+    }
+    return action_result;
+}
+
+int game::process_legacy_single_player_bubble_turn( avatar &legacy_anchor, map &here )
+{
+    scent_map &scent = get_scent();
+    // No-scent debug mutation has to be processed here or else it takes time to start working
+    if( !legacy_anchor.has_flag( json_flag_NO_SCENT ) ) {
+        scent.set( legacy_anchor.pos_bub(), legacy_anchor.scent,
+                   legacy_anchor.get_type_of_scent() );
+        overmap_buffer.set_scent( legacy_anchor.pos_abs_omt(), legacy_anchor.scent );
+    }
+    scent.update( legacy_anchor.pos_bub(), here );
+
+    // We need floor cache before checking falling 'n stuff
+    here.build_floor_caches();
+
+    here.process_falling();
+    here.vehmove();
+    here.process_fields();
+    here.process_items();
+    explosion_handler::process_explosions();
+    here.creature_in_field( legacy_anchor );
+
+    // Apply sounds from previous turn to monster and NPC AI.
+    sounds::process_sounds();
+    const int levz = here.get_abs_sub().z();
+    // Update vision caches for monsters. If this turns out to be expensive,
+    // consider a stripped down cache just for monsters.
+    here.build_map_cache( levz, true );
+
+    // process monster and npc turn
+    monmove();
+
+    if( calendar::once_every( time_between_npc_OM_moves ) ) {
+        overmap_npc_move();
+    }
+    here.furniture_terrain_emit_fields();
+    // required after monsters move and fields emit
+    mon_info_update();
+    return levz;
+}
+
 bool game::do_turn_impl( const std::function<std::optional<bool>()> &remote_action_handler,
                          const bool local_ui )
 {
@@ -678,14 +735,10 @@ bool game::do_turn_impl( const std::function<std::optional<bool>()> &remote_acti
                     queue_screenshot = false;
                 }
 
-                const std::optional<bool> action_result = local_ui ?
-                        std::optional<bool>( handle_action() ) : remote_action_handler();
+                const std::optional<bool> action_result =
+                    execute_turn_player_action( remote_action_handler, local_ui );
                 if( !action_result ) {
                     return true;
-                }
-                if( *action_result ) {
-                    ++moves_since_last_save;
-                    u.action_taken();
                 }
 
                 if( is_game_over() ) {
@@ -740,40 +793,7 @@ bool game::do_turn_impl( const std::function<std::optional<bool>()> &remote_acti
     }
 
     phase_trace.enter( multiplayer_turn_phase::world );
-    scent_map &scent = get_scent();
-    // No-scent debug mutation has to be processed here or else it takes time to start working
-    if( !u.has_flag( json_flag_NO_SCENT ) ) {
-        scent.set( u.pos_bub(), u.scent, u.get_type_of_scent() );
-        overmap_buffer.set_scent( u.pos_abs_omt(),  u.scent );
-    }
-    scent.update( u.pos_bub(), m );
-
-    // We need floor cache before checking falling 'n stuff
-    m.build_floor_caches();
-
-    m.process_falling();
-    m.vehmove();
-    m.process_fields();
-    m.process_items();
-    explosion_handler::process_explosions();
-    m.creature_in_field( u );
-
-    // Apply sounds from previous turn to monster and NPC AI.
-    sounds::process_sounds();
-    const int levz = m.get_abs_sub().z();
-    // Update vision caches for monsters. If this turns out to be expensive,
-    // consider a stripped down cache just for monsters.
-    m.build_map_cache( levz, true );
-
-    // process monster and npc turn
-    monmove();
-
-    if( calendar::once_every( time_between_npc_OM_moves ) ) {
-        overmap_npc_move();
-    }
-    m.furniture_terrain_emit_fields();
-    // required after monsters move and fields emit
-    mon_info_update();
+    const int levz = process_legacy_single_player_bubble_turn( u, m );
 
     phase_trace.enter( multiplayer_turn_phase::player_end );
     // replenish avatar moves

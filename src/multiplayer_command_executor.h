@@ -16,6 +16,11 @@ enum class multiplayer_command_execution_context {
     remote_headless
 };
 
+enum class multiplayer_wait_execution_mode {
+    player_requested,
+    authoritative_forced
+};
+
 struct multiplayer_command_execution {
     multiplayer_command_status status = multiplayer_command_status::rejected;
     multiplayer_protocol_rejection rejection = multiplayer_protocol_rejection::invalid_command;
@@ -26,7 +31,8 @@ struct multiplayer_command_execution {
 
 /** Shared wait rule used by local input and semantic remote commands. */
 bool multiplayer_execute_wait( game &simulation, avatar &player,
-                               bool repeat_safe_mode_warnings );
+                               multiplayer_wait_execution_mode mode,
+                               bool repeat_safe_mode_warnings = true );
 
 /** Shared adjacent movement rule used by local input and semantic remote commands. */
 bool multiplayer_execute_move( game &simulation, avatar &player, map &here,

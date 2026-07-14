@@ -2,18 +2,23 @@
 
 - 更新日期：2026-07-14
 - 分支：`multiplayer/main`
-- 当前阶段：**Phase 3，shared-scheduler 纯策略切片已落地，Linux-first phase adapter 为下一入口**
+- 当前阶段：**Phase 3，shared scheduler 与当前仅由测试调用的 source phase adapter/seams 已落地；下一入口是 production session/runtime directory**
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
 - 当前 scheduler source 提交：`45be077ac2d0d042190e54d1bdb77d48676b67e6`（transport 全绿；baseline 的 Linux、Android、resources 成功，Windows validator failure）
 - 上一个完整 hosted platform gate 全绿提交：`86336ea847bea45f727fd97d74a811a32712518c`（canonical build-ID hardening）
-- 当前 Phase 3 slice：`src/multiplayer_turn_scheduler.h/.cpp`、`tests/multiplayer_scheduler_test.cpp` 和对应文档更新
+- 当前 Phase 3 slice：scheduler execution-fault latch、`multiplayer_turn_phase_adapter`、forced wait mode、单人
+  action/world helper seams，以及 Linux release/sanitizer tests；adapter 尚未接入 production runtime
 - 当前 Windows 定向修复：`c9b28086e973fa497d5bd9f9a37e64a9ac22e464`；hosted MSVC package 已完整成功
-- 当前分层验证 workflow source：`9a561f6172d9042c1c424f16d923448e0de9152a`；baseline 与 transport runs 全绿
-- 当前下一行动：按 Tier 1 在 Linux 上实现并验证 single-player-preserving phase adapter；`players.max` 保持 `1`
+- 上一个 hosted-green selector source：`9a561f6172d9042c1c424f16d923448e0de9152a`；当前 source 进一步把
+  transport routine path 收敛到 Linux，并移除 automatic classification failure 的隐式全矩阵 fallback
+- 当前下一行动：从 `src/main.cpp`/`src/multiplayer_server_lobby.*` 建立统一 generation 的 authoritative
+  session/runtime directory，先完成 two-phase auth/resume 与 active-root lifecycle 决策，再以 `players.max = 1`
+  接入 production scheduler/adapter 和 actual claimed bubble
 
 ## 当前结论
 
-Phase 0 已关闭，ADR-0001 至 ADR-0009 继续有效。Phase 1 的本地门禁和 hosted 平台门禁都已取得绿色证据：生产 dedicated runtime、Asio transport、FlatBuffers 协议、严格握手/content manifest、token auth、canonical server-owned avatar、结构化日志、signal save/shutdown 和真实进程 command/resume smoke 均已验证。
+Phase 0 已关闭，ADR-0001 至 ADR-0009 继续有效；ADR-0010 已记录 authoritative session directory/two-phase
+admission 方向，状态为待验证。Phase 1 的本地门禁和 hosted 平台门禁都已取得绿色证据：生产 dedicated runtime、Asio transport、FlatBuffers 协议、严格握手/content manifest、token auth、canonical server-owned avatar、结构化日志、signal save/shutdown 和真实进程 command/resume smoke 均已验证。
 
 Phase 2 的服务器侧单远程玩家纵向切片保持完成。本批又实现了可复用的生产客户端 transport/state machine、桌面/Android connection UI、本地 input → semantic wait/move、visibility-filtered scene → 本地 curses/tiles renderer、heartbeat/manual reconnect、断线 resume、exactly-once replay 和按 simulation FIFO 完成的 typed clean session release。最终 source 的普通 release 与 ASan/UBSan binary 都已通过真实 Linux PTY auth、scene、wait、强制断线、resume、未确认命令重放、move 和 clean quit。
 
@@ -49,9 +54,28 @@ snapshot、稳定首位轮转、typed action disposition、generation resume、c
 `src/main.cpp`/`do_turn_remote()`，也不拥有 avatar、socket、command payload 或 gameplay callback。服务器仍只有
 一个 `active_remote_session`，`players.max` 继续只能是 `1`；不能把这个 policy 或其单测描述为已完成两玩家 server。
 
+当前第二个 Phase 3 slice 在此 policy 上增加了 source `multiplayer_turn_phase_adapter`（目前仅由测试调用）和保持单人
+行为的 source seams：
+
+- adapter 只允许 simulation thread，并精确验证 current slot/state、player ID、session generation、registry
+  ownership、runtime active 状态、构造时 root active context、guard engagement 和退出恢复。
+- accepted player callback 与 authoritative forced wait 都先在目标 guard 内执行真实规则和目标 avatar action
+  bookkeeping，退出 guard 后才记录 scheduler。forced wait 绕过玩家请求的 safe-mode permission，但仍执行真实
+  `Character::pause()`；`check_safe_mode_allowed()` 的 active-avatar permission gate 已避免 alpha 状态污染 beta，但
+  character rules/whitelist 等全局 safe-mode state 尚未完成玩家隔离。
+- callback/exception、wait/world failure、context restore failure 或规则执行后的 scheduler record failure 会永久 latch
+  scheduler execution fault；replacement adapter、新 turn 和其他 transition 都被拒绝，避免重试非幂等副作用。
+- `do_turn.cpp` 已命名 `record_turn_player_action()` 和 `process_legacy_single_player_bubble_turn()`，并有 first-turn
+  remote phase-order/moves 回归；但 `do_turn_impl()` 仍直接执行 actual bubble，adapter world test 只是计数 lambda。
+- in-process 两 runtime wait-only barrier 已通过，但没有两个 client、production session owner 或 process-level routing。
+
+因此本切片的准确结论是“scheduler/adapter contract 与单人 extraction seam 已在 Linux 验证”，不是“生产 world
+callback、断线 auto-wait 或两玩家 server 已接入”。
+
 该 scheduler source 已作为 commit `45be077ac2d0d042190e54d1bdb77d48676b67e6` 推送。transport/protocol run
 [`29340055386`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340055386) 已 terminal
-`success`，Linux GCC 13/Clang 18 production tests/process smokes、Windows MSVC 和 Android NDK 三个 jobs 全绿。
+`success`：Linux GCC 13/Clang 18 job 实际构建/测试 production source；Windows MSVC 和 Android NDK jobs 只编译
+standalone transport spike，虽全绿但不属于 scheduler production-source portability evidence。
 baseline run [`29340056602`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602)
 只有 Windows package job
 [`87109602068`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602/job/87109602068)
@@ -68,23 +92,36 @@ Android job 在与该 Windows 修复无关的 x86_64 debug build 阶段耗尽 ho
 
 ## 当前验证策略
 
-- **Tier 1（日常默认）**：backend-neutral scheduler/game rule/protocol/transport 工作先在 Linux native
-  client/server 上闭环。至少运行 changed-area focused tests；共享语义或 authority invariant 变化时增加完整
-  `[multiplayer]`，地址/线程/生命周期高风险时增加 sanitizer，接通 production runtime 时增加真实 PTY loopback。
-- **Tier 2（平台定向）**：只在平台-owned boundary 变化时跑对应 Windows 或 Android。Windows 包括 MSVC project、
-  batch/PowerShell/windist、Win32/ACL/process/socket 和 Windows SDL；Android 包括 Gradle/CMake/manifest、Java/JNI、
-  ABI/resources/touch/lifecycle。portable shared C++ routine 不再自动要求两端完整 package。
-- **Tier 3（里程碑矩阵）**：phase exit、release candidate、pinned toolchain/artifact contract 和 protocol
-  compatibility milestone 才手工跑必要的 Linux/Windows/Android 矩阵。每个 phase exit 仍需对同一候选 source
-  留下一组与出口声明匹配的平台证据。
-- compile-only/cross-compile smoke 只证明对应 compiler/ABI boundary；不能替代 MSVC package、Android APK resources
-  或 emulator/device lifecycle gate。按策略未运行/取消的平台必须记录，但不自动列为 blocker，也不能冒充绿色证据。
-- baseline workflow 现用 changed-path selector：手工 dispatch 默认 `target=all`，也可显式选择单平台 Tier 2；
-  Windows-owned path 只跑 Windows，Android-owned path 只跑 Android，共享 graphical/platform adapter 跑受影响端，
-  共享 build-resource contract 跑全矩阵，普通 backend-neutral `src/multiplayer_*` 不触发 package baseline。
-  transport workflow 的 Linux job 是 production 主门禁，Windows/Android jobs 仅是 transport-only portability probes。
+规范性规则见重构计划第 20.6 节；本节只记录当前批次的选择。
+
+- gameplay/phase-adapter slice 属于 **routine backend-neutral shared implementation**，选择 Tier 1：Linux GCC
+  release build、focused phase-adapter/scheduler/command/turn tests、完整 `[multiplayer]` 和定向
+  ASan/UBSan/LSan。adapter 尚未接 production runtime，因此本 slice 不要求 PTY loopback。
+- 本批没有修改 Windows/Android-owned runtime/UI/package/lifecycle，也没有改变 wire schema、public DTO、protocol
+  version 或 compiler-sensitive public ABI；Windows package 与 Android APK 按策略未运行，不是 blocker，也不是本批
+  绿色证据。
+- workflow/selector slice 属于独立 **Tier 3 CI-contract milestone**：自动 routine multiplayer source 只跑 Linux；
+  transport Windows/Android job 只编译 isolated spike，今后仅在 spike/workflow 自身或显式 target 时运行。baseline
+  自动 base/diff 无法分类时快速失败并要求 manual target，不再静默全矩阵。本地 lint/selector assertions 不是
+  hosted evidence；推送后必须记录 workflow 自身触发的必要 jobs。
+- 任何未编译 changed production source 的 job 不得作为该 change 的平台证据。现有 transport Windows/Android
+  artifacts 只证明 standalone spike/Asio/toolchain；production public boundary 后续需要实际编译 source 的轻量
+  MSVC/NDK target，或在当时显式运行对应 package。
 
 ### 分层门禁实现与验证
+
+- 当前 source 将 transport workflow 的 manual default 改为 `linux`，增加 automatic target selector：所有匹配的
+  production source 先跑 Linux，只有 `.github/workflows/multiplayer-transport-spike.yml` 或
+  `tools/multiplayer/transport_spike/**` 变化才自动追加 standalone Windows/Android probes；显式 manual target 仍支持
+  `linux|windows|android|all`。baseline selector 的 base fetch/diff failure 改为明确失败并要求 manual rerun。
+- baseline 自动 package mapping 同时把 routine `multiplayer_transport.cpp`/`multiplayer_crypto.cpp`、server config/log
+  和 mixed `main.cpp` 移出仅凭路径触发的 W/A package；public transport/crypto headers 仍触发 W/A actual-source
+  package，protocol/schema/generated-header boundary 也触发 W/A actual-source package。`Makefile` 只选 Linux；root
+  `CMakeLists.txt`/`src/version.cmake` 改由 transport Linux job 的定向 configure + `get_version` target 验证。generic
+  file 内已有或新增平台分支变化必须人工选择 Tier 2。对应 workflow 静态/selector 验证见本批证据。
+
+以下 commit/run 记录旧 selector 的演进与 hosted evidence；其中 fail-open 和 main/crypto/config/log 自动分类已经被
+上述当前 source 取代，不再代表现行 routing：
 
 - commit `377feba3b22f3ddafbaf259f26c4871791e9fbc6` 落地三层文档与 changed-path package selector；commit
   `6155cc9603f942ae9c4c86d69dc1d66a5fdc6a94` 将 selector 从 full-history checkout 改为 shallow checkout +
@@ -208,7 +245,67 @@ Android job 在与该 Windows 修复无关的 x86_64 debug build 阶段耗尽 ho
 
 ## 验证证据
 
-### Phase 3 scheduler policy 本地验证（当前 source state）
+### Phase 3 phase adapter/source seams：Tier 1 Linux（当前 source state）
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+./build-scripts/check-multiplayer-build-env.sh linux
+make -j"$(nproc)" \
+  COMPILER=g++-13 TILES=0 SOUND=0 RELEASE=1 LOCALIZE=0 \
+  BACKTRACE=0 PCH=0 ASTYLE=0 tests
+./tests/cata_test '[multiplayer][phase_adapter]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-phase-adapter-final
+./tests/cata_test \
+  '[multiplayer][turn_phase],[multiplayer][command_executor],[multiplayer][scheduler]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-phase-focused-final
+./tests/cata_test '[multiplayer]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-phase-full-final
+
+make -j"$(nproc)" AUTO_BUILD_PREFIX=1 \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 \
+  SANITIZE=address,undefined \
+  WARNINGS='-Wall -Wextra -Wno-error=array-bounds' tests
+ASAN_OPTIONS='detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1:abort_on_error=1' \
+UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1' \
+./tests/release-local-back-sanitize-cata_test \
+  '[multiplayer][phase_adapter],[multiplayer][scheduler],[multiplayer][command_executor],[multiplayer][turn_phase]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-phase-adapter-sanitize-final
+```
+
+- Linux environment gate 通过；GCC 13 release `tests` target 完整构建成功。
+- focused phase adapter：11 cases / 246 assertions，全过；新增故障注入在真实 wait 后故意提前推进 scheduler，使
+  adapter 的正式 record 失败，验证 post-side-effect fault、world claim 拒绝和 replacement adapter 不可重试。
+- focused turn-phase/command-executor/scheduler：12 cases / 447 assertions，全过。
+- 完整 `[multiplayer]`：70 cases；68 通过，两个 full-avatar move-swap `[!mayfail]` 负面对照保持 expected failure；
+  3,714 assertions 中 3,711 通过、3 个 expected failures，exit 0。
+- sanitizer target 增量重建成功；定向 filter 为 21 cases / 670 assertions，全过，运行 314.022 秒；无 ASan、
+  UBSan、LSan 或 stack-use-after-return finding。仅出现既有 GCC 13 initializer-list `array-bounds` optimizer warning，
+  本 sanitizer build 继续用精确 `-Wno-error=array-bounds` 降级，不隐藏其他 warning。
+- AStyle 3.1 `make ... astyle-check` 报 `no astyle regressions`；最终 `git diff --check` 通过。
+- 这是 Tier 1 backend-neutral source evidence。Windows/Android production builds 未运行；adapter 未接 production
+  runtime，所以 PTY loopback 未运行。二者均为按策略未运行，不是 blocker。
+
+### Linux-first workflow/selector 本地门禁（当前 source state）
+
+- actionlint 1.7.12 对 `.github/workflows/multiplayer-baseline.yml` 和
+  `.github/workflows/multiplayer-transport-spike.yml` 均无输出、exit 0。
+- PyYAML parse 成功；baseline 的 18 个、transport 的 15 个 Bash-compatible `run:` blocks 均通过 `bash -n`。
+- transport selector 动态断言通过：manual `linux|windows|android|all` 精确选择目标；manual Linux/all 同时启用
+  root-CMake contract；scheduler production-source commit `45be077` 只输出 Linux；实际修改 transport workflow 的
+  commit `377feba` 输出 Linux+Windows+Android 并启用 root-CMake gate；包含 root CMake/version 变化的 `e078eb6`
+  同样启用 root-CMake gate。
+- baseline 与 transport selector 在 40 个零的 unresolved base 上均快速失败并提示 explicit manual target，不再
+  隐式全矩阵。
+- 静态 path mapping 断言通过：baseline 自动列表不再包含 root CMake/version、mixed `main.cpp`、routine
+  transport/crypto `.cpp` 或 server config/log wildcard；`Makefile` 只选 Linux；public transport/crypto headers 和
+  protocol/schema/generated header 在 push/PR 两份列表中选择 W/A actual-source package。transport 已移除纯 README
+  与 Windows-only common props，manual default 为 Linux，standalone W/A 自动 selector 只匹配其 workflow/spike path。
+- 本地 root CMake 定向命令以 GCC 13、curses、无 tiles/sound/localize/tests 配置成功，并构建 `get_version` target；
+  本机因 user-prefix zlib/ncurses 额外传入 `CMAKE_PREFIX_PATH`，hosted Ubuntu job使用已安装系统开发包。
+- 这是 selector/source lint evidence，尚不是修改后 workflow 的 hosted evidence。由于本批修改 workflow 自身，首次
+  推送会按 cross-platform CI boundary 跑必要的 selector/platform jobs；后续 routine source push 才收敛为 Linux-only。
+
+### Phase 3 scheduler policy 本地验证（上一 source state）
 
 ```bash
 source build-scripts/activate-multiplayer-build-env.sh
@@ -257,15 +354,17 @@ git diff --check
 - transport/protocol run
   [`29340055386`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340055386) 为 terminal
   `success`：Linux GCC 13/Clang 18 job 通过 production `[multiplayer]` tests、headless process smoke 和
-  network-client UI process smoke；Windows x64 MSVC loopback 与 Android NDK arm64 compile jobs 也成功。
+  network-client UI process smoke；Windows x64 MSVC loopback 与 Android NDK arm64 compile jobs 也成功，但只覆盖
+  standalone transport spike。
 - baseline run
   [`29340056602`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602) 为 terminal
   `failure`。translations、tileset、shaders、soundpack、Linux curses package 和 Android package jobs 均成功；
   唯一失败是 Windows x64 MSVC tiles+sound package job
   [`87109602068`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602/job/87109602068)
   的 `Build package` step。
-- 失败来自 `msvc-full-features/prebuild.cmd` 的手写 canonical build-ID validator 误拒合法 40 位小写 SHA；
-  hosted transport 的 Windows MSVC job 已成功，因此不能把它描述为 scheduler compile failure。
+- 失败来自 `msvc-full-features/prebuild.cmd` 的手写 canonical build-ID validator 误拒合法 40 位小写 SHA；它发生在
+  production compile 前，不能描述为 scheduler compile failure，也不能用 standalone transport Windows job冒充
+  scheduler compile evidence。后续 `c9b2808` 完整 MSVC package job实际编译并关闭 Windows gate。
 - 修复 commit `c9b28086e973fa497d5bd9f9a37e64a9ac22e464` 改为 PowerShell `-cmatch` 的 anchored、case-sensitive
   regex，并在 baseline workflow 的 package step 中先显式运行 prebuild，再分别对 prebuild 与 MSBuild 的非零
   exit code 立即失败。
@@ -648,16 +747,28 @@ git diff --check
   resources 成功，Windows validator failure 已由 `c9b2808` 的 hosted MSVC package 定向成功关闭。run
   `29344937410` 整体因 Android runner no-space 后的 policy cancellation 为 `cancelled`，不能称为全平台绿色，
   但按当前 Tier 2 策略不构成 active blocker。
-- Phase 3 只有纯 scheduler policy/test 切片；stable registry/runtime、active-player guard 和 human tracker 基础已
-  存在，但 production session directory、phase adapter 和 dedicated-server routing 尚未接入。`players.max > 1`
-  仍未实现。
+- Phase 3 scheduler 与当前仅由测试调用的 source phase adapter/seams 已存在；stable registry/runtime、active-player guard 和
+  human tracker 基础已复用，但 adapter 没有 production caller，dedicated-server routing 与 authoritative
+  session/runtime directory 尚未接入。`players.max > 1` 仍未实现。
 - 五个 `do_turn()` trace labels 不是 ownership boundary。`player_begin`/`player_input`/`player_end` 仍混入 world/UI
   工作；当前 `do_turn_remote()` 仍让单 avatar 用尽 moves 才执行一次 world phase。moves 在 `player_end` 的
-  `u.process_turn()` 补充，尚未证明迁到 target turn-begin 模型时的 off-by-one 等价。
-- `record_automatic_wait_executed()` 不能证明真实 wait 已执行；测试 adapter 虽遵守 execute-before-record，但公共
-  policy API 仍需 production forced/scoped wrapper 才能防止调用方绕过。world ticket 与
-  `record_world_completed()` 只验证 claim/record 状态，不证明真实 bubble/world callback exactly-once；claim 后
-  callback 失败没有 retry/abort/rollback/recovery。
+  `u.process_turn()` 补充；first-turn 回归已保持现有顺序，但普通稳态 turn 的完整多人 off-by-one 等价仍待 production
+  phase ownership 拆分后验证。
+- adapter 已证明真实 forced wait 的 execute-before-record、目标 bookkeeping、root restore 和 in-memory fail-stop，
+  但 production 代码仍可绕过它。actual `process_legacy_single_player_bubble_turn()` 没有置于 world claim 后；world
+  test 只是 lambda。fault 也没有 typed save/shutdown/restart recovery，不能宣称真实 bubble exactly-once。
+- adapter 拒绝 offline runtime。真实 disconnect 必须分离 transport disconnected、barrier disconnected 和 runtime
+  offline，在 forced wait 完成前保留 active stable owner；当前 `disconnect_multiplayer_player()` 的时序不能直接
+  复用为 barrier timeout。它还拒绝断开 active root runtime，单玩家 server 必须先决定 neutral server context 或
+  selected-root/lifecycle 解耦，才能在 forced wait 后合法进入 offline。
+- lobby resume generation 与 `multiplayer_player_runtime::session_generation()` 仍可能分叉；scheduler participant key
+  尚无统一 authoritative owner。当前 lobby 会先递增 generation、更新 resume record 并构造 accepted response，之后
+  才 emit event；必须改成 pending auth/resume -> simulation directory commit -> complete response 两阶段。当前 resume
+  request 不携带 generation，expected old generation 应由 server token record 解析，不应为此无意修改 wire schema。
+  lobby/scheduler 的 `UINT64_MAX`、runtime/save 的 `INT64_MAX` 边界和 client“只要变大”检查也必须统一为
+  `< INT64_MAX` 且 exact `+1`。
+- 本批 phase-adapter shared source 只取得 Tier 1 Linux release/sanitizer evidence。Windows/Android production
+  build 按策略未运行；transport standalone W/A probes 即使绿色也不构成本批 source evidence。
 - `game::walk_move()` 仍使用固定 `game::u`；human-human collision、monster target/attack、death、field、single
   `typescent`/scent center、NPC/overmap anchor、tether/group-centered shift 和 player-state isolation 均未关闭。
 - 本地 Android diagnostic package 缺 `grayscale.frag.spv`，因此该 shader variant 被禁用；ASCIITiles scene 已正常
@@ -668,7 +779,7 @@ git diff --check
 - heartbeat 目前只有 30 秒 ping、120 秒 timeout 与手动 confirm reconnect；Android 的最小 pause/resume、定向
   TCP reset 和 airplane route recovery 已绿色，但长时间 background timing、自动 retry/backoff、进程死亡恢复和
   graceful-disconnect timeout 仍无运行证据。若服务端在 clean release 时不回 ACK，UI 仍需第二次 quit 才能强制离开。
-- durable process-restart resume 属于 Phase 4：resume token、pending command 和 scene revision 当前仍只在 native process 内存中，进程杀死后不能继续旧 session；后续需 app-private、版本化、原子 checkpoint，但不阻塞当前 Phase 3 source audit/初始 scheduler slice。
+- durable process-restart resume 属于 Phase 4：resume token、pending command 和 scene revision 当前仍只在 native process 内存中，进程杀死后不能继续旧 session；后续需 app-private、版本化、原子 checkpoint，但不阻塞当前 Phase 3 scheduler/adapter source slice。
 - clean `DisconnectNotice` 已验证 command settlement、ACK write drain、ordered close 以及仅在精确 completion 后清除 resume record；但多数 protocol/auth/application 错误仍通过 transport close reason 而非 typed disconnect payload 返回。
 - client token reader 的 size/mode/symlink 检查仍存在 path-check → open 的 TOCTOU 窗口；Windows private-file ACL 尚未由本地平台证据验证。
 - 服务器仍只有一个 `active_remote_session`，command cache 也只按 sequence 建索引；config 继续拒绝
@@ -680,27 +791,37 @@ git diff --check
 
 ## 下一门禁和首个动作
 
-Phase 2 已关闭；Phase 3 的 source/ownership audit 和首个 pure scheduler policy 已有本地 evidence，transport/
-protocol hosted run 也已全绿，Windows validator fix 的 Tier 2 MSVC package evidence 已取得。当前不再等待
-replacement 全平台 baseline；下一代码门禁直接是 **Linux-first、保持单人行为的 phase adapter/extraction**，
-而不是 live multi-session 或 move。首个要检查的文件和命令是：
+Phase 2 已关闭；Phase 3 scheduler、phase adapter/source seams 和 two-runtime in-process wait-only test 已有 Tier 1
+Linux evidence。下一代码门禁是 **authoritative production session/runtime directory**，不是立即启用第二 client 或
+move。首个要检查的文件和命令是：
 
 ```bash
-sed -n '533,835p' src/do_turn.cpp
-sed -n '1,140p' tests/multiplayer_turn_phase_test.cpp
+rg -n 'active_remote_session|session_generation|resume|disconnect' \
+  src/main.cpp src/multiplayer_server_lobby.* src/multiplayer_player_runtime.*
+sed -n '360,570p' src/multiplayer_server_lobby.cpp
+sed -n '145,205p' src/multiplayer_player_runtime.cpp
+sed -n '540,650p' src/game.cpp
 ```
 
-先把当前 mixed trace ranges 拆成明确的 world-once 与 scoped-player callbacks，保留现有 moves replenishment 和
-phase-order regression；再用 existing registry/guard 实现 forced/scoped automatic wait 与可计数的真实 world
-callback，覆盖 wait/world callback 失败。随后增加两个 runtime 的 wait-only barrier integration，最后才扩展
-production session directory、move/collision、monster/death、field/scent/NPC、tether/group shift 和 player-state
-isolation。
+按四个可独立验收的 Linux-first slices 推进：
 
-本入口切片按 Tier 1 在 Linux 验证：先跑 focused `[multiplayer][turn_phase]`、`[multiplayer][scheduler]` 和
-相关 registry/guard tests；若改变 shared turn/authority semantics，再跑完整 `[multiplayer]`；一旦接入真实
-production runtime，增加 Linux headless server + native client PTY loopback；地址/生命周期风险变化时增加
-sanitizer。除非该切片同时修改 Windows/Android-owned boundary，否则不要求每次推送都完成 MSVC package 与 Android
-APK。到 Phase 3 exit 时再按 Tier 3 对同一候选 source 记录必要平台矩阵。无论日常验证层级如何，只有真实
-two-runtime integration、collision/monster/death/tether/player-isolation 等 gate 关闭后才能考虑 `players.max > 1`。
+1. 先写 session 状态表和 API tests：将 lobby auth/resume 改为 pending request -> simulation-thread directory commit
+   -> `complete_*` response；增加 directory-only exact `expected_old -> new` generation transition；由 resume token
+   record 提供旧 generation。覆盖 pre-grace/grace/timeout 竞争、stale disconnect、重复 completion 和失败不发成功响应。
+2. 对单玩家 active root 无法 offline 的冲突作出 ADR 级决定：neutral server root context，或 selected context 与
+   runtime lifecycle 解耦。实现后固定“transport disconnect -> barrier disconnect -> forced wait -> terminal record ->
+   runtime offline”的顺序。
+3. 保持 `players.max = 1`，让 production owner 私有持有 scheduler/adapter，将 semantic command、forced timeout wait
+   和 actual `process_legacy_single_player_bubble_turn()` 放进不可绕过的 claim/record 路径；把 execution fault 映射为
+   typed fatal shutdown。只要可能已发生非幂等 gameplay side effect，就不得写新的 canonical save；只有明确分类为
+   pre-side-effect 的 failure 才能正常保存。adapter 接管 action 时必须替换/绕过 legacy
+   `execute_turn_player_action()` 外层 bookkeeping，不能把它直接包进现有 bool callback 导致双重记录。随后运行
+   Linux `--server` + native client PTY smoke。
+4. 将已绿色的 in-process two-runtime wait-only case 接入 production owner，再依次关闭 move/collision、monster/death、
+   field/scent/NPC、tether/group shift 和 player-state isolation，最后才考虑 `players.max > 1`。
+
+每个 slice 默认只跑 Linux focused tests；shared authority/session semantics 改变时增加完整 `[multiplayer]`，地址/
+生命周期风险增加 sanitizer，production path 接通后增加 PTY loopback。只有 public compiler/ABI boundary、明确
+Windows/Android-owned code 或 Phase 3 exit 才升级到对应 Tier 2/3；不得把全平台 package 作为日常前置。
 
 不得把本批单客户端 UI smoke 描述为两玩家/shared-barrier、完整 remote avatar replica、portable character 或生产发布完成。

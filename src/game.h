@@ -87,6 +87,7 @@ class multiplayer_active_player_guard;
 class multiplayer_player_id;
 class multiplayer_player_registry;
 class multiplayer_player_runtime;
+class multiplayer_turn_phase_adapter;
 class npc;
 class npc_template;
 class overmap;
@@ -184,6 +185,7 @@ class game
         friend class avatar;
         friend class map;
         friend class multiplayer_active_player_guard;
+        friend class multiplayer_turn_phase_adapter;
         friend class swap_map;
         friend achievements_tracker &get_achievements();
         friend event_bus &get_event_bus();
@@ -290,6 +292,12 @@ class game
         void unserialize_master( const cata_path &file_name, std::istream &fin ); // for load
         void unserialize_master( const JsonValue &jv ); // for load
     private:
+        void record_turn_player_action( avatar &player );
+        /** Legacy single-active-player seam; multiplayer phases record inside their guard. */
+        std::optional<bool> execute_turn_player_action(
+            const std::function<std::optional<bool>()> &remote_action_handler,
+            bool local_ui );
+        int process_legacy_single_player_bubble_turn( avatar &legacy_anchor, map &here );
         bool do_turn_impl( const std::function<std::optional<bool>()> &remote_action_handler,
                            bool local_ui );
         void unserialize_impl( const JsonObject &data );

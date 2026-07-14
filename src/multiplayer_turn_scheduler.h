@@ -110,6 +110,9 @@ class multiplayer_turn_scheduler
                          const std::vector<multiplayer_turn_participant_key> &roster );
 
         multiplayer_turn_scheduler_stage stage() const;
+        /** Permanently blocks transitions after an uncertain simulation side effect. */
+        bool is_faulted() const noexcept;
+        void latch_execution_fault() noexcept;
         /** Includes finished and removed records until this turn is completed. */
         std::size_t participant_count() const;
         /** Removed participants remain discoverable in the immutable turn snapshot. */
@@ -174,6 +177,7 @@ class multiplayer_turn_scheduler
         std::uint64_t shared_turn_ = 0;
         std::uint64_t round_ = 0;
         std::size_t cursor_ = 0;
+        bool faulted_ = false;
 };
 
 #endif // CATA_SRC_MULTIPLAYER_TURN_SCHEDULER_H

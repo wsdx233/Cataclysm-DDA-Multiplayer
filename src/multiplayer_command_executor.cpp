@@ -12,9 +12,13 @@
 #include "npc.h"
 
 bool multiplayer_execute_wait( game &simulation, avatar &player,
+                               const multiplayer_wait_execution_mode mode,
                                const bool repeat_safe_mode_warnings )
 {
-    if( !simulation.is_simulation_thread() || &simulation.active_avatar() != &player ||
+    if( !simulation.is_simulation_thread() || &simulation.active_avatar() != &player ) {
+        return false;
+    }
+    if( mode == multiplayer_wait_execution_mode::player_requested &&
         !simulation.check_safe_mode_allowed( repeat_safe_mode_warnings ) ) {
         return false;
     }
@@ -70,7 +74,9 @@ multiplayer_command_execution multiplayer_execute_basic_command(
                 result.message = "wait command must not include a direction";
                 return result;
             }
-            handled = multiplayer_execute_wait( simulation, player, true );
+            handled = multiplayer_execute_wait(
+                          simulation, player,
+                          multiplayer_wait_execution_mode::player_requested, true );
             if( !handled ) {
                 result.rejection = multiplayer_protocol_rejection::permission_denied;
                 result.message = "safe mode rejected the wait command";

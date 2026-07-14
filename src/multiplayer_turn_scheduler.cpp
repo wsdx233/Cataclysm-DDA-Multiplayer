@@ -9,7 +9,7 @@ bool multiplayer_turn_scheduler::begin_turn(
     const std::uint64_t shared_turn,
     const std::vector<multiplayer_turn_participant_key> &roster )
 {
-    if( stage_ != multiplayer_turn_scheduler_stage::idle || roster.empty() ||
+    if( faulted_ || stage_ != multiplayer_turn_scheduler_stage::idle || roster.empty() ||
         roster.size() > maximum_participants ||
         ( last_shared_turn_ && shared_turn <= *last_shared_turn_ ) ) {
         return false;
@@ -66,6 +66,16 @@ multiplayer_turn_scheduler_stage multiplayer_turn_scheduler::stage() const
     return stage_;
 }
 
+bool multiplayer_turn_scheduler::is_faulted() const noexcept
+{
+    return faulted_;
+}
+
+void multiplayer_turn_scheduler::latch_execution_fault() noexcept
+{
+    faulted_ = true;
+}
+
 std::size_t multiplayer_turn_scheduler::participant_count() const
 {
     return participants_.size();
@@ -99,7 +109,7 @@ multiplayer_turn_scheduler::participant_state( const multiplayer_player_id &play
 
 std::optional<multiplayer_turn_slot> multiplayer_turn_scheduler::current_slot() const
 {
-    if( stage_ != multiplayer_turn_scheduler_stage::player_actions ||
+    if( faulted_ || stage_ != multiplayer_turn_scheduler_stage::player_actions ||
         cursor_ >= participants_.size() ) {
         return std::nullopt;
     }
@@ -144,7 +154,7 @@ bool multiplayer_turn_scheduler::mark_barrier_disconnected(
     const multiplayer_turn_participant_key &participant )
 {
     const std::optional<std::size_t> found = find_exact_participant( participant );
-    if( stage_ != multiplayer_turn_scheduler_stage::player_actions || !found ||
+    if( faulted_ || stage_ != multiplayer_turn_scheduler_stage::player_actions || !found ||
         participants_[*found].state != multiplayer_turn_participant_state::awaiting_command ) {
         return false;
     }
@@ -157,7 +167,7 @@ bool multiplayer_turn_scheduler::resume_barrier_participant(
     const std::uint64_t resumed_session_generation )
 {
     const std::optional<std::size_t> found = find_exact_participant( expected_participant );
-    if( stage_ != multiplayer_turn_scheduler_stage::player_actions || !found ||
+    if( faulted_ || stage_ != multiplayer_turn_scheduler_stage::player_actions || !found ||
         participants_[*found].state != multiplayer_turn_participant_state::disconnected_grace ||
         expected_participant.session_generation == std::numeric_limits<std::uint64_t>::max() ||
         resumed_session_generation != expected_participant.session_generation + 1 ) {
@@ -174,7 +184,7 @@ bool multiplayer_turn_scheduler::apply_disconnect_timeout(
     const multiplayer_disconnect_timeout_policy policy )
 {
     const std::optional<std::size_t> found = find_exact_participant( participant );
-    if( stage_ != multiplayer_turn_scheduler_stage::player_actions || !found ||
+    if( faulted_ || stage_ != multiplayer_turn_scheduler_stage::player_actions || !found ||
         *found != cursor_ ||
         participants_[*found].state != multiplayer_turn_participant_state::disconnected_grace ) {
         return false;
@@ -218,7 +228,7 @@ bool multiplayer_turn_scheduler::record_automatic_wait_executed(
 
 std::optional<multiplayer_world_ticket> multiplayer_turn_scheduler::claim_world()
 {
-    if( stage_ != multiplayer_turn_scheduler_stage::world_ready ) {
+    if( faulted_ || stage_ != multiplayer_turn_scheduler_stage::world_ready ) {
         return std::nullopt;
     }
     stage_ = multiplayer_turn_scheduler_stage::world_processing;
@@ -227,7 +237,7 @@ std::optional<multiplayer_world_ticket> multiplayer_turn_scheduler::claim_world(
 
 bool multiplayer_turn_scheduler::record_world_completed( const multiplayer_world_ticket &ticket )
 {
-    if( stage_ != multiplayer_turn_scheduler_stage::world_processing ||
+    if( faulted_ || stage_ != multiplayer_turn_scheduler_stage::world_processing ||
         ticket.shared_turn != shared_turn_ || participants_.empty() ) {
         return false;
     }

@@ -229,6 +229,12 @@ class active_player_guard {
 
 任何网络线程调用该 guard 都应触发断言。
 
+Phase 3 的 `multiplayer_turn_phase_adapter` source seam 已把 guard 的最低运行合约变成可测试接口：只允许模拟线程，
+要求 scheduler current slot、`player_id`、session generation、registry ownership、runtime lifecycle 和构造时记录的
+root active context 全部精确匹配；guard 必须明确报告 engaged，退出后必须恢复同一 root context。该 adapter 当前只
+接受 `active` runtime，因此 production session directory 不能在断线一发生就把 runtime 置为 `offline`：transport
+断开、barrier 内断开和 runtime offline 是三个不同状态，必须先在仍可激活的稳定 owner 上完成权威自动 wait。
+
 ## 7. 最小侵入式多玩家角色模型
 
 ### 7.1 首选方案：稳定 avatar 地址加活动上下文指针
@@ -273,11 +279,29 @@ sidecar 继续用于把当前散落在 `game` 或进程级单例中的玩家状�
 
 不把 `Character::swap_character()` 加 sidecar 作为默认玩家激活机制，因为该操作仍移动 weapon、inventory、worn 和 activity，不能从根本上保证引用地址稳定。只有后续证据证明某个受限主体交换边界完整且必要时，才以独立 ADR 重新评估。
 
-### 7.4 角色 registry 必须提供
+### 7.4 Session directory 与角色 registry 分工
 
 - 稳定的 `player_id`，使用随机 UUID，不复用 `character_id` 作为账号 ID。
 - 服务器分配且世界内唯一的 `character_id`。
-- 当前连接、会话代数、角色状态、所在 bubble、最后确认 revision。
+- session directory 只在 simulation thread 改变 connection/admission、权威 generation、barrier participation 和
+  runtime lifecycle；registry 持有地址稳定 runtime/avatar，并提供这些状态的只读镜像与身份查询，不能独立推进
+  session transition。
+- 当前连接、角色状态、所在 bubble、最后确认 revision 的可查询 snapshot。
+- 一个由 session directory 统一拥有的 session generation；lobby、runtime、scheduler participant key 和 resume
+  token 不得各自递增或复制不同代数。
+- auth/resume 必须采用两阶段提交：network lobby 只完成 wire validation、rate limit 和 token lookup，产生 pending
+  request；simulation thread 的 session directory 分配/核对 identity、runtime 和 generation 后，再调用 lobby 的
+  `complete_authentication`/`complete_resume` 类入口构造 accepted response。不得由 lobby 先发送成功、递增 record，
+  再让 simulation 侧被动追认。
+- 当前 resume wire request 只携带 token、revision 和 client sequence；expected old generation 由服务器 token record
+  解析并传给 directory。除非另行修改 protocol schema 并走 Tier 2 compatibility gate，不要求客户端新增 generation
+  字段。
+- runtime 需要 directory-only 的 exact generation transition（`expected_old -> new`，且只允许 `+1`）；现有
+  `begin_session()` 的隐式自增和 active/offline 限制不能直接承担跨 lobby/runtime 的权威提交。canonical generation
+  必须小于 `INT64_MAX`（与 player snapshot 可反序列化范围一致），lobby、runtime、scheduler 和 client accepted-resume
+  检查统一拒绝更大值；client 必须验证 response 恰好是上一 generation 的 `+1`，不能只验证“变大”。
+- 分离 transport connection state、当前 barrier participant state 和 runtime lifecycle state；不得用单一
+  connected/offline 布尔值同时驱动网络关闭、自动 wait 和 avatar 可激活性。
 - active/offline/dead/importing 等状态机。
 - 地址稳定的 avatar/runtime ownership；容器 rehash 或扩容不得移动 live avatar。
 - `creature_at()`、`all_creatures()`、`shared_from()`、`critter_by_id()` 对 human players 的支持。
@@ -289,6 +313,9 @@ RFC 4122 v4 `player_id`、session generation、状态机和严格 snapshot schem
 ownership。普通移动由 registry 在查询边界验证位置快照，`map::shift()` 显式同步全部 human runtime 的
 位置、route 和 remote-control 坐标；同格查询优先稳定 human identity，human avatar 不进入 NPC AI。
 这些是进 Phase 1 的运行时身份基础，但仍不是网络协议或 canonical generation world save。
+Phase 2 lobby resume 与 runtime generation 目前仍由不同对象维护，首次 resume 后可能分叉；这是 Phase 3
+production session/runtime directory 必须先关闭的门禁，不能由 phase adapter 猜测或临时覆盖。ownership、两阶段
+admission、generation 和 disconnect 接受门禁见待验证 ADR-0010。
 
 ## 8. 回合与时间模型
 
@@ -307,8 +334,8 @@ ownership。普通移动由 registry 在查询边界验证位置快照，`map::s
 
 这最接近当前 `game::do_turn()` 的“玩家先花 moves，随后世界和怪物行动”结构。
 
-Phase 3 的首个代码切片已经把上述顺序实现为纯 `multiplayer_turn_scheduler` policy，但尚未接入生产
-`do_turn_remote()` 或 dedicated server。该 policy 固定以下边界：
+Phase 3 的前两个 source slices 已实现纯 `multiplayer_turn_scheduler` policy 和一个尚未接入生产的
+`multiplayer_turn_phase_adapter`。scheduler 固定以下边界：
 
 - scheduler 不可复制或移动，避免复制 barrier/world claim 状态；`begin_turn()` 复制最多四人的 immutable roster
   snapshot，中途 join 只能进入下一 turn。
@@ -321,10 +348,17 @@ Phase 3 的首个代码切片已经把上述顺序实现为纯 `multiplayer_turn
 - 所有 snapshot 参与者 terminal 后进入 `world_ready`；claim 返回执行当前 shared-turn world phase 的 permission
   marker 并转换到 `world_processing`，由 `record_world_completed()` 记录匹配 turn 后才可开始下一 turn。
 
-这是顺序/状态 contract，不是 gameplay 执行证明。`record_automatic_wait_executed()` 无法验证真实 wait 已经运行，生产
-必须用不可绕过的 forced/scoped adapter 在正确的 `multiplayer_active_player_guard` 下先执行规则。world ticket
-同样只约束 claim/record 状态，不能证明真实 bubble/world callback exactly-once；callback 失败后的 retry、abort、
-rollback/恢复策略也尚未实现。完成这些生产适配及下游多人规则门禁前，`players.max` 保持 `1`。
+phase adapter 已把纯状态 API 包装为以下不可交换顺序：验证 exact slot/generation/owner/root context，在目标
+`multiplayer_active_player_guard` 内先执行共享规则，再对 accepted action 完成目标 avatar 的 action bookkeeping，
+退出 guard 并验证恢复，最后才记录 scheduler transition。权威自动 wait 使用显式 forced mode，绕过玩家请求的
+safe-mode gate，但仍执行真实 `Character::pause()`；safe-mode 查询也已改为读取当前 active avatar，而不是固定
+`game::u`。adapter 与 scheduler 都不可复制/移动，任何 callback 异常、已发生副作用后的 record failure 或 context
+恢复失败都会永久 latch scheduler execution fault，阻止新 adapter 或新 turn 重试非幂等工作。
+
+这些仍只是 in-process source/test seam。adapter 目前没有被 `main.cpp`、`do_turn_remote()` 或 production session
+owner 调用；world callback 测试使用可计数 lambda，尚未把真实 legacy bubble helper 放进 `claim_world()` 后执行。
+当前 fault latch 也是进程内 fail-stop，不是 save/shutdown/restart recovery protocol。完成 session directory、真实
+world routing 和下游多人规则门禁前，`players.max` 保持 `1`。
 
 ### 8.2 公平顺序
 
@@ -361,8 +395,16 @@ rollback/恢复策略也尚未实现。完成这些生产适配及下游多人�
 - 超过宽限期：只在该玩家成为 current disconnected slot 时应用 policy；先执行一次权威 wait，成功后再将当前
   snapshot 记录标为 finished 或 removed，由权威 session/roster owner 决定是否进入后续 turn。角色留在世界中并
   仍可受伤或死亡。
+- 断线顺序必须是：transport 标记 disconnected -> scheduler 标记该 barrier participant disconnected -> 在
+  registry 仍持有且可激活的 runtime 上执行 forced wait -> 记录 barrier terminal state -> session directory 再决定
+  runtime 是否进入 offline。不得先调用 runtime disconnect/offline 再尝试自动 wait。
+- 当前 `game::disconnect_multiplayer_player()` 拒绝将 active root runtime 置为 offline，单玩家 server 也没有可切换的
+  第二 active runtime。production 接入前必须作出并记录一个明确设计：引入不属于玩家 session 的 neutral server
+  root context，或把“当前 selected root”与 runtime online/offline lifecycle 解耦；不得靠跳过 offline transition 或
+  临时 dummy player 隐式绕过。
 - 安全区服务器可以配置“安全下线后移除实体”，但必须有明确的安全判定和冷却，不能成为战斗逃生手段。
-- 重连必须携带 session resume token 和最后确认 revision；服务器决定发送 delta 还是 full snapshot。
+- 重连必须携带 session resume token 和最后确认 revision；服务器用 token record 解析权威旧 generation，session
+  directory 只允许统一 generation 的精确 `+1`，服务器决定发送 delta 还是 full snapshot。
 
 ## 9. 主循环拆分计划
 
@@ -407,10 +449,17 @@ profiling/test 观测点，不是上述目标函数的现成所有权边界。Ph
 - `world` 只为当前 `u` 写 scent/field，并让 single active avatar 影响 monster/NPC/group-center 语义；
 - `player_end` 同时包含当前 `u.process_turn()` moves replenishment、逐玩家规则和本地 UI/SFX。
 
-因此 Phase 3 下一步必须先提取保持单人执行次序的 phase adapter，再把明确的 player callbacks 放进 registry/guard
-循环；不能按 trace label 机械切块。当前 moves 在 `player_end` 补充，目标模型写作 turn-begin prepare moves；在
-等价测试明确 off-by-one 前保持现有语义。phase adapter 还必须把 authoritative auto-wait 和真实 world callback
-封装为不可绕过的 scoped 操作，并定义 world callback claim 后失败的恢复策略。
+当前 source 已提取 `record_turn_player_action( avatar & )`，使 accepted action 的 bookkeeping 能在目标 guard 内完成；
+legacy 单玩家 world block 也已命名为 `process_legacy_single_player_bubble_turn()`。普通 `do_turn_impl()` 仍直接调用
+该 helper，随后才执行现有 `u.process_turn()`，所以当前 phase order 和 moves replenishment 顺序没有改变。新增回归
+测试验证 first-turn remote wait 的 `turn_begin -> player_begin -> action -> player_input -> world -> player_end` 顺序和
+收尾补充 moves；`check_safe_mode_allowed()` 的直接玩家读取已切到 active avatar。
+
+`multiplayer_turn_phase_adapter` 已在 registry/guard 测试中覆盖 scoped player callback、forced wait、action
+bookkeeping、root context 恢复和 fail-stop，但尚未接入上述真实 world helper 或 production runtime。下一步不是继续
+扩大 trace 拆分，而是先建立统一 generation 的 session/runtime directory，再让 production owner 私有持有
+scheduler/adapter，并把实际 legacy bubble call 放进 world claim。完成这个单玩家兼容路由和 Linux process smoke 后，
+再扩成两个 runtime 的 production wait-only barrier；不能按 trace label 机械切块。
 
 迁移时要逐项处理当前只对 `u` 执行的逻辑，至少包括：
 
@@ -1099,6 +1148,10 @@ world_runtime
 - turn scheduler 的 immutable roster snapshot、稳定首位轮换/roster churn、四玩家无饥饿、typed
   rejected/duplicate 不推进、generation resume、current-only timeout、`automatic_wait_pending` 和 world
   claim/record stale/double-call 拒绝。
+- phase adapter 的 exact slot/player/generation、missing/stale/inactive runtime、registry ownership、root context、
+  guard engagement/恢复、目标 action bookkeeping、真实 forced `pause()` before record、active-avatar safe-mode
+  permission gate，以及
+  callback/wait/world/record failure 后 scheduler 永久 fail-stop；替换 adapter 也不得重试已可能发生副作用的工作。
 - scene visibility filter，确保隐藏怪物、陷阱和未探索地形不出现在包中。
 - save generation 与 fallback。
 
@@ -1124,9 +1177,11 @@ world_runtime
 构建 in-process loopback harness：
 
 - 一个 server、两个无 UI test clients。
-- 一个单人兼容 phase adapter 通过 existing registry/guard 执行两 runtime wait-only barrier；测试必须对真实
-  automatic wait 和 world callback 计数，覆盖 wait/callback 失败。只调用 policy 的
-  `record_automatic_wait_executed()`/`claim_world()` 不能算 gameplay evidence。
+- 当前 in-process source test 已通过 existing registry/guard 让两个 runtime 完成 wait-only barrier，对真实
+  automatic wait 和一个 world lambda 计数，并覆盖 wait/callback 失败与替换 adapter 的 fail-stop；它不是两个
+  client，也没有执行真实 bubble gameplay callback。
+- production integration 必须把实际 legacy bubble/world callback 放在 `claim_world()` 后运行并验证恰好一次；只
+  调用 policy 的 `record_automatic_wait_executed()`/`claim_world()` 或只计数测试 lambda 不能算最终 gameplay evidence。
 - 两玩家相邻移动并互相阻挡。
 - 同时拾取同一物品，只成功一次。
 - A 攻击怪物、B 看到结果和声音。
@@ -1166,6 +1221,11 @@ TCP 不会乱序交付同一连接中的字节，但业务测试仍要覆盖重�
 Android APK。每次交接在 `STATUS.md` 记录所选层级、原因、精确命令、结果和按策略未运行的平台；“本批按策略
 未运行”不是 blocker，也不能冒充对应平台证据。
 
+本节是选择验证层级的唯一规范来源。默认从 Tier 1 开始，只有 diff 或验收声明实际跨入平台/公共兼容边界时才
+升级。不得因为文件名含 `multiplayer`、代码是 shared C++，或某个 workflow 恰好有 Windows/Android job，就自动
+要求完整全平台编译。反过来，任何 job 若没有编译或运行本次 changed production source，也不能作为该变更的
+Windows/Android 证据；isolated transport spike 只证明 spike、Asio pin 和对应 compiler/toolchain contract。
+
 **Tier 1：日常 Linux 闭环。** 这是 scheduler、game rule、协议状态机、服务器和 portable transport 变更的默认层级：
 
 - 在 Linux GCC 上构建受影响的 native client/server 或 tests，并运行 changed-area focused tests。
@@ -1176,7 +1236,7 @@ Android APK。每次交接在 `STATUS.md` 记录所选层级、原因、精确�
 - Linux native client（curses 或 SDL）与 headless server 共享 semantic executor 和 protocol，因此可作为
   backend-neutral 功能的日常证据。它不证明 Windows package、Android Activity lifecycle 或平台专属行为。
 
-**Tier 2：平台专属定向验证。** 只有改动跨入平台拥有的 build/runtime boundary 时才要求对应平台：
+**Tier 2：平台专属或跨平台公共边界定向验证。** 只有改动跨入以下边界时才要求对应平台：
 
 - Windows：`msvc-full-features/`、batch/PowerShell/windist、MSVC-only compiler boundary、Win32 filesystem/process/
   socket/ACL 或 Windows SDL input/rendering。按改动运行 hosted MSVC compile、loopback、package 或 native smoke；
@@ -1184,8 +1244,12 @@ Android APK。每次交接在 `STATUS.md` 记录所选层级、原因、精确�
 - Android：Gradle/CMake/manifest、Java/JNI、ABI/resources、SDL touch/rendering、credential storage、Activity
   pause/resume/reconnect。按改动运行 NDK compile、目标 ABI APK/resource smoke；触及 lifecycle/runtime 行为时必须
   再跑 emulator 或 device，compile-only APK 不能替代运行证据。
+- 跨平台公共边界：wire schema/version/capability/build ID、公开 DTO/serialization layout、compiler/ABI-sensitive
+  public header、共享 source-list 或 pinned toolchain contract。Linux 主门禁仍必须运行，再选择能实际编译 changed
+  production source 的 MSVC/NDK 轻量 gate；package/resource/runtime 不是验收目标时，不升级为完整包。
 - backend-neutral `src/multiplayer_*` policy/rule routine 不因使用 shared C++ 就自动要求 Windows+Android 完整
-  package。若引入 platform conditional、compiler-sensitive ABI/header 或平台 adapter，则只补对应的定向门禁。
+  package。内部 `.cpp` scheduler/rule/phase-adapter 实现、测试或不改变接口/协议的重构仍属 Tier 1；若新增或修改
+  已有 platform conditional、compiler-sensitive ABI/header 或平台 adapter，则只补受影响的定向门禁。
 - MinGW/NDK 等廉价 cross-compile smoke 只证明该编译边界；它不能关闭 MSVC package、Android APK resource 或
   emulator/device lifecycle gate。反过来，非当前验收目标的平台完整 package 也不是日常 shared-code 进度的前置。
 
@@ -1202,12 +1266,26 @@ ASan/UBSan、Windows MSVC 目标 build/package、Android arm64/x86_64 目标 bui
 发布风险要求时纳入，但阶段退出至少保留一组与其产品声明匹配、可追溯到同一候选 source 的必要平台证据。
 每夜 4-client soak 可独立运行，不把其每次结果变成日常提交的同步前置。
 
+| 变更类别 | 默认验证 |
+| --- | --- |
+| 内部 shared rule/scheduler/adapter 实现 | Linux build + focused tests；按风险增加 full `[multiplayer]`/sanitizer/PTY |
+| 跨平台公共 header/schema/ABI/toolchain 边界 | Linux 主门禁 + 实际编译 changed source 的 MSVC/NDK 定向 gate |
+| Windows 或 Android owned build/runtime/UI/lifecycle | Linux 回归（若影响 shared code）+ 受影响平台的 compile/package/runtime gate |
+| phase exit、release、toolchain/artifact/protocol milestone | Tier 3 必要矩阵 |
+
 CI automation 与该策略对应：baseline workflow 的手工 dispatch 默认 `target=all` 运行全矩阵，Tier 2 也可显式
 选择 Linux、Windows 或 Android 单平台；自动 push/PR 先按 changed path 选择 package target，Windows-owned path
 只跑 Windows，Android-owned path 只跑 Android，共享 graphical/platform adapter 跑受影响端，共享
-build/resource/toolchain contract 或无法解析 base 时跑全矩阵，普通 backend-neutral `src/multiplayer_*` 不触发
-package baseline。transport/protocol workflow 以 Linux production tests/process smokes 为主门禁；其 Windows MSVC
-与 Android NDK jobs 仅标为 portable transport-only portability probes，不能被描述为完整平台 package/runtime gate。
+build/resource/toolchain contract 跑全矩阵，普通 backend-neutral `src/multiplayer_*` 不触发 package baseline。
+`Makefile` 只选择实际使用它的 Linux package；root `CMakeLists.txt`/`src/version.cmake` 由 Linux production workflow
+定向 configure 并构建 `get_version`，不触发无关平台 package。public transport/crypto header、protocol source、
+generated header 或 schema 当前临时映射到 Windows/Android actual-source package，等轻量 production portability
+target 建立后再缩小成本。
+自动 selector 无法可靠解析 base/diff 时应快速失败并要求显式 manual target，不得静默消耗全矩阵。
+transport/protocol workflow 手工默认 `linux`，自动普通 production path 也只跑 Linux production tests/process
+smokes；其 Windows MSVC 与 Android NDK jobs 只编译 isolated transport spike，因此仅在 spike/workflow 自身变化或
+显式 manual target 时运行，不能被描述为 changed production source 的平台证据。public protocol/header 的 W/A
+证据当前来自 baseline actual-source package，而不是该 spike；后续应以轻量 production subset target 替换重包。
 
 ## 21. 可观测性与性能
 
@@ -1339,21 +1417,28 @@ assertion、生产 tests/process smoke 和 transport gates。至此 Phase 2 的 
 canonical build identity 与 Android lifecycle exit criteria 均有记录证据，Phase 2 于 2026-07-14 正式关闭。
 完整 lifecycle polish、remote avatar replica 与更完整 scene layers 仍属于后续 Phase 4，不能因阶段关闭而视为完成。
 
-### Phase 3：第二玩家与共享 Scheduler（5 至 8 周，纯策略切片已落地，phase adapter 为下一入口）
+### Phase 3：第二玩家与共享 Scheduler（5 至 8 周，policy 与 source adapter seam 已落地）
 
 ADR-0002 所需的首轮 source/ownership audit 已完成，未发现需要推翻 accepted ADR 的冲突。Phase 0 已经提供
 地址稳定的 player registry/runtime、active-player guard 和额外 human tracker/query/map-shift 基础；Phase 3 的
-任务是生产集成与补齐规则，不是重新创建这些组件。当前 Phase 3 source slice 新增纯
-`multiplayer_turn_scheduler` 和测试，
-覆盖 roster snapshot、公平顺序、typed action result、generation resume、disconnect timeout、auto-wait pending 和
-world claim/record 状态；它尚未接入 `do_turn_remote()`/dedicated server，也不拥有 gameplay callback。
+session ownership 与 two-phase admission 已在 ADR-0010 记录为待验证门禁。
+任务是生产集成与补齐规则，不是重新创建这些组件。当前 Phase 3 source slices 已增加纯
+`multiplayer_turn_scheduler`、`multiplayer_turn_phase_adapter` 和保持单人执行次序的 action/world helper seams，
+覆盖 roster snapshot、公平顺序、typed action result、generation resume、disconnect timeout、forced auto-wait、
+scoped action bookkeeping、root-context restoration、execution fault latch 和 world claim/record 状态。adapter 仍只由
+测试调用；actual legacy bubble helper、`do_turn_remote()` 和 dedicated server 尚未由 scheduler/adapter 编排。
 `players.max` 仍必须为 `1`，本切片不构成 Phase 3 gate 完成。
 
-- 将现有 `player_registry`、human tracker 和 `multiplayer_active_player_guard` 接入 production session directory 与
-  scheduler ownership。
-- 从 `do_turn_impl()` 提取保持单人行为的 phase adapter；trace labels 只作观测，不能直接作为 ownership 边界。
-- 实现不可绕过的 forced/scoped automatic-wait adapter，以及真实 bubble/world callback 的 claim、计数、失败恢复。
-- 先让两个 registry runtime 通过 wait-only barrier，再接入两玩家 round-robin moves。
+- 先建立 production session/runtime directory：统一 lobby/runtime/scheduler generation，分离 transport disconnected、
+  barrier disconnected 与 runtime offline；把 lobby auth/resume 改为 pending request -> simulation commit -> complete
+  response 两阶段，并为 runtime 增加 expected-old generation transition。对单玩家 root/offline 冲突先作出 neutral
+  context 或 lifecycle decoupling 决策，再私有持有 scheduler/adapter ownership。
+- 保持 `players.max = 1` 接入 production command path；把实际
+  `process_legacy_single_player_bubble_turn()` 放进 world claim，定义 fault 后的 typed fatal shutdown policy：若可能
+  已发生非幂等副作用，不写新的 canonical save；只有明确发生在 gameplay side effect 前的 failure 才允许正常保存。
+  随后跑 Linux headless server + native client PTY regression。
+- 当前两个 registry runtime 的 in-process wait-only test 已绿色；下一步把它接入 production owner，再接入两玩家
+  round-robin moves。
 - 处理互相阻挡、近战、死亡、field、monster target。
 - 消息、safe mode、stats 基础隔离。
 - 实现 tether 和 group-centered map shift。

@@ -27,6 +27,8 @@ class multiplayer_active_player_guard
         multiplayer_active_player_guard( multiplayer_active_player_guard && ) = delete;
         multiplayer_active_player_guard &operator=( multiplayer_active_player_guard && ) = delete;
 
+        bool is_engaged() const noexcept;
+
     private:
         game &owner;
         shared_ptr_fast<multiplayer_player_runtime> previous;

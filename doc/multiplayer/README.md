@@ -25,12 +25,17 @@
 | 构建基线 | 固定版本、构建命令、产物契约、已验证平台 | 多人玩法设计和协议细节 |
 | turn phase 审计 | `do_turn()` 阶段边界、基线 profiling 和 world-phase getter 迁移清单 | 临时性能结论、已完成多人 scheduler 的宣称 |
 
+验证层级的规范性判定只在重构计划第 20.6 节维护；构建基线只负责把该判定映射到具体 workflow/job/path 和说明
+各类产物能够证明什么。`AGENTS.md` 只保留操作摘要，`STATUS.md` 只记录当前批次实际选择与证据，避免多处复制后
+逐渐产生不同规则。
+
 ## 更新规则
 
 - 代码调查推翻计划假设时，先更新或新增 ADR，并同步重构计划，再扩展实现。
 - 构建依赖、runner、ABI、产物名或验证状态变化时，同步更新构建基线。
 - 每次完成可交接的工作单元时更新 `STATUS.md`，写明所选 Tier、选择原因、命令、实际结果和按策略未运行的
-  平台，不只写“已测试”。
+  平台，不只写“已测试”；同时注明本批属于 routine shared、cross-platform public boundary、platform-owned 或
+  milestone，并确认所引用的 job 确实编译/运行了 changed production source。
 - `STATUS.md` 保持单一当前快照。重要历史通过 Git 和 ADR 保留，不堆积流水账。
 - 未完成的 CI、未运行的平台和允许失败的 spike 必须准确分类：按 Tier 策略未运行/取消不自动构成 blocker，
   但不能冒充对应平台证据；真正要求而未通过的 gate 才列为阻塞。

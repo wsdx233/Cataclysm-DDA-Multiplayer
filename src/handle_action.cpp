@@ -2387,11 +2387,15 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             break;
 
         case ACTION_TIMEOUT:
-            multiplayer_execute_wait( *this, player_character, false );
+            multiplayer_execute_wait(
+                *this, player_character,
+                multiplayer_wait_execution_mode::player_requested, false );
             break;
 
         case ACTION_PAUSE:
-            multiplayer_execute_wait( *this, player_character, true );
+            multiplayer_execute_wait(
+                *this, player_character,
+                multiplayer_wait_execution_mode::player_requested, true );
             break;
 
         case ACTION_CYCLE_MOVE:

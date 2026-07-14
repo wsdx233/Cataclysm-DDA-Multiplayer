@@ -25,15 +25,16 @@ Linux curses 包仍是无 SDL 的打包基线；同一 binary 已有显式 `--se
 `workflow_dispatch` 的 `target` 默认为 `all`，供 Tier 3 milestone 运行 Linux、Windows、Android 全矩阵；Tier 2
 也可显式选择 `linux`、`windows` 或 `android` 单平台。自动 push/PR run 先由
 `Select affected platform packages` 比较 event base 与当前 commit，再只启用受影响的平台 package；若无法可靠
-解析 base commit，则安全回退到全矩阵。
+解析 base 或 diff，则快速失败并要求用明确的 manual target 重跑，不再静默消耗全矩阵。
 
 完整 `.po` 不在 Git 仓库中，而是在上游发布时从 Transifex 拉取。基线 workflow 不依赖 fork 私有的 Transifex token；它会校验并从固定的官方基线包提取已编译 `.mo`，供三端打包使用。
 
 独立的 `.github/workflows/multiplayer-transport-spike.yml` 保留
 `tools/multiplayer/transport_spike/` 的 Linux GCC/Clang、Windows MSVC loopback CTest 和 Android NDK arm64
 交叉编译门禁；Linux job 还会构建真实 game/tests，运行完整 `[multiplayer]`、headless process smoke 和生产
-`cataclysm --connect` PTY resume smoke。standalone spike 本身仍不构成生产 transport 或 TLS，生产边界位于
-`src/multiplayer_*`。
+`cataclysm --connect` PTY resume smoke。手工运行默认 `target=linux`；自动普通多人源码改动只跑 Linux。Windows/
+Android job 只在 standalone spike/workflow 自身变化或显式 target 时运行。standalone spike 本身仍不构成生产
+transport 或 TLS，生产边界位于 `src/multiplayer_*`。
 
 ### 2.1 何时运行平台构建
 
@@ -42,9 +43,10 @@ Linux curses 包仍是无 SDL 的打包基线；同一 binary 已有显式 `--se
 
 - Tier 1 日常默认使用 Linux native client/server、focused tests，并按风险增加完整 `[multiplayer]`、sanitizer
   与真实 PTY loopback。portable scheduler/game-rule/protocol routine 的 Linux 结果可作为日常功能证据。
-- Tier 2 只为受影响的平台补定向证据：Windows-owned MSVC/project/batch/PowerShell/windist/Win32/SDL 变更跑
-  Windows；Android Gradle/CMake/manifest/Java/JNI/ABI/resource/touch/lifecycle 变更跑 Android。shared C++ 本身
-  不自动触发两端完整 package 要求。
+- Tier 2 只为受影响的平台或跨平台公共边界补定向证据：Windows-owned MSVC/project/batch/PowerShell/windist/
+  Win32/SDL 变更跑 Windows；Android Gradle/CMake/manifest/Java/JNI/ABI/resource/touch/lifecycle 变更跑 Android；
+  schema/public header/ABI/toolchain boundary 只跑能实际编译 changed production source 的轻量 MSVC/NDK gate。
+  shared internal `.cpp` 本身不自动触发两端完整 package 要求。
 - Tier 3 在 phase exit、release candidate、pinned toolchain/artifact contract 或 protocol compatibility milestone
   手工运行并记录必要的 Linux、Windows、Android 矩阵。
 
@@ -52,23 +54,44 @@ Linux curses 包仍是无 SDL 的打包基线；同一 binary 已有显式 `--se
 
 - 普通 `src/multiplayer_*` gameplay/policy source 不触发 package baseline；它由 Linux production workflow 和
   Tier 1 本地验证负责。
+- `src/multiplayer_transport.cpp`、`src/multiplayer_crypto.cpp`、server config/log 和混合的 `src/main.cpp` 视为
+  routine shared 或需要人工判断的 generic path，不再仅凭文件名触发 Windows/Android package；若 diff 修改其中
+  的 platform conditional，提交者必须显式选择受影响的 Tier 2 target。
+- 当前 public `multiplayer_transport.h`/`multiplayer_crypto.h` 改动仍选择 Windows 与 Android package，以确保实际
+  production source 被对应编译器编译；后续建立轻量 production portability target 后可替换这项较重门禁。
+- protocol implementation/header、generated FlatBuffers header 或 `.fbs` schema 变化同样选择 Windows 与 Android
+  package；Linux transport job先校验 generated header并构建 production tests，三端 package 实际编译生成的
+  production protocol source。纯 protocol README 不触发该门禁。
 - `android/**` 与 Android-owned build/runtime path 只选择 Android package 及其 translations/tileset/shaders 依赖。
 - `msvc-full-features/**`、vcpkg triplet、Windows PowerShell/MSVC/windist script 和 Win32-owned source 只选择
   Windows package 及其四类 resource 依赖。
-- SDL/tiles/font/sound/ImGui、client UI、production transport/crypto 和 platform startup 等共享 graphical/platform
-  path 选择 Windows 与 Android packages；filesystem/mmap/path/locale adapter 选择全矩阵。
-- Linux/Android 环境脚本只选择 Linux 与 Android，明确 Linux-only script 只选择 Linux；其余共享 Make/CMake、
-  build scripts、data/lang/version、baseline workflow 和 artifact-contract path 选择全矩阵。
-- 手工 `workflow_dispatch` 默认 `target=all`；Tier 2 可选单平台。无法解析 event base 的安全回退仍选择全矩阵。
+- SDL/tiles/font/sound/ImGui 和 client UI 等共享 graphical/platform path 选择 Windows 与 Android packages；
+  filesystem/mmap/path/locale adapter 选择全矩阵。
+- Linux/Android 环境脚本只选择 Linux 与 Android，明确 Linux-only script 只选择 Linux；`Makefile` 只选择实际使用
+  它的 Linux package。root `CMakeLists.txt`/`src/version.cmake` 不再触发无关 package，而由 Linux production
+  workflow 的定向 root-CMake configure + `get_version` target 验证。其余共享 build scripts、data/lang/version、
+  baseline workflow 和真正的 artifact-contract path 才选择相应矩阵。
+- 手工 baseline `workflow_dispatch` 默认 `target=all`；Tier 2 可选单平台。自动 selector 无法解析 event base/diff
+  时失败并要求显式重跑，不能把分类失败转换成昂贵的隐式全矩阵。
 
 changed-path selector 只是自动化优化，不替代工程判断。新增或重命名 platform-owned file 时，必须在同一改动中
 同步维护 push/PR 的两份 path list 与 selector case mapping。若普通路径内部新增 platform conditional，路径匹配
-无法自动识别；应显式运行受影响的 Tier 2 gate，并决定扩展 selector 或在 `STATUS.md` 记录继续手工触发的理由。
+无法自动识别；修改已有 platform conditional/branch 也同样如此。应显式运行受影响的 Tier 2 gate，并决定扩展
+selector 或在 `STATUS.md` 记录继续手工触发的理由。
 
 `multiplayer-transport-spike.yml` 的 Linux job 是 production tests/process-smoke 主门禁；Windows MSVC 与 Android
-NDK jobs 明确只是 portable transport-only portability probes，不是完整 platform package 或 runtime gate。MinGW/NDK
-cross-compile、MSVC loopback 或 compile-only APK 只证明各自边界，不能替代目标为 native package、resource 或
-emulator/device lifecycle 时的完整平台 gate。
+NDK jobs 明确只编译 `tools/multiplayer/transport_spike/`，不编译 changed production `src/multiplayer_*`。因此它们
+只证明 standalone spike、Asio pin 和 compiler/toolchain contract，不是普通 scheduler/adapter/transport 实现的
+平台证据，也不是完整 platform package/runtime gate。MinGW/NDK cross-compile、MSVC loopback 或 compile-only APK
+只证明各自边界，不能替代目标为 native package、resource 或 emulator/device lifecycle 时的完整平台 gate。
+
+2026-07-14 的后续 selector source 已通过本地静态/动态门禁：两个 workflow 的 actionlint、YAML parse 和全部
+Bash-compatible run block `bash -n` 通过；transport manual 四种 target、routine scheduler diff 的 Linux-only、
+transport-workflow diff 的三端选择、root-CMake output 和两个 selector 的 unresolved-base fail-fast 均有动态断言。
+本地 GCC 13 root CMake configure + `get_version` target 也通过。静态 mapping 断言确认 protocol/schema/generated
+header 走 W/A actual-source package、Makefile 只走 Linux，并移除纯 README/Windows-only props 的无效 Linux trigger。
+该 source 推送前只有本地 evidence；workflow 自身属于 cross-platform CI boundary，首次 hosted run 应验证 selector
+与必要 jobs，之后普通 production source push 才以 Linux-only 为默认。
 
 ## 3. 固定依赖
 
@@ -483,7 +506,8 @@ canonical build-ID hardening 的 hosted gate；结合精确归属于 `e078eb6` �
 transport/protocol run
 [`29340055386`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340055386) 已 terminal
 `success`：Linux GCC 13/Clang 18 job 通过 production tests 与 process smokes，Windows x64 MSVC loopback 和
-Android NDK arm64 compile jobs 也成功。
+Android NDK arm64 compile jobs 也成功。后两项只编译 standalone transport spike，不编译 scheduler production
+source，因此不能作为该 scheduler 的 MSVC/NDK source evidence。
 
 同一 source 的 baseline run
 [`29340056602`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602) 为 terminal
@@ -491,7 +515,9 @@ Android NDK arm64 compile jobs 也成功。
 是 Windows x64 MSVC tiles+sound package job
 [`87109602068`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602/job/87109602068)
 的 `Build package` step：`msvc-full-features/prebuild.cmd` 的手写 validator 误拒合法 40 位小写 canonical SHA。
-这不是 scheduler source 的 MSVC compile failure；同一提交的 transport Windows MSVC job 已绿色。
+这不是 scheduler source 的 MSVC compile failure；Linux production tests 与 Android APK build 已实际覆盖 scheduler
+source，而该 run 没有取得 Windows production compile 证据。Windows evidence 由下述修复提交的完整 MSVC package
+job补齐，不能用 standalone transport probe 替代。
 
 commit `c9b28086e973fa497d5bd9f9a37e64a9ac22e464` 让 `prebuild.cmd` 从环境读取 ID，并用 anchored、
 case-sensitive PowerShell regex `\A[0-9a-f]{40}(?:-dirty)?\z` 校验；baseline workflow 还会在 MSBuild 前显式
@@ -507,8 +533,9 @@ Windows x64 MSVC tiles+sound package job
 已完成 arm64 release build，但随后的 x86_64 debug build 因 hosted runner `No space left on device` 失败；attempt 2
 的 Android-only job
 [`87137475194`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29344937410/job/87137475194)
-随后按新的分层验证策略由用户取消。Android 没有被 `c9b2808` 修改，且 `45be077` 已有成功的 Android package 与 NDK
-compile evidence，因此这两次 Android 结果既不是 scheduler/code failure，也不阻塞 Linux-first Phase 3 工作。
+随后按新的分层验证策略由用户取消。Android 没有被 `c9b2808` 修改，且 `45be077` 已有实际编译 production source
+的成功 Android package；同批 NDK job 只属于 standalone transport toolchain evidence。因此这两次 Android 结果
+既不是 scheduler/code failure，也不阻塞 Linux-first Phase 3 工作。
 run `29344937410` 不能标成 terminal-green 全平台矩阵；它的可用结论是 Windows Tier 2 成功、Android attempt 1
 runner-capacity failure、attempt 2 policy cancellation。Phase 3 退出时仍须按 Tier 3 为同一候选 source 记录必要
 平台矩阵；当前 `players.max` 必须保持 `1`。

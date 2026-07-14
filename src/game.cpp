@@ -7461,6 +7461,7 @@ void game::reload_weapon( bool try_everything )
 
 bool game::check_safe_mode_allowed( bool repeat_safe_mode_warnings )
 {
+    avatar &player = active_avatar();
     if( !repeat_safe_mode_warnings && is_safe_mode_warning_logged() ) {
         // Already warned player since safe_mode_warning_logged is set.
         return false;
@@ -7468,9 +7469,9 @@ bool game::check_safe_mode_allowed( bool repeat_safe_mode_warnings )
 
     const std::string msg_ignore = lowercase_first_letter( press_x( ACTION_IGNORE_ENEMY ) );
 
-    if( u.has_effect( effect_laserlocked ) ) {
+    if( player.has_effect( effect_laserlocked ) ) {
         // Automatic and mandatory safemode.  Make BLOODY sure the player notices!
-        if( u.get_int_base() < 5 || u.has_trait( trait_PROF_CHURL ) ) {
+        if( player.get_int_base() < 5 || player.has_trait( trait_PROF_CHURL ) ) {
             add_msg( game_message_params{ m_warning, gmf_bypass_cooldown },
                      _( "There's an angry red dot on your body, %s to brush it off." ), msg_ignore );
         } else {
@@ -7484,12 +7485,12 @@ bool game::check_safe_mode_allowed( bool repeat_safe_mode_warnings )
         return true;
     }
     // Currently driving around, ignore the monster, they have no chance against a proper car anyway (-:
-    if( u.controlling_vehicle && !get_option<bool>( "SAFEMODEVEH" ) ) {
+    if( player.controlling_vehicle && !get_option<bool>( "SAFEMODEVEH" ) ) {
         return true;
     }
     // Monsters around and we don't want to run
     std::string spotted_creature_text;
-    const monster_visible_info &mon_visible = u.get_mon_visible();
+    const monster_visible_info &mon_visible = player.get_mon_visible();
     const std::vector<shared_ptr_fast<monster>> &new_seen_mon = mon_visible.new_seen_mon;
 
     const nc_color mon_color = c_red;
@@ -7500,11 +7501,12 @@ bool game::check_safe_mode_allowed( bool repeat_safe_mode_warnings )
         get_safemode().lastmon_whitelist = get_safemode().npc_type_name();
     } else if( new_seen_mon.size() == 1 ) {
         const shared_ptr_fast<monster> &mon = new_seen_mon.back();
-        const std::string dist_text = string_format( _( "%d tiles" ), rl_dist( u.pos_bub(),
+        const std::string dist_text = string_format( _( "%d tiles" ), rl_dist( player.pos_bub(),
                                       mon->pos_bub() ) );
         //~ %s: Cardinal/ordinal direction ("east")
         const std::string dir_text = string_format( _( "to the %s" ),
-                                     colorize( direction_name( direction_from( u.pos_bub(), mon->pos_bub() ) ), dir_color ) );
+                                     colorize( direction_name( direction_from( player.pos_bub(), mon->pos_bub() ) ),
+                                               dir_color ) );
         //~ %1$s: Name of monster spotted ("headless zombie")
         //~ %2$s: Distance to monster ("17 tiles")
         //~ %3$s: Description of where the monster is ("to the east")
@@ -7521,8 +7523,8 @@ bool game::check_safe_mode_allowed( bool repeat_safe_mode_warnings )
         // Find the most frequent type to call out by name.
         std::unordered_map<std::string, std::vector<const monster *>> mons_by_name;
         for( const shared_ptr_fast<monster> &mon : new_seen_mon ) {
-            min_dist = std::min( min_dist, rl_dist( u.pos_bub(), mon->pos_bub() ) );
-            max_dist = std::max( min_dist, rl_dist( u.pos_bub(), mon->pos_bub() ) );
+            min_dist = std::min( min_dist, rl_dist( player.pos_bub(), mon->pos_bub() ) );
+            max_dist = std::max( min_dist, rl_dist( player.pos_bub(), mon->pos_bub() ) );
             mons_by_name[mon->name()].push_back( mon.get() );
         }
         const std::vector<const monster *> &most_frequent_mon = std::max_element( mons_by_name.begin(),
@@ -7547,7 +7549,7 @@ bool game::check_safe_mode_allowed( bool repeat_safe_mode_warnings )
         std::transform( most_frequent_mon.begin(), most_frequent_mon.end(),
                         std::inserter( most_frequent_mon_dirs,
         most_frequent_mon_dirs.begin() ), [&]( const monster * const mon ) {
-            return direction_from( u.pos_bub(), mon->pos_bub() );
+            return direction_from( player.pos_bub(), mon->pos_bub() );
         } );
         std::string dir_text;
         if( most_frequent_mon_dirs.size() == 1 ) {

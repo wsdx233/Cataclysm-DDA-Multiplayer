@@ -11,19 +11,7 @@
 #include <utility>
 #include <vector>
 
-#include "avatar.h"
-#include "cata_scope_helpers.h"
-#include "enums.h"
-#include "game.h"
-#include "map.h"
-#include "map_helpers.h"
-#include "memory_fast.h"
-#include "multiplayer_command_executor.h"
-#include "multiplayer_player_context.h"
-#include "multiplayer_player_registry.h"
-#include "multiplayer_player_runtime.h"
 #include "multiplayer_turn_scheduler.h"
-#include "player_helpers.h"
 
 namespace
 {
@@ -300,95 +288,32 @@ TEST_CASE( "multiplayer_turn_scheduler_four_players_have_no_starvation_and_one_w
     }
 }
 
-TEST_CASE( "multiplayer_turn_scheduler_wait_only_registry_adapter_executes_before_policy_record",
-           "[multiplayer][scheduler][player_bridge]" )
+TEST_CASE( "multiplayer_turn_scheduler_execution_fault_permanently_blocks_transitions",
+           "[multiplayer][scheduler][phase_adapter]" )
 {
-    clear_avatar();
-    clear_map();
-    on_out_of_scope cleanup( []() {
-        clear_avatar();
-        clear_map();
-    } );
-
-    avatar &alpha = get_avatar();
-    map &here = get_map();
-    alpha.setpos( here, tripoint_bub_ms( 60, 60, 0 ) );
-    alpha.set_moves( 100 );
-    const shared_ptr_fast<multiplayer_player_runtime> alpha_runtime =
-        g->multiplayer_players().find_runtime( alpha );
-    REQUIRE( alpha_runtime );
-    const safe_mode_type original_alpha_safe_mode = alpha_runtime->safe_mode();
-    on_out_of_scope restore_alpha_safe_mode( [alpha_runtime, original_alpha_safe_mode]() {
-        alpha_runtime->set_safe_mode( original_alpha_safe_mode );
-    } );
-
-    const shared_ptr_fast<avatar> beta_owner = make_shared_fast<avatar>();
-    avatar &beta = *beta_owner;
-    beta.create( character_type::NOW );
-    clear_character( beta );
-    beta.setID( g->assign_npc_id(), true );
-    beta.setpos( here, tripoint_bub_ms( 62, 60, 0 ) );
-    beta.set_moves( 100 );
-    REQUIRE( g->register_multiplayer_player( beta_owner ) );
-    const shared_ptr_fast<multiplayer_player_runtime> beta_runtime =
-        g->multiplayer_players().find_runtime( beta );
-    REQUIRE( beta_runtime );
-    on_out_of_scope unregister_beta( [&beta, beta_runtime]() {
-        if( beta_runtime->status() == multiplayer_player_status::active ) {
-            g->disconnect_multiplayer_player( beta_runtime->player_id() );
-        }
-        g->unregister_multiplayer_player( beta );
-    } );
-
     multiplayer_turn_scheduler scheduler;
-    REQUIRE( scheduler.begin_turn( 1, {
-        { beta_runtime->player_id(), beta_runtime->session_generation() },
-        { alpha_runtime->player_id(), alpha_runtime->session_generation() }
-    } ) );
+    const multiplayer_turn_participant_key alpha = participant( 1 );
+    const multiplayer_turn_participant_key beta = participant( 2 );
+    REQUIRE( scheduler.begin_turn( 1, { alpha, beta } ) );
+    REQUIRE( scheduler.current_slot() );
+    const multiplayer_turn_participant_key current = scheduler.current_slot()->participant;
 
-    std::set<std::string> waited_players;
-    while( const std::optional<multiplayer_turn_slot> slot = scheduler.current_slot() ) {
-        const shared_ptr_fast<multiplayer_player_runtime> runtime =
-            g->multiplayer_players().find_by_player_id( slot->participant.player_id );
-        REQUIRE( runtime );
-        const bool timed_out = runtime == beta_runtime;
-        if( timed_out ) {
-            REQUIRE( scheduler.mark_barrier_disconnected( slot->participant ) );
-            REQUIRE( scheduler.apply_disconnect_timeout(
-                         slot->participant,
-                         multiplayer_disconnect_timeout_policy::automatic_wait ) );
-            REQUIRE( scheduler.current_slot() );
-            CHECK( scheduler.current_slot()->state ==
-                   multiplayer_turn_participant_state::automatic_wait_pending );
-        }
-        const safe_mode_type safe_mode_before_wait = runtime->safe_mode();
-        {
-            multiplayer_active_player_guard guard( *g, runtime->player_owner() );
-            on_out_of_scope restore_safe_mode( [runtime, safe_mode_before_wait]() {
-                runtime->set_safe_mode( safe_mode_before_wait );
-            } );
-            runtime->set_safe_mode( SAFE_MODE_OFF );
-            CHECK( &get_avatar() == &runtime->player() );
-            REQUIRE( multiplayer_execute_wait( *g, runtime->player(), true ) );
-            CHECK( runtime->player().get_moves() <= 0 );
-            waited_players.emplace( runtime->player_id().str() );
-        }
-        CHECK( &get_avatar() == &alpha );
-        CHECK( runtime->safe_mode() == safe_mode_before_wait );
-        if( timed_out ) {
-            REQUIRE( scheduler.record_automatic_wait_executed( slot->participant ) );
-        } else {
-            REQUIRE( scheduler.record_action_result(
-                         slot->participant,
-                         multiplayer_turn_action_disposition::accepted_finished ) );
-        }
-    }
+    scheduler.latch_execution_fault();
 
-    CHECK( waited_players.size() == 2 );
-    CHECK( alpha.get_moves() <= 0 );
-    CHECK( beta.get_moves() <= 0 );
-    const std::optional<multiplayer_world_ticket> ticket = scheduler.claim_world();
-    REQUIRE( ticket );
+    CHECK( scheduler.is_faulted() );
+    CHECK( scheduler.stage() == multiplayer_turn_scheduler_stage::player_actions );
+    CHECK_FALSE( scheduler.current_slot() );
+    CHECK( scheduler.participant_state( current.player_id ) ==
+           multiplayer_turn_participant_state::awaiting_command );
+    CHECK_FALSE( scheduler.record_action_result(
+                     current,
+                     multiplayer_turn_action_disposition::accepted_finished ) );
+    CHECK_FALSE( scheduler.mark_barrier_disconnected( current ) );
+    CHECK_FALSE( scheduler.resume_barrier_participant( current, 2 ) );
+    CHECK_FALSE( scheduler.apply_disconnect_timeout(
+                     current, multiplayer_disconnect_timeout_policy::automatic_wait ) );
+    CHECK_FALSE( scheduler.record_automatic_wait_executed( current ) );
     CHECK_FALSE( scheduler.claim_world() );
-    REQUIRE( scheduler.record_world_completed( *ticket ) );
+    CHECK_FALSE( scheduler.record_world_completed( { 1 } ) );
+    CHECK_FALSE( scheduler.begin_turn( 2, { alpha, beta } ) );
 }

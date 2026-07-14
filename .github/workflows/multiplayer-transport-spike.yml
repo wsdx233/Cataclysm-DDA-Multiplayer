@@ -2,6 +2,17 @@ name: Multiplayer Linux production and portable transport gates
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Validation target; Linux is the default daily gate
+        required: true
+        default: linux
+        type: choice
+        options:
+          - linux
+          - windows
+          - android
+          - all
   push:
     branches:
       - multiplayer/main
@@ -9,7 +20,6 @@ on:
       - '.github/workflows/multiplayer-transport-spike.yml'
       - 'CMakeLists.txt'
       - 'Makefile'
-      - 'msvc-full-features/Cataclysm-common.props'
       - 'src/get_version.h'
       - 'src/multiplayer_*'
       - 'src/animation.cpp'
@@ -36,10 +46,10 @@ on:
       - 'src/third-party/asio.hpp'
       - 'src/third-party/asio/**'
       - 'tests/multiplayer_*'
-      - 'tools/multiplayer/README.md'
       - 'tools/multiplayer/headless_client_smoke.cpp'
       - 'tools/multiplayer/network_client_ui_smoke.py'
-      - 'tools/multiplayer/protocol/**'
+      - 'tools/multiplayer/protocol/generate.sh'
+      - 'tools/multiplayer/protocol/multiplayer_protocol.fbs'
       - 'tools/multiplayer/transport_spike/**'
   pull_request:
     branches:
@@ -48,7 +58,6 @@ on:
       - '.github/workflows/multiplayer-transport-spike.yml'
       - 'CMakeLists.txt'
       - 'Makefile'
-      - 'msvc-full-features/Cataclysm-common.props'
       - 'src/get_version.h'
       - 'src/multiplayer_*'
       - 'src/animation.cpp'
@@ -75,10 +84,10 @@ on:
       - 'src/third-party/asio.hpp'
       - 'src/third-party/asio/**'
       - 'tests/multiplayer_*'
-      - 'tools/multiplayer/README.md'
       - 'tools/multiplayer/headless_client_smoke.cpp'
       - 'tools/multiplayer/network_client_ui_smoke.py'
-      - 'tools/multiplayer/protocol/**'
+      - 'tools/multiplayer/protocol/generate.sh'
+      - 'tools/multiplayer/protocol/multiplayer_protocol.fbs'
       - 'tools/multiplayer/transport_spike/**'
 
 concurrency:
@@ -97,8 +106,114 @@ env:
   FLATBUFFERS_SHA256: 62f2223fb9181d1d6338451375628975775f7522185266cd5296571ac152bc45
 
 jobs:
+  changes:
+    name: Select production and standalone portability gates
+    runs-on: ubuntu-24.04
+    outputs:
+      android: ${{ steps.scope.outputs.android }}
+      linux: ${{ steps.scope.outputs.linux }}
+      root_cmake: ${{ steps.scope.outputs.root_cmake }}
+      windows: ${{ steps.scope.outputs.windows }}
+    steps:
+      - name: Checkout source and event history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Select validation targets
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_TARGET: ${{ inputs.target || 'linux' }}
+        run: |
+          set -euo pipefail
+
+          linux=false
+          windows=false
+          android=false
+          root_cmake=false
+
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            echo "Manual run target: $MANUAL_TARGET"
+            case "$MANUAL_TARGET" in
+              linux)
+                linux=true
+                root_cmake=true
+                ;;
+              windows)
+                windows=true
+                ;;
+              android)
+                android=true
+                ;;
+              all)
+                linux=true
+                windows=true
+                android=true
+                root_cmake=true
+                ;;
+              *)
+                echo "Unsupported manual target: $MANUAL_TARGET" >&2
+                exit 1
+                ;;
+            esac
+          else
+            # Every automatic run is a Linux production gate.  The Windows and
+            # Android jobs below compile only the isolated transport spike, so
+            # they run automatically only when that spike or this workflow changes.
+            linux=true
+            if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+              echo "Unable to resolve the event base commit; rerun with an explicit manual target." >&2
+              exit 1
+            fi
+            if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+              echo "Fetching the event base commit $BASE_SHA."
+              git fetch --no-tags --depth=1 origin "$BASE_SHA" || true
+            fi
+            if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+              echo "Unable to fetch the event base commit; rerun with an explicit manual target." >&2
+              exit 1
+            fi
+
+            echo "Changed paths from $BASE_SHA to $GITHUB_SHA:"
+            changed_paths="$RUNNER_TEMP/multiplayer-transport-changed-paths"
+            if ! git diff --no-renames --name-only -z "$BASE_SHA" "$GITHUB_SHA" > "$changed_paths"; then
+              echo "Unable to calculate changed paths; rerun with an explicit manual target." >&2
+              exit 1
+            fi
+            while IFS= read -r -d '' path; do
+              echo "  $path"
+              case "$path" in
+                CMakeLists.txt|src/version.cmake)
+                  root_cmake=true
+                  ;;
+                .github/workflows/multiplayer-transport-spike.yml)
+                  windows=true
+                  android=true
+                  root_cmake=true
+                  ;;
+                tools/multiplayer/transport_spike/*)
+                  windows=true
+                  android=true
+                  ;;
+              esac
+            done < "$changed_paths"
+          fi
+
+          {
+            echo "linux=$linux"
+            echo "windows=$windows"
+            echo "android=$android"
+            echo "root_cmake=$root_cmake"
+          } | tee -a "$GITHUB_OUTPUT"
+
   linux:
     name: Primary Linux production tests and process smokes
+    needs:
+      - changes
+    if: ${{ needs.changes.outputs.linux == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout source
@@ -116,6 +231,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             clang-18 g++-13 gettext libbz2-dev libncurses-dev zlib1g-dev
+
+      - name: Verify root CMake configure and version target
+        if: ${{ needs.changes.outputs.root_cmake == 'true' }}
+        run: |
+          cmake \
+            -S . \
+            -B build/root-cmake-contract \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-13 \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DTILES=OFF \
+            -DCURSES=ON \
+            -DSOUND=OFF \
+            -DBACKTRACE=OFF \
+            -DLOCALIZE=OFF \
+            -DTESTS=OFF \
+            -DCATA_CCACHE=OFF
+          cmake --build build/root-cmake-contract --target get_version --parallel
 
       - name: Verify pinned FlatBuffers schema generation
         run: |
@@ -401,6 +534,9 @@ jobs:
 
   windows:
     name: Portable transport-only Windows MSVC probe
+    needs:
+      - changes
+    if: ${{ needs.changes.outputs.windows == 'true' }}
     runs-on: windows-2022
     steps:
       - name: Checkout source
@@ -463,6 +599,9 @@ jobs:
 
   android:
     name: Portable transport-only Android NDK compile probe
+    needs:
+      - changes
+    if: ${{ needs.changes.outputs.android == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout source

@@ -63,47 +63,23 @@ See the plan sections on authority, threading, state scope, scheduling, action/U
 
 ## Current Phase
 
-Phase 0 closed with recorded evidence on 2026-07-12, and Phase 2 closed with recorded evidence on 2026-07-14. The
-project is now in **Phase 3: second-player/shared-scheduler implementation**. The first Phase 3 source slice is a
-pure `multiplayer_turn_scheduler` policy with tests; it owns no avatars, sockets, command payloads or world callback
-and is not connected to the production dedicated server. Source commit
-`45be077ac2d0d042190e54d1bdb77d48676b67e6` has a terminal-success transport/protocol run
-[`29340055386`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340055386), covering Linux GCC 13/
-Clang 18 production tests and process smokes, Windows MSVC and Android NDK. Its baseline run
-[`29340056602`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602) is not green: Linux,
-Android and all resource jobs succeeded, but Windows package job
-[`87109602068`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602/job/87109602068)
-failed in `Build package` because the handwritten `prebuild.cmd` validator rejected a legal 40-character lowercase
-SHA. This is a build-validator failure, not a scheduler compile failure. Commit
-`c9b28086e973fa497d5bd9f9a37e64a9ac22e464` fixes that Windows-specific path with an anchored, case-sensitive
-PowerShell regex plus workflow preflight and immediate MSBuild exit gates. Baseline run
-[`29344937410`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29344937410) proves the Windows x64
-MSVC tiles+sound package job succeeds with the fix. Attempt 1's Android job later exhausted hosted-runner disk while
-building the unrelated x86_64 debug artifact; attempt 2 was cancelled after adopting the tiered verification policy,
-so the run's overall conclusion is `cancelled`, not an all-platform success. Neither result is a scheduler or
-Windows-code failure, and a terminal-green all-platform rerun is not required for this Windows-only fix.
-`players.max` must remain `1`, and Phase 3 is not complete. Phase 1 and Phase 2 local, hosted
-and Android lifecycle gates are green. The Phase 2 client
-implements production transport/state, desktop/Android connection UI, semantic
-wait/move input, bounded full-scene fitting, heartbeat/manual reconnect, ordered clean session release and local
-remote-scene rendering. The final transport fix also keeps a closed logical connection's admission slot until its
-terminal event is consumed, so reset churn cannot crowd terminal events out of the bounded queue. Commit
-`6403a949fb537be14ec4d5757f295adbf5c5f99b` has a green hosted platform gate in baseline run `29303564150` and
-transport/protocol run `29303564152`. A KVM-backed API 35 x86_64 run now has green local evidence for clean launch,
-auth/render, one controlled wait, one controlled move, Activity pause/resume, forced network disconnect/reconnect and
-clean save/shutdown. That run exposed and then verified the fix for a cross-backend handshake bug: commit
-`e078eb6aef25a9cc72eea45793114c931a52b896` uses one backend-neutral 40-character Git SHA, optionally suffixed
-`-dirty`, as the multiplayer build ID instead of the display `VERSION`. Its baseline run `29328086046` and
-transport/protocol run `29328086326` are terminal `success`, including Linux, Windows MSVC and Android evidence. A
-follow-up read-only audit found stale-CMake-generation, Make dirty-state error handling and Windows assertion-case
-gaps; pushed commit `86336ea847bea45f727fd97d74a811a32712518c` fixes them. Its baseline run `29330811779`
-and transport/protocol run `29330811746` are terminal `success`; this closes Phase 2. The Android KVM lifecycle
-evidence belongs exactly to `e078eb6`; do not imply it was rerun for `86336ea`. The Phase 3 source/ownership audit
-found that the stable runtime registry and `multiplayer_active_player_guard` already exist as tested foundations;
-they need production scheduler/session integration, not replacement. The five `do_turn()` trace labels are profiling
-observation points, not safe ownership boundaries: their current ranges still mix per-player and world-once work.
-Do not describe the isolated `tools/` transport spike or the pure scheduler policy as production networking or a
-working two-player server.
+Phase 0 closed with recorded evidence on 2026-07-12, and Phase 2 closed on 2026-07-14. The project is now in
+**Phase 3: second-player/shared-scheduler implementation**. Current source includes the pure
+`multiplayer_turn_scheduler`, a source `multiplayer_turn_phase_adapter` currently called only by tests, explicit
+authoritative-wait mode, target action bookkeeping inside the active-player guard, persistent scheduler fail-stop,
+and named legacy single-player world/action seams. Linux release and sanitizer tests cover exact
+slot/generation/ownership/root-context validation,
+the active-avatar safe-mode permission gate, real forced pause, callback/world failure, replacement-adapter rejection
+and an in-process
+two-runtime wait-only barrier.
+
+These are not production two-player routing. `main.cpp` still owns one `active_remote_session`; the adapter is only
+called by tests; `do_turn_impl()` still calls the actual legacy bubble directly rather than through `claim_world()`;
+session/lobby/runtime generation is not unified; and fail-stop has no production save/shutdown recovery owner.
+`players.max` must remain `1`. Phase 1/2 hosted platform and Android lifecycle evidence remains valid as recorded in
+`STATUS.md`; do not rerun or restate it as evidence for unrelated Phase 3 shared-code changes. The five `do_turn()`
+trace labels remain observation points, not safe ownership boundaries, and the isolated `tools/` transport spike is
+not production-source portability evidence.
 
 Completed Phase 0 gates:
 
@@ -122,18 +98,26 @@ Completed Phase 0 gates:
 
 The active work, in order, is:
 
-1. Extract a single-player-preserving phase adapter from `src/do_turn.cpp::game::do_turn_impl()`: invoke scoped
-   player work through the existing registry/guard, execute authoritative automatic wait before recording it, and place the
-   real world callback behind the scheduler's `world_ready` -> `world_processing` claim. Start by inspecting
-   `src/do_turn.cpp` and `tests/multiplayer_turn_phase_test.cpp`.
-2. Verify the adapter on Linux first with focused scheduler/turn-phase tests, the complete `[multiplayer]` suite when
-   shared turn semantics change, and a real headless-server/native-client PTY loopback when the production runtime
-   path is connected. The scheduler's `automatic_wait_pending` transition still requires a production forced/scoped
-   wait adapter, and its world ticket only guards claim/record state; neither API proves that the gameplay callback ran.
-3. Add a production session/runtime directory and a two-runtime wait-only integration path, then close movement,
-   collision, monster/death, field/scent/NPC, tether/group-shift and player-state isolation gates before allowing
-   `players.max > 1`. Do not pull portable characters, multiple save generations or Phase 4 durable process-restart
-   resume into this entry slice.
+1. Build one authoritative production session/runtime directory around `active_remote_session`, lobby and registry:
+   change auth/resume to pending request -> simulation-thread commit -> lobby completion, add an exact expected-old
+   generation transition, and separate transport disconnected/barrier disconnected/runtime offline. The current
+   resume token record supplies the old generation; do not change the wire schema just for this step. Start with
+   `src/main.cpp`, `src/multiplayer_server_lobby.*` and `src/multiplayer_player_runtime.*`.
+   Follow pending ADR-0010 and do not mark it accepted until its root-context and process gates pass.
+2. Resolve the single-player active-root lifecycle gate before disconnect integration: choose and document either a
+   neutral server root context or a clean separation between selected context and runtime online/offline state. Keep
+   the stable runtime activatable through any required forced wait, then transition it offline.
+3. Keep `players.max = 1` while wiring the scheduler/adapter into the production command loop and putting the actual
+   `process_legacy_single_player_bubble_turn()` call behind the world claim. Map a latched execution fault to typed
+   fatal shutdown; if a non-idempotent side effect may already have happened, stop without writing a new canonical
+   save. Only failures proven to precede gameplay side effects may use normal save. Then run the Linux headless-server/
+   native-client PTY regression.
+   Replace or bypass legacy `execute_turn_player_action()` bookkeeping when the adapter owns an action; wrapping the
+   adapter inside the current `do_turn_remote()` bool callback would record the action twice.
+4. Promote the already-green in-process two-runtime wait-only case into the production owner, then close movement,
+   collision, monster/death, field/scent/NPC, tether/group-shift and player-state isolation gates before enabling a
+   second client. Do not pull portable characters, multiple save generations or Phase 4 durable restart resume into
+   these entry slices.
 
 The Linux curses artifact is still the non-SDL packaging baseline, but the same binary now has an explicitly selected
 `--server` runtime path. Do not ship it as a production dedicated-server package until dedicated-server packaging
@@ -155,8 +139,13 @@ default to `target=all` for the full Tier 3 matrix, while an explicit `linux`, `
 single-platform Tier 2 gate. Automatic runs compare changed paths and select only affected packages. Ordinary
 backend-neutral `src/multiplayer_*` changes do not trigger the package baseline. Windows-owned paths select Windows,
 Android-owned paths select Android, shared graphical/platform adapters select their affected targets, and shared
-build/resource/toolchain paths or an unresolvable base select all. It does not create a GitHub Release and does not
-need production signing secrets.
+artifact/toolchain paths select their required matrix. `Makefile` is Linux-only; root CMake/version generation uses a
+targeted Linux configure; public protocol/schema/transport/crypto boundaries temporarily use actual-source
+Windows/Android packages.
+An unresolvable automatic base/diff fails and requires an explicit manual
+target instead of silently running every package. The transport workflow defaults manual and routine automatic runs
+to Linux; its Windows/Android jobs compile only the isolated transport spike and run automatically only for that spike
+or workflow boundary. It does not create a GitHub Release and does not need production signing secrets.
 
 Pinned build values include:
 
@@ -291,8 +280,9 @@ msbuild -m `
 ```
 
 MinGW cross-compilation on Linux does not replace native MSVC evidence. Run the hosted `windows-2022` job for
-Windows-specific changes and Tier 3 milestones; backend-neutral shared C++ changes do not require a full Windows
-package on every iteration.
+Windows-specific changes, an MSVC-sensitive public boundary or Tier 3 milestones. Prefer a lightweight gate that
+actually compiles the changed production source; require the full Windows package only when package/runtime behavior
+is the acceptance target. Backend-neutral internal shared C++ changes do not require Windows on every iteration.
 
 ## Verification Expectations
 
@@ -302,11 +292,12 @@ Use the three verification tiers defined in the refactor plan and build baseline
    Linux build plus focused tests. Add the complete `[multiplayer]` suite, sanitizers and a real Linux headless-server/
    native-client PTY loopback according to risk. A Linux curses or SDL client and Linux `--server` process are valid
    daily functional evidence for shared code.
-2. **Tier 2 — platform-targeted evidence.** Run Windows MSVC/package tests only when Windows-owned build/runtime
-   surfaces change; run Android NDK/APK/emulator or device tests only when Android-owned build/runtime surfaces
-   change. Shared portable C++ alone does not automatically require both packages. A compile-only or cross-compile
-   smoke proves only that boundary and never substitutes for native packaging or lifecycle evidence when those are
-   the acceptance target.
+2. **Tier 2 — platform/public-boundary evidence.** Run Windows MSVC/package tests when Windows-owned build/runtime
+   surfaces change, and Android NDK/APK/emulator or device tests when Android-owned surfaces change. Wire/schema/
+   version/capability, public DTO/serialization layout, compiler-sensitive public headers and shared toolchain/source
+   contracts also require targeted portability evidence, but use the smallest gate that actually compiles the changed
+   production source. Shared internal C++ alone does not require both packages. A compile-only or cross-compile smoke
+   proves only that boundary and never substitutes for package/lifecycle evidence when those are the acceptance target.
 3. **Tier 3 — recorded milestone matrix.** Run the necessary Linux, Windows and Android matrix for phase exits,
    release candidates, pinned toolchain/artifact changes and explicit protocol-compatibility milestones. Every phase
    exit must retain at least one recorded set of platform evidence appropriate to its exit criteria.
@@ -317,10 +308,18 @@ Portable `src/multiplayer_*` policy/rule code is not platform-owned unless it cr
 platform conditionals. Record the selected tier, commands, results and intentionally unrun platforms in `STATUS.md`;
 "not run by policy" is not a blocker, but it cannot be presented as platform evidence.
 
+Do not run `check-multiplayer-build-env.sh all`, a full baseline matrix, Windows package or Android APK by habit. Start
+with Linux and escalate only for an identified Tier 2/3 trigger. A job that did not compile or run the changed
+production source is not evidence for that change; in particular, the isolated Windows/Android transport-spike jobs
+do not prove scheduler, phase-adapter or other production `src/multiplayer_*` portability.
+
 The baseline changed-path selector is an optimization, not an authority oracle. When a platform-owned file is added
 or renamed, update both push/pull-request path lists and the selector mapping in the same change. If a generic path
-gains a platform conditional that path matching cannot detect, run the affected Tier 2 gate explicitly and either
+adds or modifies a platform conditional that path matching cannot detect, run the affected Tier 2 gate explicitly and either
 extend the selector or record why the case remains manual.
+
+`multiplayer-transport-spike.yml target=all` means Linux production plus Windows/Android isolated spike probes; it is
+not the Tier 3 product/package matrix. Use the baseline workflow and the phase exit criteria for full platform evidence.
 
 For changed Bash/workflow/toolchain code, still run the relevant syntax/lint checks. Verify artifact ABI, provenance
 and SHA-256 whenever an artifact is actually part of the selected tier. Multiplayer simulation tests continue to
@@ -331,12 +330,16 @@ scale with risk; the full-swap tests remain a negative identity comparison.
 - Keep diffs additive and narrowly scoped. Avoid unrelated formatting, mass renames, directory moves, and broad global-access rewrites.
 - Preserve upstream single-player behavior and old-save compatibility. Multiplayer and single-player should share rule executors.
 - World mutation may only occur on the simulation thread. Never call game-rule methods from a per-player network thread.
+- Lobby auth/resume may validate transport data on a network thread, but accepted identity/generation/admission must
+  wait for authoritative simulation-thread session-directory commit; follow ADR-0010.
 - Network/compression workers must not read live game objects. Build immutable command and snapshot DTOs at defined safe points.
 - Server command execution must not call blocking UI such as `query_yn()`, `uilist::query()`, inventory selectors, SDL, curses, or ImGui.
 - Keep network code independent from concrete UI backends, and keep game rules independent from sockets.
 - Do not spread multiplayer conditionals throughout gameplay code. Prefer router, context, guard, adapter, and executor boundaries.
 - Keep multiplayer source files under the planned `multiplayer_` prefix until the module and build source lists stabilize.
 - Treat protocol version, server-state schema, portable-character schema, and savegame version as separate compatibility axes.
+- If a scheduler/phase fault may follow a non-idempotent gameplay side effect, stop simulation and do not write a new
+  canonical save without a journal/rollback proof.
 - Update ADRs, the action coverage matrix, known limitations, migration notes, and relevant plan sections with architectural changes.
 
 ## Prohibited Shortcuts
