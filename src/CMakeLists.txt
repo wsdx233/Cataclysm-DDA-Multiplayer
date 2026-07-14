@@ -39,13 +39,13 @@ file(GLOB CATACLYSM_DDA_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/*.h)
 # Get GIT version strings
 add_custom_target(
         get_version
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/version.h
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-
-add_custom_command(
-        OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/version.h
-        COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/version.cmake
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+        COMMAND ${CMAKE_COMMAND}
+                "-DGIT_BINARY:STRING=${GIT_BINARY}"
+                "-DMULTIPLAYER_BUILD_ID:STRING=${MULTIPLAYER_BUILD_ID}"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/version.cmake
+        BYPRODUCTS ${CMAKE_CURRENT_SOURCE_DIR}/version.h
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        VERBATIM)
 
 # Build tiles version if requested
 if (TILES)

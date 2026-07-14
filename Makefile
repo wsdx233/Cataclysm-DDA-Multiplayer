@@ -1286,7 +1286,17 @@ version:
           VERSION_STRING="$${VERSION_STRING## }" ; \
         if [ -z "$$MULTIPLAYER_BUILD_ID_STRING" ] && [ -e ".git" ]; then \
           MULTIPLAYER_GIT_SHA=$$( git rev-parse HEAD 2>/dev/null || true ) ; \
-          MULTIPLAYER_DIRTY_FLAG=$$( git diff --quiet HEAD || printf '%s' '-dirty' ) ; \
+          if git diff --quiet HEAD ; then \
+            MULTIPLAYER_DIRTY_FLAG="" ; \
+          else \
+            MULTIPLAYER_DIFF_RESULT=$$? ; \
+            if [ "$$MULTIPLAYER_DIFF_RESULT" -eq 1 ]; then \
+              MULTIPLAYER_DIRTY_FLAG=-dirty ; \
+            else \
+              echo "Unable to determine MULTIPLAYER_BUILD_ID dirty state (git diff exited $$MULTIPLAYER_DIFF_RESULT)" >&2 ; \
+              exit "$$MULTIPLAYER_DIFF_RESULT" ; \
+            fi ; \
+          fi ; \
           MULTIPLAYER_BUILD_ID_STRING="$$MULTIPLAYER_GIT_SHA$$MULTIPLAYER_DIRTY_FLAG" ; \
         fi ; \
         if [ -n "$$MULTIPLAYER_BUILD_ID_STRING" ] && \

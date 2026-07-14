@@ -404,7 +404,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($versionText) -or
               $versionText -notmatch 'Cataclysm' -or
               $versionLines -notcontains '+tiles, +sound' -or
-              $versionLines -notcontains 'multiplayer build id: ${{ github.sha }}') {
+              $versionLines -cnotcontains 'multiplayer build id: ${{ github.sha }}') {
             throw "Windows version smoke test produced unexpected output: $versionText"
           }
           $versionText | Set-Content artifacts\windows-version.txt
