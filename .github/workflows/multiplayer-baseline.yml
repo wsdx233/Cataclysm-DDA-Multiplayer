@@ -98,7 +98,7 @@ jobs:
       - name: Checkout source and event history
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Select package targets
@@ -112,6 +112,7 @@ jobs:
           linux=false
           windows=false
           android=false
+          classify_paths=false
 
           select_all() {
             linux=true
@@ -122,37 +123,55 @@ jobs:
           if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
             echo "Manual milestone run: select the full platform matrix."
             select_all
-          elif [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]] ||
-               ! git cat-file -e "$BASE_SHA^{commit}"; then
+          elif [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
             echo "Unable to resolve the event base commit; selecting all targets."
             select_all
           else
+            if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+              echo "Fetching the event base commit $BASE_SHA."
+              git fetch --no-tags --depth=1 origin "$BASE_SHA" || true
+            fi
+            if git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+              classify_paths=true
+            else
+              echo "Unable to fetch the event base commit; selecting all targets."
+              select_all
+            fi
+          fi
+
+          if [[ "$classify_paths" == true ]]; then
             echo "Changed paths from $BASE_SHA to $GITHUB_SHA:"
-            while IFS= read -r -d '' path; do
-              echo "  $path"
-              case "$path" in
-                .github/workflows/multiplayer-baseline.yml|build-scripts/*|CMakeLists.txt|Makefile)
-                  select_all
-                  ;;
-                data/*|lang/*|src/get_version.h|src/version.cmake|src/version.cpp)
-                  select_all
-                  ;;
-                .github/actions/build-sdl3-shaders/*|gfx/*|tools/format/*|tools/gfx_tools/*)
-                  windows=true
-                  android=true
-                  ;;
-                src/sdl*|src/cata_tiles.*|src/*font*|src/*imgui*|src/*sound*|src/*tileset*)
-                  windows=true
-                  android=true
-                  ;;
-                .github/vcpkg_triplets/*|msvc-full-features/*|src/mingw.thread.h|src/platform_win.h|src/resource.rc|src/third-party/snmalloc/pal/pal_windows.h|src/wincurse.cpp)
-                  windows=true
-                  ;;
-                android/*|src/third-party/CMakeLists.txt)
-                  android=true
-                  ;;
-              esac
-            done < <(git diff --no-renames --name-only -z "$BASE_SHA" "$GITHUB_SHA")
+            changed_paths="$RUNNER_TEMP/multiplayer-baseline-changed-paths"
+            if ! git diff --no-renames --name-only -z "$BASE_SHA" "$GITHUB_SHA" > "$changed_paths"; then
+              echo "Unable to calculate changed paths; selecting all targets."
+              select_all
+            else
+              while IFS= read -r -d '' path; do
+                echo "  $path"
+                case "$path" in
+                  .github/workflows/multiplayer-baseline.yml|build-scripts/*|CMakeLists.txt|Makefile)
+                    select_all
+                    ;;
+                  data/*|lang/*|src/get_version.h|src/version.cmake|src/version.cpp)
+                    select_all
+                    ;;
+                  .github/actions/build-sdl3-shaders/*|gfx/*|tools/format/*|tools/gfx_tools/*)
+                    windows=true
+                    android=true
+                    ;;
+                  src/sdl*|src/cata_tiles.*|src/*font*|src/*imgui*|src/*sound*|src/*tileset*)
+                    windows=true
+                    android=true
+                    ;;
+                  .github/vcpkg_triplets/*|msvc-full-features/*|src/mingw.thread.h|src/platform_win.h|src/resource.rc|src/third-party/snmalloc/pal/pal_windows.h|src/wincurse.cpp)
+                    windows=true
+                    ;;
+                  android/*|src/third-party/CMakeLists.txt)
+                    android=true
+                    ;;
+                esac
+              done < "$changed_paths"
+            fi
           fi
 
           if [[ "$linux" == false && "$windows" == false && "$android" == false ]]; then
