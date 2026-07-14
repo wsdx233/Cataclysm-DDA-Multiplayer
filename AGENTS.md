@@ -66,7 +66,17 @@ See the plan sections on authority, threading, state scope, scheduling, action/U
 Phase 0 closed with recorded evidence on 2026-07-12, and Phase 2 closed with recorded evidence on 2026-07-14. The
 project is now in **Phase 3: second-player/shared-scheduler implementation**. The first Phase 3 source slice is a
 pure `multiplayer_turn_scheduler` policy with tests; it owns no avatars, sockets, command payloads or world callback
-and is not connected to the production dedicated server. `players.max` must remain `1`. Phase 1 and Phase 2 local,
+and is not connected to the production dedicated server. Source commit
+`45be077ac2d0d042190e54d1bdb77d48676b67e6` has a terminal-success transport/protocol run
+[`29340055386`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340055386), covering Linux GCC 13/
+Clang 18 production tests and process smokes, Windows MSVC and Android NDK. Its baseline run
+[`29340056602`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602) is not green: Linux,
+Android and all resource jobs succeeded, but Windows package job
+[`87109602068`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602/job/87109602068)
+failed in `Build package` because the handwritten `prebuild.cmd` validator rejected a legal 40-character lowercase
+SHA. This is a build-validator failure, not a scheduler compile failure. The current fix uses an anchored,
+case-sensitive PowerShell regex plus workflow preflight and immediate MSBuild exit gates; it still needs a
+terminal-green replacement hosted baseline. `players.max` must remain `1`, and Phase 3 is not complete. Phase 1 and Phase 2 local,
 hosted and Android lifecycle gates are green. The Phase 2 client
 implements production transport/state, desktop/Android connection UI, semantic
 wait/move input, bounded full-scene fitting, heartbeat/manual reconnect, ordered clean session release and local
@@ -106,9 +116,11 @@ Completed Phase 0 gates:
 
 The active work, in order, is:
 
-1. Finish local and hosted evidence for the pure scheduler policy without calling the Phase 3 gate complete. Its
-   `automatic_wait_pending` transition still requires a production forced/scoped wait adapter, and its world ticket
-   only guards claim/record state; neither API proves that the corresponding gameplay callback ran.
+1. Obtain a terminal-green replacement hosted baseline for the current MSVC build-ID validator/workflow fail-fast
+   fix, pushing the pending commit first if necessary. Do not treat baseline run `29340056602` as a scheduler compile failure or as completed platform
+   evidence. The scheduler's `automatic_wait_pending` transition still requires a production forced/scoped wait
+   adapter, and its world ticket only guards claim/record state; neither API proves that the corresponding gameplay
+   callback ran.
 2. Extract a single-player-preserving phase adapter from `src/do_turn.cpp::game::do_turn_impl()`: invoke scoped
    player work through the existing registry/guard, execute authoritative automatic wait before recording it, and place the
    real world callback behind the scheduler's `world_ready` -> `world_processing` claim. Start by inspecting

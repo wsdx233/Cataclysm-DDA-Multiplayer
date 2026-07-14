@@ -437,4 +437,26 @@ command/resume smoke、local-input network-client UI resume smoke 和 Android ND
 canonical build-ID hardening 的 hosted gate；结合精确归属于 `e078eb6` 的 Android KVM lifecycle，Phase 2 于
 2026-07-14 正式关闭。
 
+### Phase 3 scheduler source hosted gate（Windows validator 修复待重跑）
+
+首个纯 scheduler policy 的 source commit 为 `45be077ac2d0d042190e54d1bdb77d48676b67e6`。它的
+transport/protocol run
+[`29340055386`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340055386) 已 terminal
+`success`：Linux GCC 13/Clang 18 job 通过 production tests 与 process smokes，Windows x64 MSVC loopback 和
+Android NDK arm64 compile jobs 也成功。
+
+同一 source 的 baseline run
+[`29340056602`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602) 为 terminal
+`failure`，但 Linux curses、Android package、translations、tileset、shaders 和 soundpack jobs 均成功。唯一失败
+是 Windows x64 MSVC tiles+sound package job
+[`87109602068`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602/job/87109602068)
+的 `Build package` step：`msvc-full-features/prebuild.cmd` 的手写 validator 误拒合法 40 位小写 canonical SHA。
+这不是 scheduler source 的 MSVC compile failure；同一提交的 transport Windows MSVC job 已绿色。
+
+当前修复让 `prebuild.cmd` 从环境读取 ID，并用 anchored、case-sensitive PowerShell regex
+`\A[0-9a-f]{40}(?:-dirty)?\z` 校验；baseline workflow 还会在 MSBuild 前显式运行 prebuild，并在 prebuild 或
+MSBuild 返回非零时立即失败。该修复尚无 replacement hosted baseline 结果。必须等新 baseline 的
+Windows package terminal green 后，才能补齐该 scheduler slice 的 hosted platform evidence；Phase 3 未完成且
+`players.max` 必须保持 `1`。
+
 本地生成物位于仓库默认的忽略目录中，不作为源码提交。规范产物和 hash 以 fork 上的 `multiplayer-baseline` workflow 为准。

@@ -93,14 +93,6 @@ del /q "!TEMP_HEADER!" >nul 2>&1
 exit /b 1
 
 :validate_build_id
-rem Accept exactly 40 characters or 40 plus the six-character "-dirty".
-set "CHECK_CHAR=!BUILD_ID:~39,1!"
-if not defined CHECK_CHAR exit /b 1
-set "CHECK_SUFFIX=!BUILD_ID:~40!"
-if defined CHECK_SUFFIX if not "!CHECK_SUFFIX!"=="-dirty" exit /b 1
-
-:validate_build_id_base
-set "CHECK_REMAINDER=!BUILD_ID:~0,40!"
-for %%C in (0 1 2 3 4 5 6 7 8 9 a b c d e f) do set "CHECK_REMAINDER=!CHECK_REMAINDER:%%C=!"
-if defined CHECK_REMAINDER exit /b 1
-exit /b 0
+rem Read the value from the environment so it is never interpolated into PowerShell source.
+powershell.exe -NoLogo -NoProfile -NonInteractive -Command "$value = [Environment]::GetEnvironmentVariable('BUILD_ID'); if ($null -ne $value -and $value -cmatch '\A[0-9a-f]{40}(?:-dirty)?\z') { exit 0 }; exit 1"
+exit /b !errorlevel!

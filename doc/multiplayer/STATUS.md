@@ -4,9 +4,11 @@
 - 分支：`multiplayer/main`
 - 当前阶段：**Phase 3，首个 shared-scheduler 纯策略/测试切片进行中**
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
-- 当前已推送 source/build 提交：`86336ea847bea45f727fd97d74a811a32712518c`（两条 hosted workflows terminal success）
-- 上一个 terminal-success source 提交：`e078eb6aef25a9cc72eea45793114c931a52b896`（canonical build ID）
+- 当前已推送 scheduler source 提交：`45be077ac2d0d042190e54d1bdb77d48676b67e6`（transport terminal success；baseline 仅 Windows validator failure）
+- 上一个完整 hosted platform gate 全绿提交：`86336ea847bea45f727fd97d74a811a32712518c`（canonical build-ID hardening）
 - 当前 Phase 3 slice：`src/multiplayer_turn_scheduler.h/.cpp`、`tests/multiplayer_scheduler_test.cpp` 和对应文档更新
+- 当前待 hosted 验证的 build 修复：`msvc-full-features/prebuild.cmd` PowerShell regex validator，以及 baseline workflow
+  preflight/MSBuild immediate exit gate
 
 ## 当前结论
 
@@ -45,6 +47,18 @@ snapshot、稳定首位轮转、typed action disposition、generation resume、c
 `automatic_wait_pending` 和 `world_ready -> world_processing` ticket 状态语义，但没有接入 production
 `src/main.cpp`/`do_turn_remote()`，也不拥有 avatar、socket、command payload 或 gameplay callback。服务器仍只有
 一个 `active_remote_session`，`players.max` 继续只能是 `1`；不能把这个 policy 或其单测描述为已完成两玩家 server。
+
+该 scheduler source 已作为 commit `45be077ac2d0d042190e54d1bdb77d48676b67e6` 推送。transport/protocol run
+[`29340055386`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340055386) 已 terminal
+`success`，Linux GCC 13/Clang 18 production tests/process smokes、Windows MSVC 和 Android NDK 三个 jobs 全绿。
+baseline run [`29340056602`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602)
+只有 Windows package job
+[`87109602068`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602/job/87109602068)
+在 `Build package` 失败；Linux、Android 与 translations/tileset/shaders/soundpack resource jobs 均成功。根因是
+`prebuild.cmd` 的手写 validator 误拒合法 40 位小写 SHA，不是 scheduler source 的 MSVC 编译错误。当前工作区
+已改用从环境读取 ID 的 anchored、case-sensitive PowerShell regex，并在 workflow 中增加独立 preflight 与
+MSBuild 非零后的 immediate exit gate；当前尚无新的 hosted baseline 结果。因此 Phase 3 platform
+gate 仍未关闭，`players.max` 保持 `1`。
 
 ## 本批实现
 
@@ -182,8 +196,61 @@ git diff --check
 - 最新 sanitizer binary 重新构建后，focused `[multiplayer][scheduler]` 为 6 cases / 424 assertions 全过，exit 0；
   无 ASan、UBSan、LSan 或 stack-use-after-return finding。完整 `[multiplayer]` sanitizer suite 本批尚未重跑。
 - AStyle 3.1 报告 `no astyle regressions`；`git diff --check` 通过。
-- 尚无该 scheduler source 的 hosted Windows MSVC/Android/Linux workflow 结果；因此这里只记录本地
-  policy/registry regression evidence，不关闭 Phase 3 platform 或 exit gate。
+- scheduler source 的 transport/protocol hosted run 已全绿；baseline 仅 Windows package validator 失败，修复
+  尚待新 hosted baseline。因此这里仍不关闭 Phase 3 platform 或 exit gate。
+
+### Phase 3 scheduler source hosted evidence（transport 绿色，baseline 待重跑）
+
+- source commit：`45be077ac2d0d042190e54d1bdb77d48676b67e6`。
+- transport/protocol run
+  [`29340055386`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340055386) 为 terminal
+  `success`：Linux GCC 13/Clang 18 job 通过 production `[multiplayer]` tests、headless process smoke 和
+  network-client UI process smoke；Windows x64 MSVC loopback 与 Android NDK arm64 compile jobs 也成功。
+- baseline run
+  [`29340056602`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602) 为 terminal
+  `failure`。translations、tileset、shaders、soundpack、Linux curses package 和 Android package jobs 均成功；
+  唯一失败是 Windows x64 MSVC tiles+sound package job
+  [`87109602068`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602/job/87109602068)
+  的 `Build package` step。
+- 失败来自 `msvc-full-features/prebuild.cmd` 的手写 canonical build-ID validator 误拒合法 40 位小写 SHA；
+  hosted transport 的 Windows MSVC job 已成功，因此不能把它描述为 scheduler compile failure。当前工作区候选
+  修复改为 PowerShell `-cmatch` 的 anchored、case-sensitive regex，并在 baseline workflow 的 package step 中
+  先显式运行 prebuild，再分别对 prebuild 与 MSBuild 的非零 exit code 立即失败。
+- 当前修复尚无新 hosted baseline；必须先取得 replacement baseline 的 Windows package 绿色
+  终态，才可把 scheduler slice 的 platform evidence 记为完整。Phase 3 shared-scheduler gate 仍远未完成，
+  `players.max` 继续为 `1`。
+
+### Windows build-ID validator 修复的本地静态门禁
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+./build-scripts/check-multiplayer-build-env.sh all
+$HOME/.cache/cdda-tools/actionlint-1.7.12/actionlint \
+  .github/workflows/multiplayer-baseline.yml
+python3 - <<'PY'
+import re
+pattern = re.compile(r'\A[0-9a-f]{40}(?:-dirty)?\Z')
+valid = [
+    '45be077ac2d0d042190e54d1bdb77d48676b67e6',
+    '45be077ac2d0d042190e54d1bdb77d48676b67e6-dirty',
+]
+invalid = [
+    '45BE077AC2D0D042190E54D1BDB77D48676B67E6',
+    '45be077',
+    '45be077ac2d0d042190e54d1bdb77d48676b67e6-dirty-extra',
+    'g5be077ac2d0d042190e54d1bdb77d48676b67e6',
+]
+assert all(pattern.fullmatch(value) for value in valid)
+assert not any(pattern.fullmatch(value) for value in invalid)
+PY
+git diff --check
+```
+
+- Linux/Android environment gate 通过；该变更没有修改两者 toolchain。
+- `actionlint` 无输出并返回 0；`git diff --check` 通过。
+- anchored regex contract 的合法 40 位小写 SHA、合法 `-dirty`、大写、短值、非法后缀正反例检查通过。
+- 当前机器没有 Windows shell，因此 `prebuild.cmd` 的最终执行证据必须来自 replacement hosted Windows package、
+  windist 和大小写敏感 `--version` smoke，不能用上述静态检查替代。
 
 ### Hosted Phase 1/baseline（已绿色）
 
@@ -513,6 +580,9 @@ git diff --check
 
 ## 已知限制和未完成项
 
+- Phase 3 scheduler commit `45be077` 的 transport/protocol gate 已全绿，但 baseline run `29340056602` 仍因
+  Windows `prebuild.cmd` validator 误拒合法 canonical SHA 而失败；当前修复尚待 replacement hosted
+  baseline，不能把 platform gate 标为绿色。
 - Phase 3 只有纯 scheduler policy/test 切片；stable registry/runtime、active-player guard 和 human tracker 基础已
   存在，但 production session directory、phase adapter 和 dedicated-server routing 尚未接入。`players.max > 1`
   仍未实现。
@@ -545,17 +615,19 @@ git diff --check
 
 ## 下一门禁和首个动作
 
-Phase 2 已关闭；Phase 3 的 source/ownership audit 和首个 pure scheduler policy 已有本地 evidence，但没有完成
-production shared barrier。当前切片已运行以下格式/whitespace 门禁：
+Phase 2 已关闭；Phase 3 的 source/ownership audit 和首个 pure scheduler policy 已有本地 evidence，transport/
+protocol hosted run 也已全绿，但 baseline platform gate 仍因 Windows validator failure 未关闭。当前首要动作不是
+phase adapter，而是让当前 build 修复触发 replacement baseline，并等待终态：
 
 ```bash
-source build-scripts/activate-multiplayer-build-env.sh
-make ASTYLE_BINARY="$HOME/.cache/cdda-tools/astyle-3.1-3build1/root/usr/bin/astyle" astyle-check
-git diff --check
+git show --stat --oneline HEAD
+git push origin multiplayer/main
 ```
 
-下一代码门禁是**保持单人行为的 phase adapter/extraction**，而不是 live multi-session 或 move。首个要检查的文件
-和命令是：
+如果该提交尚未在 `origin multiplayer/main`，先推送；随后等待新 baseline run terminal green。若 Windows package
+仍失败，先修复并重跑，不能越过该 platform gate。只有 replacement baseline 绿色后，
+下一代码门禁才是**保持单人行为的 phase adapter/extraction**，而不是 live multi-session 或 move。届时首个要检查
+的文件和命令是：
 
 ```bash
 sed -n '533,835p' src/do_turn.cpp

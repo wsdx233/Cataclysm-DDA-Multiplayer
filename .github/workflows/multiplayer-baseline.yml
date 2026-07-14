@@ -375,7 +375,14 @@ jobs:
       - name: Build package
         shell: pwsh
         run: |
+          & .\msvc-full-features\prebuild.cmd
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSVC prebuild failed with exit code $LASTEXITCODE"
+          }
           msbuild -m -p:Configuration=Release -p:Platform=x64 "-target:Cataclysm-vcpkg-static;JsonFormatter-vcpkg-static;zzip" msvc-full-features\Cataclysm-vcpkg-static.sln
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSBuild failed with exit code $LASTEXITCODE"
+          }
           .\build-scripts\windist.ps1 -SDL3
 
       - name: Smoke test and record provenance
