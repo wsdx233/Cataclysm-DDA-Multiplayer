@@ -2,6 +2,7 @@
 
 - 状态：已接受
 - 日期：2026-07-12
+- 更新：2026-07-14
 - 关联计划：第 10、11、12、13、19、20 节
 
 ## 背景
@@ -37,6 +38,18 @@ CDDA 的内部 C++ 对象和 JSON save schema 会随上游持续变化，也包�
 - savegame version。
 - gameplay content manifest/hash。
 
+握手中的 `build_id` 是独立于显示版本的规范源码身份：
+
+- 格式必须是 40 位小写 Git SHA，可选追加 `-dirty`，即 `^[0-9a-f]{40}(-dirty)?$`。
+- Make、CMake、Gradle 和 MSVC 对同一 source tree 必须生成相同值；CI 可以显式注入构建 commit。
+- UI/backend suffix（例如 `+SDL3`）、tiles/sound capability、generator tag、包名和显示 `VERSION` 不参与该身份。
+- server 或 client 无法取得合法 ID 时 multiplayer 启动 fail closed；不同 ID 的握手拒绝，同源的不同 backend
+  artifact 必须兼容。
+- 已有生成头不能成为跳过 identity 重算的依据；CMake 等实际 build target 必须重新运行无副作用生成器并传递显式
+  override。Git dirty-state probe 只有 rc 0/1 分别表示 clean/dirty，rc > 1 必须令生成失败，不能伪装成 `-dirty`。
+- CI 对 canonical ID 的 artifact/`--version` 文本检查必须区分大小写；小写格式要求不能只依赖 PowerShell 默认的
+  大小写不敏感比较。
+
 每个 command 携带单调递增的 `client_seq` 和 `base_revision`。服务器缓存最近的 command result；相同 session/sequence 的重发返回原结果，不重复执行。delta 必须声明 `base_revision` 与 `new_revision`，缺口通过 full snapshot 恢复。
 
 ## 替代方案
@@ -52,11 +65,28 @@ CDDA 的内部 C++ 对象和 JSON save schema 会随上游持续变化，也包�
 - 协议 minor 兼容必须通过 capability negotiation 明确声明，不能假设旧客户端可忽略任意字段。
 - FlatBuffers verifier 不能替代业务校验；UTF-8、嵌套深度、数量、速率和权限仍需独立检查。
 - 调试工具需要能解码 frame 和打印脱敏后的语义内容，日志不能记录 token 或完整人物包。
+- 所有生产构建路径必须生成并验证 canonical multiplayer build ID；`--version`、server structured log 和 artifact
+  provenance 应暴露它，便于核对跨平台 artifact 是否来自同一 source identity。
+- 生成步骤可以每次 build 调用，但必须使用 content-aware write，未变化时不能无故改写 `version.h` 并触发全量重编。
 
 ## 验证要求
 
 - frame codec 测试覆盖单字节分片、粘包、空 payload、超长、截断和未知 message type。
 - schema 测试覆盖 major/minor negotiation、未知 capability、generated header 一致性和恶意 buffer。
+- build identity 测试覆盖合法 full SHA、可选 `-dirty`、空值/非法值 fail closed、不同 ID 拒绝，以及同源
+  Linux curses、Windows SDL3 和 Android SDL3 artifact 使用同一值。
+- build-system 回归覆盖已有 `version.h` 时的重新核对、CMake override 贯穿 target、重复生成保持 mtime、Make
+  dirty probe rc > 1 fail closed，以及 Windows workflow 的大小写敏感 canonical-ID assertion。
 - 幂等测试覆盖“服务器已执行但确认丢失”后的重连 replay。
 - visibility golden test 证明协议 payload 不包含玩家不可见的怪物、陷阱、物品和未探索地图。
 - fuzz target 覆盖 frame decoder、FlatBuffer root、zstd envelope 和 UTF-8 字段。
+
+## 已记录验证
+
+- `e078eb6aef25a9cc72eea45793114c931a52b896` 的 baseline run `29328086046` 与 transport/protocol run
+  `29328086326` 均为 terminal `success`，证明同源 Linux、Windows MSVC、Android artifacts 使用 canonical ID；
+  Android KVM auth/render/wait/move/lifecycle smoke 精确归属于该提交。
+- 只读审计后的 hardening commit `86336ea847bea45f727fd97d74a811a32712518c` 由 baseline run
+  `29330811779`（7 jobs）和 transport/protocol run `29330811746`（3 jobs）终态全绿验证最终源码的 Linux、
+  Windows、Android build/test gates，以及 Windows 大小写敏感 artifact assertion。顶层 CMake
+  always-run/override 与 Make dirty-probe fail-closed contract 另由本地 Ninja、Unix Makefiles 和故障注入回归直接验证。

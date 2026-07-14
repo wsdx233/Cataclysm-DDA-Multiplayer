@@ -642,7 +642,7 @@ License 1.0。Linux GCC/Clang、Windows MSVC 和 Android NDK arm64 编译门禁�
 - protocol major/minor
 - server state schema version
 - savegame version
-- 游戏版本字符串与 commit/build ID
+- multiplayer build ID
 - active mod ID 及顺序
 - core、mod、world custom mod 的内容 manifest/hash
 - 必需 feature flags
@@ -654,6 +654,14 @@ License 1.0。Linux GCC/Clang、Windows MSVC 和 Android NDK arm64 编译门禁�
 - gameplay data hash 不同：拒绝。
 - tileset、字体、语言、soundpack 不参与 gameplay hash。
 - 客户端缺少服务器 mod 时给出缺失列表，不自动执行下载或安装。
+
+multiplayer build ID 是后端无关的规范源码身份，格式必须是 40 位小写 Git SHA，可选追加 `-dirty`，即
+`^[0-9a-f]{40}(-dirty)?$`。Make、CMake、Gradle 和 MSVC 必须为同一 source tree 生成同一个值；显示用
+`VERSION`、`+SDL3`、tiles/sound capability、generator tag 或包名不能参与握手身份。构建系统和 CI 应显式注入或
+从完整 Git HEAD 推导并验证该值，`--version` 和 artifact provenance 必须暴露它；无法取得合法身份时 multiplayer
+server/client 启动应 fail closed，同一源码不同 UI/backend 应能握手，不同 SHA 或 `-dirty` 状态应被拒绝。生成器
+不得因已有 `version.h` 而跳过重新核对 source identity，显式 override 必须贯穿实际 build target；Git dirty-state
+probe 的基础设施错误不能降级成 `-dirty`，CI 对 canonical ID 的文本断言必须区分大小写。
 
 内容 hash 应对规范化相对路径与文件内容做 SHA-256，并缓存结果。manifest 需要包含 world-local `mods`。只比较 mod 名称或版本字符串不够，因为本地修改后的 JSON 仍可能同名。
 
@@ -1197,7 +1205,7 @@ save/shutdown 和真实进程 loopback 均已验证；baseline run `29219328448`
 MSVC 和 Android NDK gates。每个后续客户端提交仍须取得自己的 hosted 结果，不能复用 Phase 1 run 冒充新代码
 证据；当前 Phase 2 batch 的对应结果记录在下节。
 
-### Phase 2：单远程玩家垂直切片（4 至 7 周）
+### Phase 2：单远程玩家垂直切片（已于 2026-07-14 关闭）
 
 - 拆出 input resolver 与简单 command executor。
 - 单人模式改为调用同一个 move/wait executor。
@@ -1222,11 +1230,32 @@ PTY 的最终 release 与 sanitizer binary 均已完成 auth/scene/断线/resume
 `[multiplayer]` sanitizer suite 也无 ASan/UBSan/LSan/stack-use-after-return finding。Android arm64/x86_64 debug
 APK 已编译 Java connect 表单和 SDL renderer。source `6403a949fb537be14ec4d5757f295adbf5c5f99b` 的 baseline
 run `29303564150` 与 transport/protocol run `29303564152` 均为 terminal `success`，已关闭本批 Linux、Windows
-MSVC 和 Android package/compile platform gate。Phase 2 仍保持进行中，因为 Android 还缺
-emulator/真机最小 auth/render/wait/move、pause/resume 和 network disconnect/reconnect 证据；完整 lifecycle
-polish、remote avatar replica 与更完整 scene layers 属于后续 Phase 4。
+MSVC 和 Android package/compile platform gate。随后 KVM-backed API 35 x86_64 emulator 已取得 clean launch、
+auth/render、单次受控 wait/move、Activity pause/resume、强制 network disconnect/reconnect 和 clean
+save/shutdown 的本地绿色证据；先前 `-accel off` 的 ANR/held-touch flood 只保留为不计入门禁的诊断历史。
 
-### Phase 3：第二玩家与共享 Scheduler（5 至 8 周）
+该设备运行同时暴露了 display-derived build ID 的跨后端握手缺陷：同源 Android SDL3 client 曾发送
+`90e5fa3+SDL3`，headless server 则发送 `90e5fa3`。commit
+`e078eb6aef25a9cc72eea45793114c931a52b896` 已改为第 13 节定义的 backend-neutral canonical ID，并用该完整
+SHA 重跑 Android lifecycle 成功；该 runtime 证据精确属于 `e078eb6`。同一提交的 baseline run `29328086046`
+和 transport/protocol run `29328086326` 均为 terminal `success`，已覆盖 Linux、Windows MSVC、Android package/
+compile 以及生产 tests/process smoke。
+
+随后只读审计发现 CMake target 可能因已有 `version.h` 跳过重算且未把 override 传入实际生成、Make 会把
+`git diff` 的 rc > 1 错误误当作 `-dirty`，以及旧 Windows workflow 使用大小写不敏感的 `-notcontains`。实际
+`e078eb6` Windows artifact 输出是小写 canonical ID 并通过当时门禁，但旧断言本身不提供大小写敏感保证。pushed
+commit `86336ea847bea45f727fd97d74a811a32712518c` 已改为 always-run CMake target、Make rc > 1 fail closed 和
+PowerShell `-cnotcontains`。baseline run `29330811779` 的 7 个 jobs 与 transport/protocol run `29330811746`
+的 3 个 jobs 均为 terminal `success`，验证 Linux、Windows MSVC、Android package/compile、大小写敏感 Windows
+assertion、生产 tests/process smoke 和 transport gates。至此 Phase 2 的 single-remote-player、hosted platform、
+canonical build identity 与 Android lifecycle exit criteria 均有记录证据，Phase 2 于 2026-07-14 正式关闭。
+完整 lifecycle polish、remote avatar replica 与更完整 scene layers 仍属于后续 Phase 4，不能因阶段关闭而视为完成。
+
+### Phase 3：第二玩家与共享 Scheduler（5 至 8 周，当前处于调查起点）
+
+当前只进入 ADR-0002 所需的 source/ownership audit；尚未实现第二玩家 registry、shared scheduler 或
+`players.max > 1`。第一步必须核对 `do_turn_remote`/`do_turn_impl`、active-player context、monster iteration 与现有
+single-session ownership，并在发现与 accepted ADR 冲突时先更新 ADR/计划再编码。
 
 - 增加 `player_registry`、额外 human player tracker 支持。
 - 实现 `active_player_guard`。

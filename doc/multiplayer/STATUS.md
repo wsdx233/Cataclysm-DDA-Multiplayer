@@ -2,9 +2,10 @@
 
 - 更新日期：2026-07-14
 - 分支：`multiplayer/main`
-- 当前阶段：**Phase 2，单远程玩家垂直切片**
+- 当前阶段：**Phase 3，第二玩家/shared scheduler 调查起点**
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
-- 当前已推送 source 提交：`6403a949fb537be14ec4d5757f295adbf5c5f99b`（Phase 2 production network-client batch）
+- 当前已推送 source/build 提交：`86336ea847bea45f727fd97d74a811a32712518c`（两条 hosted workflows terminal success）
+- 上一个 terminal-success source 提交：`e078eb6aef25a9cc72eea45793114c931a52b896`（canonical build ID）
 
 ## 当前结论
 
@@ -17,9 +18,22 @@ Phase 2 的服务器侧单远程玩家纵向切片保持完成。本批又实现
 MSVC tiles+sound、Android arm64 release/x86_64 debug、生产 Linux process/client smoke、standalone GCC/Clang/MSVC
 transport 和 Android NDK arm64。
 
-**Phase 2 仍不标记关闭。** Android 尚没有 emulator/真机 auth/render/wait/move、pause/resume 或 network
-disconnect/reconnect 证据；hosted APK/NDK compile 不是运行时 smoke。服务器仍只允许一个 remote player；不能把
-本批描述为 shared barrier 或完整多人游戏。
+KVM-backed API 35 x86_64 emulator 已取得本地绿色 lifecycle 证据：clean SplashScreen startup、remote scene
+render、单次 wait、单次 move、HOME pause/Activity resume、强制 TCP disconnect、airplane mode route recovery、
+同一 identity 两次 resume、post-resume commands、clean disconnect 以及 server save/shutdown。该运行还暴露了旧
+display-derived build identity 在 Android SDL3 client（`90e5fa3+SDL3`）与 headless server（`90e5fa3`）之间的
+握手不一致；commit `e078eb6aef25a9cc72eea45793114c931a52b896` 已改为 backend-neutral canonical full Git
+SHA，并用该 ID 完整重跑成功。该提交的 baseline run `29328086046` 与 transport/protocol run `29328086326`
+均为 terminal `success`，覆盖 Linux、Windows MSVC、Android package/compile 和生产 tests/process smoke。
+
+后续只读审计又发现 CMake 已有-header/override、Make dirty probe rc > 1 和 Windows assertion 大小写三个缺口；
+pushed commit `86336ea847bea45f727fd97d74a811a32712518c` 已修复。baseline run `29330811779` 与
+transport/protocol run `29330811746` 均为 terminal `success`，分别 7/7 和 3/3 jobs 全绿。
+
+**Phase 2 已于 2026-07-14 正式关闭。** Android KVM lifecycle 证据精确属于 `e078eb6`，没有为 `86336ea`
+重跑；`86336ea` 的 hosted runs 关闭后续 build-generator hardening gate。项目现在进入 Phase 3 的 source/ownership
+调查起点，但第二玩家 registry、shared scheduler、tether 和 `players.max > 1` 尚未实现，不能把阶段进入描述为
+完整多人游戏。
 
 ## 本批实现
 
@@ -70,6 +84,24 @@ disconnect/reconnect 证据；hosted APK/NDK compile 不是运行时 smoke。服
 - 普通 release PTY 曾在 `initscr()` 报 `corrupted size vs. prev_size`。SIGABRT backtrace 证明本地无 root 工具链错误地把系统 shared `libncursesw.so.6` 与 prefix static `libtinfo.a` 混链，和 multiplayer client 无关。补齐 prefix 的 runtime library 后普通 release UI smoke 通过。
 - `check-multiplayer-build-env.sh linux` 现编译一个同时引用 `initscr()`/`tparm()` 的 probe，通过 `ldd` 要求 ncursesw/tinfo 来自同一动态 runtime root，并用 `nm` 拒绝 `_nc_doalloc`/`_nc_tparm_analyze` 被静态带入；已人工移除 runtime symlink 验证该门禁会按预期失败。
 
+### Backend-neutral multiplayer build identity
+
+- KVM Android 首次连接发现旧握手错误地复用了显示 `VERSION`：同源 SDL3 client 发送 `90e5fa3+SDL3`，
+  headless server 发送 `90e5fa3`，因此在进入 authentication 前被拒绝。
+- commit `e078eb6aef25a9cc72eea45793114c931a52b896` 增加独立 canonical multiplayer build ID：完整 40 位小写
+  Git SHA，可选 `-dirty`。Make、CMake、Gradle、MSVC 对同一 source tree 生成同一值；UI backend、tiles/sound
+  capability、generator tag 和显示 `VERSION` 不参与协议身份。
+- build paths 拒绝非法格式；server/client 在 ID 为空或不可取得时拒绝 multiplayer startup。`--version` 单独打印
+  该值，server structured log 记录它；baseline workflow 显式注入并验证 `${github.sha}` 出现在 Linux、Windows
+  和 Android artifact 中。
+- 只读审计发现初版 CMake target 可能因已有 `version.h` 跳过重算且未传递 configured override；Make 把
+  `git diff --quiet HEAD` 的任何非零结果都转成 `-dirty`；Windows workflow 使用默认大小写不敏感的
+  `-notcontains`。实际 `e078eb6` Windows artifact 文本是小写 canonical ID，但旧断言本身不保证大小写。
+- commit `86336ea847bea45f727fd97d74a811a32712518c` 把 CMake generation 改为 always-run、content-aware target 并
+  传递 override；Make 只接受 rc 0/1 为 clean/dirty，rc > 1 fail closed；Windows gate 改用 `-cnotcontains`。
+- ADR-0004 与 refactor plan 第 13 节已记录该 durable compatibility rule，避免以后把 display branding 再次混入
+  handshake identity。
+
 ## 验证证据
 
 ### Hosted Phase 1/baseline（已绿色）
@@ -106,6 +138,59 @@ disconnect/reconnect 证据；hosted APK/NDK compile 不是运行时 smoke。服
 
 这些 terminal-success runs 关闭本批 hosted platform build gate，但 Android jobs 仍只是 package/compile evidence，
 没有 emulator/真机 runtime lifecycle 结论。
+
+### Hosted canonical build-ID gate（`e078eb6` 已绿色）
+
+- baseline run
+  [`29328086046`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29328086046)，source
+  `e078eb6aef25a9cc72eea45793114c931a52b896`，terminal `success`：
+  - Linux curses artifact `8308833498`，digest `679fdda2d52fd71b9a63172d979494f5cb380998b6ee0a8fa385c372d0a68d9b`；
+  - Windows x64 MSVC tiles+sound artifact `8309536169`，digest `109c084bf44b8177ba9c5094402798d8c28af014fc149afc3d78c5c835da342b`；
+  - Android arm64 release artifact `8309741656`，digest `c6cc827c9f467a65e108efb19b43d50cb6a4649632328daec266396da4ea3697`；
+  - Android x86_64 debug artifact `8309743121`，digest `16c24f0425f7fe2490b0c1ca90a9feee818d9823225137520b270b84549e6c12`。
+- artifact names 带完整 canonical SHA；Linux/Windows `--version` 和 Android 两个 `libmain.so` 均含同一小写 ID。
+  Windows executable 同时报告 `+tiles, +sound`。当时 workflow 的 `-notcontains` 比较不区分大小写；实际 artifact
+  文本为小写，但只有 `86336ea` 的新 `-cnotcontains` gate 能证明 assertion 本身区分大小写。
+- transport/protocol run
+  [`29328086326`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29328086326)，同一 source，
+  terminal `success`：
+  - Linux GCC 13/Clang 18 + production game/process artifact `8309668402`，digest `c020ceba6cae82c599599ba23a0e309af05b928af194cfa5cd0f998140522fff`；
+  - Windows MSVC artifact `8308785601`，digest `7ff2b126611a3f3325f2ffe97d5b7d6dd13e7d843e52b1ca81118d515995bc5c`；
+  - Android NDK arm64 artifact `8308782103`，digest `64f0e150407c73d046f5fec178fd1764c449570afe925d2d7d400b68e8cdd769`。
+- Linux job 通过 pinned FlatBuffers generation、vendored Asio comparison、GCC/Clang loopback、生产
+  `[multiplayer]` suite、真实 headless command/resume smoke 和 local-input network-client UI resume smoke；
+  Windows MSVC loopback 与 Android NDK arm64 compile 也通过。
+
+这两条 runs 关闭 `e078eb6` 自身的 hosted gate。Android KVM runtime/lifecycle 证据仍精确属于 `e078eb6`，而不是
+后续 `86336ea`。
+
+### Hosted build-generator hardening gate（`86336ea` 已绿色）
+
+- baseline run
+  [`29330811779`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29330811779)，source
+  `86336ea847bea45f727fd97d74a811a32712518c`，运行区间 `2026-07-14T11:59:04Z`–`12:45:09Z`，7 个 jobs
+  全部 terminal `success`：
+  - Android x86_64 artifact `8311028317`，size `286233515`，digest `1106f66e0d052e73cc9804f26fbc57f919f623b0fb793f152f204b345790a661`；
+  - Android arm64 artifact `8311026327`，size `180771669`，digest `416606fdd8cb75f0573aa6e0ec1825d258696cfbb95fce0a0d7018b1be6cf7f8`；
+  - Windows x64 MSVC artifact `8310637856`，size `314192240`，digest `3584f373bdd0087664126c47cb8baa98b6fbaab8112cafd9bbd949f2a96221a3`；
+  - Linux curses artifact `8309916226`，size `183112210`，digest `9d012e8ca91b5142f44a9c514fe9a27849d64c1710b7ab8576b08210a160572a`；
+  - shaders artifact `8309904857`，size `28669`，digest `9097d36d426b1a0059a47e822cf539509b91bb63135b418a6b5a408038f4bf6a`；
+  - tileset artifact `8309890914`，size `4733394`，digest `bb638007a3f6d01821ccca8a79ac02e8de1d84124e9662d46429dd07797b373b`；
+  - translations artifact `8309873347`，size `85605345`，digest `aa132c98c3cfae2b40e9d958c11ec8e1ed82a7c1a2f014a73bbafb511c5cbd12`；
+  - soundpack artifact `8309872172`，size `137709159`，digest `2c75644dc5b984aac604f0de508045d3f555ec820b2005a56ec9d39ccc0e4504`。
+- Windows native version smoke 通过 `-cnotcontains` 大小写敏感 canonical-ID gate；Linux Make、Windows MSVC 与
+  Android Gradle package paths 的 artifact checks 均确认精确小写 full SHA。顶层 `src/CMakeLists.txt` 的
+  always-run/override path 不由这些 package jobs 直接调用，其证据来自下文的本地 Ninja/Unix Makefiles 回归。
+- transport/protocol run
+  [`29330811746`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29330811746)，同一 source，
+  运行区间 `2026-07-14T11:59:04Z`–`12:37:29Z`，3 个 jobs 全部 terminal `success`：
+  - Linux GCC 13/Clang 18 + production game/process artifact `8310820503`，size `147781`，digest `8422a7f7bcfd4ddea02145e287f267bfa1ba44f7d365d99d795c664f9ec0b364`；
+  - Windows MSVC artifact `8309890710`，size `54055`，digest `c03af2a211ab5221cf38ab4271a774e67e8464da343fa1e636284858e4a67ad7`；
+  - Android NDK arm64 artifact `8309880601`，size `1705305`，digest `c10815e1a2fbfda78531e453c7f23a50365b7aef80d3b498889d2d0e46f2c074`。
+- transport run 重跑 pinned FlatBuffers/Asio、GCC/Clang/MSVC loopback、生产 `[multiplayer]` tests、真实 headless
+  command/resume smoke、local-input network-client UI resume smoke 与 Android NDK compile，全部通过。
+
+该最终 gate 与 `e078eb6` 的 Android KVM lifecycle 共同关闭 Phase 2；关闭日期为 2026-07-14。
 
 ### GCC 13 release
 
@@ -173,6 +258,51 @@ python3 tools/multiplayer/network_client_ui_smoke.py \
 
 release 与 sanitizer 的 command statuses 都精确为 `accepted (0), duplicate (2), accepted (0)`，两次客户端均返回 0，transcript 均为 7,503 bytes；events 都精确为 `listening`、`player_authenticated`、`command_result`、`player_disconnected`、`player_resumed`、`command_result`、`command_result`、`player_disconnected`、`save_completed`、`shutdown`。sanitizer transcript 不含 ASan/UBSan/LSan marker。第一次 sanitizer 尝试只超过旧的 180 秒 server-startup allowance，并非 sanitizer finding；fresh-root 重试把 sanitizer server startup allowance 放宽到 600 秒，客户端交互的 `--timeout-seconds 180` 保持不变，随后完整通过。sanitizer process smoke 使用 `detect_leaks=0`，因为 ncurses 本身在进程退出时有已知约 1.9 KiB library leak。server stdout/stderr 每个非空行均为无 ANSI 的合法 JSON。
 
+### `e078eb6` canonical build identity 本地验证
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+./build-scripts/check-multiplayer-build-env.sh all
+./cataclysm --version
+./tests/cata_test '[multiplayer][protocol]' \
+  --rng-seed 0 --user-dir /tmp/cdda-multiplayer-e078-test-user
+./tests/cata_test '[multiplayer]' \
+  --rng-seed 0 --user-dir /tmp/cdda-multiplayer-e078-test-user
+PATH="$HOME/.cache/cdda-tools/actionlint-1.7.12:$PATH" \
+  "$HOME/.cache/cdda-tools/actionlint-1.7.12/actionlint" \
+  .github/workflows/multiplayer-baseline.yml \
+  .github/workflows/multiplayer-transport-spike.yml
+```
+
+- environment gate 通过；clean-ID rebuild 后 `--version` 显示 UI `e078eb6`、multiplayer build ID
+  `e078eb6aef25a9cc72eea45793114c931a52b896`、`-tiles, -sound`。
+- focused `[multiplayer][protocol]`：8 cases / 240 assertions，全绿。
+- 完整 `[multiplayer]`：process exit 0，52 cases / 3,069 assertions；只有
+  `multiplayer_player_slot_test.cpp:1078/1112/1115` 的三个既有 full-avatar-swap reference-identity
+  `[!mayfail]` 对照报告预期失败。
+- Make explicit-valid/invalid/auto ID、direct CMake valid/no-rewrite/invalid、Gradle explicit/auto/invalid/no-Git
+  检查均通过；MSVC generation/package 后由 baseline run `29328086046` 的 hosted `windows-2022` job 验证。
+- actionlint 1.7.12 对两个修改后的 workflows 均通过。
+
+### `86336ea` build-generator hardening 本地复核
+
+激活 pinned environment 后执行：
+
+```bash
+make version MULTIPLAYER_BUILD_ID="$(git rev-parse HEAD)"
+GIT_INDEX_FILE=/ make version
+cmake --build /tmp/cdda-build-id-cmake --target get_version
+```
+
+- explicit Make override 写入精确 clean ID `86336ea847bea45f727fd97d74a811a32712518c`。
+- 故意令 Git index probe 失败时，generator 报 dirty-state rc 128，Make 返回 rc 2，且既有 `version.h` SHA 不变；
+  基础设施错误不再被误标成 `-dirty`。
+- CMake auto target 写入 `86336ea847bea45f727fd97d74a811a32712518c-dirty`；间隔一秒重复执行后
+  `version.h` mtime 不变，证明 target 每次核对 identity 但 content-aware write 不触发无意义重编。随后
+  `version.h` 已用 clean `86336ea` override 恢复。
+- commit 已推送；baseline run `29330811779` 与 transport/protocol run `29330811746` 随后均 terminal
+  `success`，补齐 hosted Windows/package/transport evidence。
+
 ### Android arm64 / x86_64 debug APK
 
 ```bash
@@ -191,6 +321,60 @@ x86_64 使用同一命令但令 `-Pabi_arm_64=false -Pabi_x86_64=true`，结果�
 两份 APK ZIP 都完整、声明 `android.permission.INTERNET`，并包含 `connectMultiplayer`、`launchModeTitle`、
 `multiplayerConnectTitle`、endpoint/token validation、`multiplayerExistingSession`、LAN consent/security notice 和
 token-storage resources。该证据证明 Java/C++/SDL tiles source integration，不是 emulator/真机连接证据。
+
+### Canonical build ID 与 Android API 35 KVM runtime（本地绿色）
+
+构建与 ABI 证据：
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+cd android
+./gradlew clean \
+  -Pj="$(nproc)" \
+  -Pabi_arm_32=false -Pabi_arm_64=false \
+  -Pabi_x86_32=false -Pabi_x86_64=true \
+  -Plocalize=false assembleExperimentalRelease
+```
+
+- x86_64 Release clean build 为 `BUILD SUCCESSFUL in 54s`。unsigned APK SHA-256：
+  `e3b308a16bb3b93192d9f107eeac7e1db303b407724ef5922596fb0d999d3287`。
+- 为 emulator 安装而使用 Android Debug certificate 生成的 diagnostic signed copy SHA-256：
+  `238f5343c5dc87d34ba062bdc573bf4464cae91c25ece08da1287a50eb3679b8`。该签名只用于本地诊断，不是
+  production signing 或 hosted evidence。
+- APK 中 `x86_64/libmain.so` 包含精确 canonical ID
+  `e078eb6aef25a9cc72eea45793114c931a52b896`。
+
+加速与启动证据：
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+sg kvm -c "\"$ANDROID_HOME/emulator/emulator\" -accel-check"
+```
+
+- 不修改系统权限即可通过 `sg kvm` 使用已有 group access；`-accel-check` 报告 KVM version 12 usable。同一 API
+  35 x86_64 AVD cold boot log 为 `18.706s`。
+- 从正常 exported `SplashScreen` 路径启动，而不是 root/direct Activity launch；11,523 个 assets 在 90 秒内升级
+  完成，使用已保存 endpoint/token 与当次显式 LAN consent 进入 client，全程无 ANR。
+- 本地 diagnostic package 缺少 `grayscale.frag.spv`，对应 shader variant 被禁用，但 ASCIITiles remote scene 在
+  首个 command 前已渲染；hosted baseline 提供 shaders，因此这是本地 diagnostic limitation，不是 artifact
+  contract failure。move 前后截图不同，证明画面随 scene revision 更新。
+
+受控 server log 位于 `/tmp/cdda-mp-android-device.GnKAt1/server.stdout`，事件精确为：
+
+1. server 以 canonical ID 监听；`2026-07-14T10:40:00.604Z` authentication 成功，player
+   `f313d072-4ded-43c5-a36b-a8f72e24fe1a`、character `1`、generation 1。
+2. 仅发送一次 wait：sequence 3、type 1、accepted、revision 2；随后仅发送一次 right move：sequence 5、type 2、
+   accepted、revision 4。
+3. HOME 后 native PID `4820` 保留，但 transport 断开 generation 1；existing Activity 以 HOT `92ms` 恢复，Enter
+   使用同一 identity 恢复 generation 2；sequence 12 wait accepted、revision 6。
+4. Android 内定向 `ss -K` 断开 generation 2；airplane mode enable/disable 后 route 在 3 秒内恢复，Enter 使用同一
+   identity 恢复 generation 3；sequence 18 wait accepted、revision 8。
+5. `Q` 断开 generation 3；server `SIGTERM` 记录 `save_completed` revision 9、220ms，然后 `shutdown`。
+
+测试结束后已恢复 `AUTO_KEYBOARD=true`、`show_ime_with_hard_keyboard=1`、`policy_control`/
+`hide_error_dialogs` null、airplane mode 0、AVD `hw.keyboard=no`，并停止 emulator。先前 `-accel off` 软件模拟的
+ANR 与 accidental held-touch flood 仅保留为不计入门禁的诊断历史；它们不再是 active blocker。Android
+auth/render/controlled wait+move/pause-resume reconnect/network reconnect runtime gate 现为本地绿色。
 
 ### Schema、依赖、格式和 workflow
 
@@ -239,18 +423,26 @@ git diff --check
 - FlatBuffers 1.12.0 archive SHA-256 已核对，`generate.sh --check` 通过；GCC 13 只使用 `-Wno-error=stringop-overflow` 处理固定第三方 optimizer false positive。
 - Asio `asio-1-38-1` archive、license 和 vendored headers 逐字节一致。
 - AStyle 3.1 `make astyle-check`：通过。
-- ShellCheck 0.9.0：changed Bash 通过；actionlint 1.7.12：两个 workflow 通过。actionlint 首次发现两个仅作计数的 `attempt` loop variable 为 SC2034，改为 `_` 后复检绿色；本地仍没有 PowerShell parser，MSVC script 最终由 hosted Windows job 验证。
+- ShellCheck 0.9.0：changed Bash 通过；actionlint 1.7.12：两个 workflow 通过。actionlint 首次发现两个仅作计数的
+  `attempt` loop variable 为 SC2034，改为 `_` 后复检绿色；本地仍没有 PowerShell parser。`e078eb6` 的 hosted
+  Windows package job 已通过，`86336ea` 新增的大小写敏感 assertion 也由 run `29330811779` 终态验证通过。
 - workflow YAML parse：通过；baseline 17 个、transport 13 个 Bash-compatible `run:` blocks 经 `bash -n`：通过。
 - `python3 -m py_compile tools/multiplayer/network_client_ui_smoke.py`、`bash -n build-scripts/check-multiplayer-build-env.sh`、`git diff --check`：通过。
 - `./build-scripts/check-multiplayer-build-env.sh all`：通过；Linux ncursesw/tinfo runtime 与 Android pinned SDK/NDK/JDK 均绿色。
 
 ## 已知限制和未完成项
 
-- Android 尚无 emulator/真机 auth/render/wait/move、Activity pause/resume 和网络切换 smoke；这些是当前 Phase 2 设备证据缺口。
+- Phase 3 目前只是 source/ownership 调查起点：第二玩家 registry、active-player context 扩展、shared scheduler、
+  fairness/barrier、tether/group shift 和 `players.max > 1` 都尚未实现。
+- 本地 Android diagnostic package 缺 `grayscale.frag.spv`，因此该 shader variant 被禁用；ASCIITiles scene 已正常
+  渲染，hosted baseline 会提供 shaders。先前 `-accel off` ANR/held-touch flood 是已被 KVM run 取代的非计数历史，
+  不是 active blocker。
 - remote scene 仍只有 full snapshot；512 KiB fitter 会有损缩小可见半径，尚无 delta/chunk/compression 或 reduced-viewport metadata。scene 已携带 lighting byte，但 curses/tiles renderer 暂按全亮绘制；isometric terrain/entity painter ordering 也未完成。items、fields、vehicles、overlays、messages、sound、avatar replica/panels 仍缺失。
 - visibility regression 目前覆盖遮挡怪物不泄漏，但 ADR-0006 要求的隐藏陷阱、未探索地形、不可见物品以及 delta 路径 leak matrix 尚未完成；其中 items/delta 也尚未实现。
-- heartbeat 目前只有 30 秒 ping、120 秒 timeout 与手动 confirm reconnect；Android background timing、half-open recovery、自动 retry/backoff 和 graceful-disconnect timeout 尚无运行证据。若服务端在 clean release 时不回 ACK，UI 仍需第二次 quit 才能强制离开。
-- durable process-restart resume 属于 Phase 4：resume token、pending command 和 scene revision 当前仍只在 native process 内存中，进程杀死后不能继续旧 session；后续需 app-private、版本化、原子 checkpoint，但这不是 Phase 2 或 Phase 3 的进入门禁。
+- heartbeat 目前只有 30 秒 ping、120 秒 timeout 与手动 confirm reconnect；Android 的最小 pause/resume、定向
+  TCP reset 和 airplane route recovery 已绿色，但长时间 background timing、自动 retry/backoff、进程死亡恢复和
+  graceful-disconnect timeout 仍无运行证据。若服务端在 clean release 时不回 ACK，UI 仍需第二次 quit 才能强制离开。
+- durable process-restart resume 属于 Phase 4：resume token、pending command 和 scene revision 当前仍只在 native process 内存中，进程杀死后不能继续旧 session；后续需 app-private、版本化、原子 checkpoint，但不阻塞当前 Phase 3 source audit/初始 scheduler slice。
 - clean `DisconnectNotice` 已验证 command settlement、ACK write drain、ordered close 以及仅在精确 completion 后清除 resume record；但多数 protocol/auth/application 错误仍通过 transport close reason 而非 typed disconnect payload 返回。
 - client token reader 的 size/mode/symlink 检查仍存在 path-check → open 的 TOCTOU 窗口；Windows private-file ACL 尚未由本地平台证据验证。
 - 服务器仍只有一个 `active_remote_session`，config 继续拒绝 `players.max > 1`；没有 ADR-0002 shared scheduler、第二 avatar、tether/group shift、多人 monster target 或 player-state isolation。
@@ -260,21 +452,15 @@ git diff --check
 
 ## 下一门禁和首个动作
 
-1. hosted platform gate 已齐；首个具体动作是执行：
-
-```bash
-adb devices -l
-```
-
-   在可用 emulator/真机上安装匹配 ABI 的 debug APK，对真实 server 跑 auth/render/wait/move、Activity
-   pause/resume、强制 network disconnect 和 reconnect 最小 smoke。第一代码检查点是
-   `android/app/src/main/java/com/cleverraven/cataclysmdda/SplashScreen.java` 与 `CataclysmDDA.getArguments()` 的
-   Activity lifecycle/Intent persistence。
-2. Android lifecycle 退出证据齐全后，才扩大 server config 到第二玩家。Phase 3 第一条代码调查命令仍是：
+Phase 2 已关闭。Phase 3 的首个具体动作是运行 ADR-0002 source/ownership audit：
 
 ```bash
 rg -n "do_turn_remote|do_turn_impl|active_remote_session|multiplayer_players|active_player_guard|all_monsters|monmove" \
   src/do_turn.cpp src/game.cpp src/game.h src/main.cpp src/multiplayer_* tests/multiplayer_*
 ```
+
+先核对 simulation turn phases、现有 single-session ownership、active-player getters 与 monster iteration；若调查
+结果和 accepted ADR 冲突，先更新/supersede ADR 与 refactor plan，再设计最小 second-player registry/context/
+scheduler slice。不得仅因进入 Phase 3 就先打开 `players.max > 1`。
 
 不得把本批单客户端 UI smoke 描述为两玩家/shared-barrier、完整 remote avatar replica、portable character 或生产发布完成。

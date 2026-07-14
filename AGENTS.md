@@ -63,15 +63,26 @@ See the plan sections on authority, threading, state scope, scheduling, action/U
 
 ## Current Phase
 
-Phase 0 closed with recorded evidence on 2026-07-12. The project is now in **Phase 2: the single-remote-player vertical slice**. Phase 1's local and hosted gates
-are green. The current client batch implements production transport/state, desktop/Android connection UI, semantic
+Phase 0 closed with recorded evidence on 2026-07-12, and Phase 2 closed with recorded evidence on 2026-07-14. The
+project is now in **Phase 3: second-player/shared-scheduler investigation**; no second-player scheduler has been
+implemented yet. Phase 1 and Phase 2 local, hosted and Android lifecycle gates are green. The Phase 2 client
+implements production transport/state, desktop/Android connection UI, semantic
 wait/move input, bounded full-scene fitting, heartbeat/manual reconnect, ordered clean session release and local
 remote-scene rendering. The final transport fix also keeps a closed logical connection's admission slot until its
 terminal event is consumed, so reset churn cannot crowd terminal events out of the bounded queue. Commit
 `6403a949fb537be14ec4d5757f295adbf5c5f99b` has a green hosted platform gate in baseline run `29303564150` and
-transport/protocol run `29303564152`; the remaining Phase 2 platform evidence is an Android emulator/device lifecycle
-smoke. Do not skip ahead to the Phase 3 two-player scheduler or describe the isolated
-`tools/` transport spike as production networking.
+transport/protocol run `29303564152`. A KVM-backed API 35 x86_64 run now has green local evidence for clean launch,
+auth/render, one controlled wait, one controlled move, Activity pause/resume, forced network disconnect/reconnect and
+clean save/shutdown. That run exposed and then verified the fix for a cross-backend handshake bug: commit
+`e078eb6aef25a9cc72eea45793114c931a52b896` uses one backend-neutral 40-character Git SHA, optionally suffixed
+`-dirty`, as the multiplayer build ID instead of the display `VERSION`. Its baseline run `29328086046` and
+transport/protocol run `29328086326` are terminal `success`, including Linux, Windows MSVC and Android evidence. A
+follow-up read-only audit found stale-CMake-generation, Make dirty-state error handling and Windows assertion-case
+gaps; pushed commit `86336ea847bea45f727fd97d74a811a32712518c` fixes them. Its baseline run `29330811779`
+and transport/protocol run `29330811746` are terminal `success`; this closes Phase 2. The Android KVM lifecycle
+evidence belongs exactly to `e078eb6`; do not imply it was rerun for `86336ea`. Phase 3 begins with source/ownership
+investigation, not a claim that the two-player scheduler already exists. Do not describe the isolated `tools/`
+transport spike as production networking.
 
 Completed Phase 0 gates:
 
@@ -90,14 +101,12 @@ Completed Phase 0 gates:
 
 The active work, in order, is:
 
-1. Run `adb devices -l`, then exercise the Android touch/tiles client against a real server through auth/render,
-   wait/move, app pause/resume, network disconnect and reconnect on an emulator or device; hosted APK/NDK evidence is
-   not a runtime smoke.
-2. Keep the server/client slice hardened: visibility leak tests, resync/idempotency, existing canonical save/restart,
-   graceful-disconnect timeout/error paths and unsupported-action rejection. Durable client process-restart resume
-   checkpointing remains Phase 4 work.
-3. Only after the Phase 2 Android lifecycle evidence is green, begin ADR-0002's second-player shared scheduler. Do not
-   enable `players.max > 1`, portable characters or multiple save generations before their planned gates.
+1. Begin ADR-0002's Phase 3 investigation with the ordered `do_turn`/active-player/monster ownership source audit
+   recorded in `STATUS.md`; document conflicts before expanding implementation.
+2. Design the smallest second-player registry/context/scheduler slice consistent with the accepted ADRs, then add
+   conflict, fairness, tether and player-state isolation tests before enabling `players.max > 1`.
+3. Keep the Phase 2 server/client slice hardened, but do not pull portable characters, multiple save generations or
+   Phase 4 durable process-restart resume into the scheduler entry slice.
 
 The Linux curses artifact is still the non-SDL packaging baseline, but the same binary now has an explicitly selected
 `--server` runtime path. Do not ship it as a production dedicated-server package until dedicated-server packaging
