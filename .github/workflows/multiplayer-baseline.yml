@@ -227,6 +227,7 @@ jobs:
         run: |
           make COMPILER=clang++-18 \
             -j"$(nproc)" \
+            MULTIPLAYER_BUILD_ID="$GITHUB_SHA" \
             TILES=0 \
             SOUND=0 \
             RELEASE=1 \
@@ -258,10 +259,12 @@ jobs:
           binary="$(find smoke -type f -name cataclysm -perm -111 -print -quit)"
           test -n "$binary"
           "$binary" --version | tee artifacts/linux-version.txt
+          grep -Fx "multiplayer build id: $GITHUB_SHA" artifacts/linux-version.txt
           {
             echo "artifact=cdda-linux-curses-x64-baseline.tar.gz"
             echo "sha256=$(sha256sum artifacts/cdda-linux-curses-x64-baseline.tar.gz | cut -d' ' -f1)"
             echo "source_commit=$GITHUB_SHA"
+            echo "multiplayer_build_id=$GITHUB_SHA"
             echo "upstream_baseline=$BASELINE_UPSTREAM_COMMIT"
             echo "runner_image=ubuntu-24.04"
             echo "compiler=$(clang++-18 --version | head -n 1)"
@@ -289,6 +292,7 @@ jobs:
     env:
       BACKTRACE: 1
       CDDA_RELEASE_BUILD: 1
+      MULTIPLAYER_BUILD_ID: ${{ github.sha }}
       VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\.github\vcpkg_triplets
     steps:
       - name: Checkout source
@@ -399,7 +403,8 @@ jobs:
           $versionLines = @($versionOutput | ForEach-Object { $_.Trim() })
           if ([string]::IsNullOrWhiteSpace($versionText) -or
               $versionText -notmatch 'Cataclysm' -or
-              $versionLines -notcontains '+tiles, +sound') {
+              $versionLines -notcontains '+tiles, +sound' -or
+              $versionLines -notcontains 'multiplayer build id: ${{ github.sha }}') {
             throw "Windows version smoke test produced unexpected output: $versionText"
           }
           $versionText | Set-Content artifacts\windows-version.txt
@@ -433,6 +438,7 @@ jobs:
             'artifact=cdda-windows-client-x64-baseline.zip'
             "sha256=$hash"
             'source_commit=${{ github.sha }}'
+            'multiplayer_build_id=${{ github.sha }}'
             'upstream_baseline=${{ env.BASELINE_UPSTREAM_COMMIT }}'
             'runner_image=windows-2022'
             "msbuild=$msbuildVersion"
@@ -521,6 +527,7 @@ jobs:
             -Pabi_arm_64=true \
             -Pabi_x86_32=false \
             -Pabi_x86_64=false \
+            -Poverride_multiplayer_build_id="$GITHUB_SHA" \
             -Poverride_versionCode="${{ github.run_number }}" \
             assembleExperimentalRelease
 
@@ -533,6 +540,7 @@ jobs:
             -Pabi_arm_64=false \
             -Pabi_x86_32=false \
             -Pabi_x86_64=true \
+            -Poverride_multiplayer_build_id="$GITHUB_SHA" \
             -Plocalize=false \
             assembleExperimentalDebug
 
@@ -544,6 +552,9 @@ jobs:
           cp "$package" artifacts/cdda-android-arm64-baseline-unsigned.apk
           unzip -t artifacts/cdda-android-arm64-baseline-unsigned.apk
           unzip -l artifacts/cdda-android-arm64-baseline-unsigned.apk | grep -q 'lib/arm64-v8a/libmain.so'
+          unzip -p artifacts/cdda-android-arm64-baseline-unsigned.apk \
+            lib/arm64-v8a/libmain.so > "$RUNNER_TEMP/android-arm64-libmain.so"
+          strings "$RUNNER_TEMP/android-arm64-libmain.so" | grep -Fx "$GITHUB_SHA"
           for unexpected_abi in armeabi-v7a x86 x86_64; do
             if unzip -l artifacts/cdda-android-arm64-baseline-unsigned.apk \
               | grep -q "lib/$unexpected_abi/"; then
@@ -567,6 +578,9 @@ jobs:
           unzip -t artifacts-x86/cdda-android-x86_64-debug.apk
           unzip -l artifacts-x86/cdda-android-x86_64-debug.apk \
             | grep -q 'lib/x86_64/libmain.so'
+          unzip -p artifacts-x86/cdda-android-x86_64-debug.apk \
+            lib/x86_64/libmain.so > "$RUNNER_TEMP/android-x86_64-libmain.so"
+          strings "$RUNNER_TEMP/android-x86_64-libmain.so" | grep -Fx "$GITHUB_SHA"
           for unexpected_abi in armeabi-v7a arm64-v8a x86; do
             if unzip -l artifacts-x86/cdda-android-x86_64-debug.apk \
               | grep -q "lib/$unexpected_abi/"; then
@@ -578,6 +592,7 @@ jobs:
             echo "artifact=cdda-android-x86_64-debug.apk"
             echo "sha256=$(sha256sum artifacts-x86/cdda-android-x86_64-debug.apk | cut -d' ' -f1)"
             echo "source_commit=$GITHUB_SHA"
+            echo "multiplayer_build_id=$GITHUB_SHA"
             echo "runner_image=ubuntu-24.04"
             echo "android_platform=35"
             echo "android_ndk=28.1.13356709"
@@ -588,6 +603,7 @@ jobs:
             echo "artifact=cdda-android-arm64-baseline-unsigned.apk"
             echo "sha256=$(sha256sum artifacts/cdda-android-arm64-baseline-unsigned.apk | cut -d' ' -f1)"
             echo "source_commit=$GITHUB_SHA"
+            echo "multiplayer_build_id=$GITHUB_SHA"
             echo "upstream_baseline=$BASELINE_UPSTREAM_COMMIT"
             echo "runner_image=ubuntu-24.04"
             echo "java=$(java -version 2>&1 | head -n 1)"

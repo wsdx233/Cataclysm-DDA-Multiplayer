@@ -12,6 +12,10 @@
 
 #endif
 
+#ifndef MULTIPLAYER_BUILD_ID
+#define MULTIPLAYER_BUILD_ID ""
+#endif
+
 const char *getVersionString()
 {
 #if defined(USE_SDL3)
@@ -19,4 +23,9 @@ const char *getVersionString()
 #else
     return VERSION;
 #endif
+}
+
+const char *getMultiplayerBuildId()
+{
+    return MULTIPLAYER_BUILD_ID;
 }

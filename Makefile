@@ -1277,16 +1277,31 @@ $(BUILD_PREFIX)$(TARGET_NAME).a: $(OBJS)
 .PHONY: version prefix
 version:
 	@( VERSION_STRING=$(VERSION) ; \
+        MULTIPLAYER_BUILD_ID_STRING="$(MULTIPLAYER_BUILD_ID)" ; \
         [ -e ".git" ] && \
           GITVERSION=$$( git describe --tags --always --match "[0-9A-Z]*.[0-9A-Z]*" --match "cdda-experimental-*" --exact-match 2>/dev/null || true ) && \
           GITSHA=$$( git rev-parse --short HEAD ) && \
           DIRTYFLAG=$$( [ -z "$$(git -c core.autocrlf=input -c core.safecrlf=false diff --numstat | grep -v lang/po/)" ] || echo "-dirty") && \
           VERSION_STRING="$$GITVERSION $$GITSHA$$DIRTYFLAG" && \
           VERSION_STRING="$${VERSION_STRING## }" ; \
+        if [ -z "$$MULTIPLAYER_BUILD_ID_STRING" ] && [ -e ".git" ]; then \
+          MULTIPLAYER_GIT_SHA=$$( git rev-parse HEAD 2>/dev/null || true ) ; \
+          MULTIPLAYER_DIRTY_FLAG=$$( git diff --quiet HEAD || printf '%s' '-dirty' ) ; \
+          MULTIPLAYER_BUILD_ID_STRING="$$MULTIPLAYER_GIT_SHA$$MULTIPLAYER_DIRTY_FLAG" ; \
+        fi ; \
+        if [ -n "$$MULTIPLAYER_BUILD_ID_STRING" ] && \
+           ! printf '%s\n' "$$MULTIPLAYER_BUILD_ID_STRING" | \
+             grep -Eq '^[0-9a-f]{40}(-dirty)?$$'; then \
+          echo "Invalid MULTIPLAYER_BUILD_ID: expected 40 lowercase hexadecimal characters with optional -dirty" >&2 ; \
+          exit 1 ; \
+        fi ; \
         [ -e "$(SRC_DIR)/version.h" ] && \
-          OLDVERSION=$$(grep VERSION $(SRC_DIR)/version.h | cut -d '"' -f2) ; \
-        if [ "x$$VERSION_STRING" != "x$$OLDVERSION" ]; then \
-          printf '// NOLINT(cata-header-guard)\n#define VERSION "%s"\n' "$$VERSION_STRING" | tee $(SRC_DIR)/version.h ; \
+          OLDVERSION=$$(sed -n 's/^#define VERSION "\(.*\)"$$/\1/p' $(SRC_DIR)/version.h) && \
+          OLD_MULTIPLAYER_BUILD_ID=$$(sed -n 's/^#define MULTIPLAYER_BUILD_ID "\(.*\)"$$/\1/p' $(SRC_DIR)/version.h) ; \
+        if [ "x$$VERSION_STRING" != "x$$OLDVERSION" ] || \
+           [ "x$$MULTIPLAYER_BUILD_ID_STRING" != "x$$OLD_MULTIPLAYER_BUILD_ID" ]; then \
+          printf '// NOLINT(cata-header-guard)\n#define VERSION "%s"\n#define MULTIPLAYER_BUILD_ID "%s"\n' \
+            "$$VERSION_STRING" "$$MULTIPLAYER_BUILD_ID_STRING" | tee $(SRC_DIR)/version.h ; \
         fi \
      )
 

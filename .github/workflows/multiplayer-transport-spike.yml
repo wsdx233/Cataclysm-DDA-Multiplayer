@@ -7,7 +7,10 @@ on:
       - multiplayer/main
     paths:
       - '.github/workflows/multiplayer-transport-spike.yml'
+      - 'CMakeLists.txt'
+      - 'Makefile'
       - 'msvc-full-features/Cataclysm-common.props'
+      - 'src/get_version.h'
       - 'src/multiplayer_*'
       - 'src/animation.cpp'
       - 'src/avatar.h'
@@ -27,6 +30,8 @@ on:
       - 'src/newcharacter.cpp'
       - 'src/output.cpp'
       - 'src/output.h'
+      - 'src/version.cmake'
+      - 'src/version.cpp'
       - 'src/third-party/multiplayer_protocol_generated.h'
       - 'src/third-party/asio.hpp'
       - 'src/third-party/asio/**'
@@ -41,7 +46,10 @@ on:
       - multiplayer/main
     paths:
       - '.github/workflows/multiplayer-transport-spike.yml'
+      - 'CMakeLists.txt'
+      - 'Makefile'
       - 'msvc-full-features/Cataclysm-common.props'
+      - 'src/get_version.h'
       - 'src/multiplayer_*'
       - 'src/animation.cpp'
       - 'src/avatar.h'
@@ -61,6 +69,8 @@ on:
       - 'src/newcharacter.cpp'
       - 'src/output.cpp'
       - 'src/output.h'
+      - 'src/version.cmake'
+      - 'src/version.cpp'
       - 'src/third-party/multiplayer_protocol_generated.h'
       - 'src/third-party/asio.hpp'
       - 'src/third-party/asio/**'

@@ -43,6 +43,8 @@ set(CATA_CLANG_TIDY_INCLUDE_DIR "" CACHE STRING
         "Path to internal clang-tidy headers required for plugin (e.g. ClangTidy.h)")
 set(CATA_CHECK_CLANG_TIDY "" CACHE STRING "Path to check_clang_tidy.py for plugin tests")
 set(GIT_BINARY "" CACHE STRING "Git binary name or path.")
+set(MULTIPLAYER_BUILD_ID "" CACHE STRING
+        "Override the multiplayer compatibility build ID; empty derives it from Git.")
 set(GETTEXT_MSGFMT_BINARY "" CACHE FILEPATH "msgfmt binary name or path.")
 
 if (TESTS)
@@ -64,11 +66,17 @@ add_definitions(-DCMAKE)
 # Retrieve version from git into GIT_VERSION and creates VERSION.txt
 execute_process(COMMAND ${CMAKE_COMMAND}
     -DGIT_BINARY=${GIT_BINARY}
+    -DMULTIPLAYER_BUILD_ID:STRING=${MULTIPLAYER_BUILD_ID}
     -P ${CMAKE_SOURCE_DIR}/src/version.cmake
     ERROR_VARIABLE GIT_VERSION
     ERROR_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE VERSION_SCRIPT_RESULT
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+if (NOT VERSION_SCRIPT_RESULT EQUAL 0)
+    message(FATAL_ERROR "Version generation failed:\n${GIT_VERSION}")
+endif()
 
 if (GIT_VERSION)
     message(STATUS "${PROJECT_NAME} build version is: ${GIT_VERSION}")

@@ -1,9 +1,11 @@
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
 #include "cata_catch.h"
+#include "get_version.h"
 #include "multiplayer_protocol.h"
 
 namespace
@@ -36,6 +38,29 @@ multiplayer_protocol_envelope client_hello_envelope( const multiplayer_client_he
 }
 
 } // namespace
+
+TEST_CASE( "multiplayer_build_id_excludes_local_ui_backend_suffixes",
+           "[multiplayer][protocol]" )
+{
+    const std::string build_id = getMultiplayerBuildId();
+
+    REQUIRE_FALSE( build_id.empty() );
+    const bool clean_id = build_id.size() == 40;
+    const bool dirty_id = build_id.size() == 46 && build_id.substr( 40 ) == "-dirty";
+    REQUIRE( ( clean_id || dirty_id ) );
+    CHECK( std::all_of( build_id.begin(), build_id.begin() + 40, []( const char ch ) {
+        return ( ch >= '0' && ch <= '9' ) || ( ch >= 'a' && ch <= 'f' );
+    } ) );
+    CHECK( build_id.find( "+SDL3" ) == std::string::npos );
+
+    multiplayer_client_hello hello = valid_client_hello();
+    hello.build_id = build_id;
+    multiplayer_protocol_envelope envelope = client_hello_envelope( hello );
+    multiplayer_client_hello parsed;
+    std::string error;
+    REQUIRE( multiplayer_parse_client_hello_payload( envelope, parsed, error ) );
+    CHECK( parsed.build_id == build_id );
+}
 
 TEST_CASE( "multiplayer_protocol_client_hello_round_trip_and_envelope_validation",
            "[multiplayer][protocol]" )

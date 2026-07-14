@@ -69,6 +69,11 @@ if (localProperties.getProperty('override_version') != null) {
     override_version = localProperties.getProperty("override_version")
 }
 
+def override_multiplayer_build_id = getProperty("override_multiplayer_build_id")
+if (localProperties.getProperty('override_multiplayer_build_id') != null) {
+    override_multiplayer_build_id = localProperties.getProperty("override_multiplayer_build_id")
+}
+
 def version_header_path = getProperty("version_header_path")
 if (localProperties.getProperty('version_header_path') != null) {
     version_header_path = localProperties.getProperty("version_header_path")
@@ -104,6 +109,7 @@ if (localProperties.getProperty('override_versionCode') != null) {
 println("Using [              njobs]: $njobs")
 println("Using [           localize]: $localize")
 println("Using [   override_version]: $override_version")
+println("Using [override_multiplayer_build_id]: $override_multiplayer_build_id")
 println("Using [version_header_path]: $version_header_path")
 println("Using [  compileSdkVersion]: $override_compileSdkVersion")
 println("Using [      minSdkVersion]: $override_minSdkVersion")
@@ -131,6 +137,19 @@ if (!override_version.isEmpty()) {
     } else {
         println("Overriding version number to $override_version using path $version_header_path")
     }
+}
+
+def validateMultiplayerBuildId = { String buildId ->
+    if (!buildId.isEmpty() && !(buildId ==~ /^[0-9a-f]{40}(-dirty)?$/)) {
+        throw new GradleException(
+            "`override_multiplayer_build_id` must match ^[0-9a-f]{40}(-dirty)?\$: $buildId")
+    }
+}
+validateMultiplayerBuildId(override_multiplayer_build_id)
+
+if (!override_multiplayer_build_id.isEmpty() && version_header_path.isEmpty()) {
+    throw new GradleException(
+        "`version_header_path` cannot be empty when `override_multiplayer_build_id` is not empty")
 }
 
 def projectRoot = './../..'
@@ -215,6 +234,57 @@ task makeLocalization(type: Exec) {
 
 task generateVersionHeader() {
     // this taks imitates `make version` while respecting version_header_path
+    def multiplayerBuildId = override_multiplayer_build_id
+    if (multiplayerBuildId.isEmpty()) {
+        println("Generating multiplayer build ID from git HEAD")
+        def headOutput = new ByteArrayOutputStream()
+        def headError = new ByteArrayOutputStream()
+        def headResult
+        try {
+            headResult = exec {
+                workingDir projectRoot
+                commandLine 'git', 'rev-parse', '--verify', 'HEAD'
+                standardOutput headOutput
+                errorOutput headError
+                ignoreExitValue true
+            }
+        } catch (Exception error) {
+            throw new GradleException(
+                "Unable to generate MULTIPLAYER_BUILD_ID because git is unavailable and " +
+                "override_multiplayer_build_id is empty", error)
+        }
+        if (headResult.exitValue != 0) {
+            throw new GradleException(
+                "Unable to generate MULTIPLAYER_BUILD_ID from git HEAD; install git or set " +
+                "-Poverride_multiplayer_build_id=<40 lowercase git hash>[-dirty]: " +
+                headError.toString().trim())
+        }
+        multiplayerBuildId = headOutput.toString().trim().toLowerCase(java.util.Locale.ROOT)
+
+        def dirtyResult
+        try {
+            dirtyResult = exec {
+                workingDir projectRoot
+                commandLine 'git', 'diff', '--quiet', 'HEAD'
+                ignoreExitValue true
+            }
+        } catch (Exception error) {
+            throw new GradleException(
+                "Unable to determine MULTIPLAYER_BUILD_ID dirty state with " +
+                "`git diff --quiet HEAD`", error)
+        }
+        if (dirtyResult.exitValue == 1) {
+            multiplayerBuildId += '-dirty'
+        } else if (dirtyResult.exitValue != 0) {
+            throw new GradleException(
+                "Unable to determine MULTIPLAYER_BUILD_ID dirty state with " +
+                "`git diff --quiet HEAD` (exit ${dirtyResult.exitValue})")
+        }
+    } else {
+        println("Overriding multiplayer build ID to $multiplayerBuildId")
+    }
+    validateMultiplayerBuildId(multiplayerBuildId)
+
     if (override_version.isEmpty()) {
         println("Generating version number to $version_header_path")
         def output = new ByteArrayOutputStream()
@@ -229,7 +299,9 @@ task generateVersionHeader() {
         println("Overriding version number to $override_version")
     }
 
-    def define = "// NOLINT(cata-header-guard)\n#define VERSION \"$override_version\"\n"
+    def define = "// NOLINT(cata-header-guard)\n" +
+        "#define VERSION \"$override_version\"\n" +
+        "#define MULTIPLAYER_BUILD_ID \"$multiplayerBuildId\"\n"
     def versionHeader = new File("$version_header_path")
     if (!versionHeader.exists() || versionHeader.text != define) {
         versionHeader.text = define

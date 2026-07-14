@@ -255,10 +255,13 @@ void printVersionMessage()
     const bool hasSound = false;
 #endif
 
-    printf( "Cataclysm Dark Days Ahead: %s\n\n"
+    const char *const multiplayer_build_id = getMultiplayerBuildId();
+    printf( "Cataclysm Dark Days Ahead: %s\n"
+            "multiplayer build id: %s\n\n"
             "%ctiles, %csound\n\n"
             "data dir: %s\nuser dir: %s\n",
             getVersionString(),
+            multiplayer_build_id[0] == '\0' ? "unavailable" : multiplayer_build_id,
             hasTiles ? '+' : '-',
             hasSound ? '+' : '-',
             PATH_INFO::datadir().c_str(),
@@ -838,7 +841,12 @@ bool prepare_multiplayer_client( cli_opts &cli, multiplayer_client_settings &set
 #else
     settings.client_kind = multiplayer_protocol_client_kind::graphical_desktop;
 #endif
-    settings.build_id = getVersionString();
+    settings.build_id = getMultiplayerBuildId();
+    if( settings.build_id.empty() ) {
+        error = "multiplayer build identity is unavailable; rebuild from a Git checkout "
+                "or provide an explicit multiplayer build ID";
+        return false;
+    }
     settings.savegame_version = savegame_version;
     settings.display_name = "CDDA Graphical Client";
     error.clear();
@@ -954,7 +962,16 @@ int run_dedicated_server( const multiplayer_server_config &config,
     multiplayer_server_player_identity identity;
     identity.player_id = g->active_player_runtime().player_id().str();
     identity.character_id = std::to_string( g->active_avatar().getID().get_value() );
-    multiplayer_dedicated_server server( config, config_path, getVersionString(), {}, identity );
+    const std::string multiplayer_build_id = getMultiplayerBuildId();
+    if( multiplayer_build_id.empty() ) {
+        std::cerr << multiplayer_server_log_json(
+        multiplayer_server_log_severity::error, "startup_failed", {
+            { "message", "multiplayer build identity is unavailable" },
+            { "world_id", config.world.name }
+        } ) << '\n';
+        return 1;
+    }
+    multiplayer_dedicated_server server( config, config_path, multiplayer_build_id, {}, identity );
     std::string error;
     if( !server.start( error ) ) {
         std::cerr << multiplayer_server_log_json(
@@ -965,7 +982,7 @@ int run_dedicated_server( const multiplayer_server_config &config,
     std::cout << multiplayer_server_log_json(
     multiplayer_server_log_severity::info, "listening", {
         { "listen", config.network.listen }, { "world_id", config.world.name },
-        { "build_id", getVersionString() },
+        { "build_id", multiplayer_build_id },
         { "bound_port", std::to_string( server.bound_port() ) }
     } ) << std::endl;
     DebugLog( D_INFO, D_MAIN ) << "Dedicated multiplayer server started on " <<
