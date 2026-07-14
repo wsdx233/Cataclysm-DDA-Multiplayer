@@ -151,10 +151,12 @@ The fork-specific workflow is [`.github/workflows/multiplayer-baseline.yml`](.gi
 - Per-artifact provenance, SHA-256, CLI/resource and smoke-test output.
 
 The workflow runs manually and on relevant changes pushed to, or proposed against, `multiplayer/main`. Manual runs
-select the full Tier 3 matrix; automatic runs compare changed paths and select only affected packages. Ordinary
+default to `target=all` for the full Tier 3 matrix, while an explicit `linux`, `windows` or `android` target supports a
+single-platform Tier 2 gate. Automatic runs compare changed paths and select only affected packages. Ordinary
 backend-neutral `src/multiplayer_*` changes do not trigger the package baseline. Windows-owned paths select Windows,
-Android-owned paths select Android, shared graphical UI selects both, and shared build/resource/toolchain paths or an
-unresolvable base select all. It does not create a GitHub Release and does not need production signing secrets.
+Android-owned paths select Android, shared graphical/platform adapters select their affected targets, and shared
+build/resource/toolchain paths or an unresolvable base select all. It does not create a GitHub Release and does not
+need production signing secrets.
 
 Pinned build values include:
 

@@ -2,6 +2,17 @@ name: Multiplayer vanilla build baseline
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Platform package target; keep all for Tier 3 milestones
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - linux
+          - windows
+          - android
   # Keep both event path lists and jobs.changes in sync when adding or
   # renaming a platform-owned path.
   push:
@@ -22,8 +33,18 @@ on:
       - 'src/*sound*'
       - 'src/*tileset*'
       - 'src/cata_tiles.*'
+      - 'src/cata_allocator.*'
+      - 'src/filesystem.*'
       - 'src/get_version.h'
+      - 'src/main.cpp'
       - 'src/mingw.thread.h'
+      - 'src/mmap_file.*'
+      - 'src/multiplayer_client_ui.*'
+      - 'src/multiplayer_crypto.*'
+      - 'src/multiplayer_server_config.*'
+      - 'src/multiplayer_server_log.*'
+      - 'src/multiplayer_transport.*'
+      - 'src/path_info.*'
       - 'src/platform_win.h'
       - 'src/resource.rc'
       - 'src/sdl*'
@@ -33,6 +54,7 @@ on:
       - 'src/version.cmake'
       - 'src/version.cpp'
       - 'src/wincurse.cpp'
+      - 'src/system_locale.*'
       - 'tools/format/**'
       - 'tools/gfx_tools/**'
       - 'CMakeLists.txt'
@@ -55,8 +77,18 @@ on:
       - 'src/*sound*'
       - 'src/*tileset*'
       - 'src/cata_tiles.*'
+      - 'src/cata_allocator.*'
+      - 'src/filesystem.*'
       - 'src/get_version.h'
+      - 'src/main.cpp'
       - 'src/mingw.thread.h'
+      - 'src/mmap_file.*'
+      - 'src/multiplayer_client_ui.*'
+      - 'src/multiplayer_crypto.*'
+      - 'src/multiplayer_server_config.*'
+      - 'src/multiplayer_server_log.*'
+      - 'src/multiplayer_transport.*'
+      - 'src/path_info.*'
       - 'src/platform_win.h'
       - 'src/resource.rc'
       - 'src/sdl*'
@@ -66,6 +98,7 @@ on:
       - 'src/version.cmake'
       - 'src/version.cpp'
       - 'src/wincurse.cpp'
+      - 'src/system_locale.*'
       - 'tools/format/**'
       - 'tools/gfx_tools/**'
       - 'CMakeLists.txt'
@@ -106,6 +139,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           EVENT_NAME: ${{ github.event_name }}
+          MANUAL_TARGET: ${{ inputs.target || 'all' }}
         run: |
           set -euo pipefail
 
@@ -121,8 +155,25 @@ jobs:
           }
 
           if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
-            echo "Manual milestone run: select the full platform matrix."
-            select_all
+            echo "Manual run target: $MANUAL_TARGET"
+            case "$MANUAL_TARGET" in
+              all)
+                select_all
+                ;;
+              linux)
+                linux=true
+                ;;
+              windows)
+                windows=true
+                ;;
+              android)
+                android=true
+                ;;
+              *)
+                echo "Unsupported manual target: $MANUAL_TARGET" >&2
+                exit 1
+                ;;
+            esac
           elif [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
             echo "Unable to resolve the event base commit; selecting all targets."
             select_all
@@ -149,13 +200,33 @@ jobs:
               while IFS= read -r -d '' path; do
                 echo "  $path"
                 case "$path" in
-                  .github/workflows/multiplayer-baseline.yml|build-scripts/*|CMakeLists.txt|Makefile)
+                  .github/workflows/multiplayer-baseline.yml|CMakeLists.txt|Makefile)
+                    select_all
+                    ;;
+                  build-scripts/*.ps1|build-scripts/MSVC.cmake|build-scripts/*windows*|build-scripts/*mingw*)
+                    windows=true
+                    ;;
+                  build-scripts/activate-multiplayer-build-env.sh|build-scripts/check-multiplayer-build-env.sh)
+                    linux=true
+                    android=true
+                    ;;
+                  build-scripts/bundle-sdl3-linux.sh)
+                    linux=true
+                    ;;
+                  build-scripts/*)
                     select_all
                     ;;
                   data/*|lang/*|src/get_version.h|src/version.cmake|src/version.cpp)
                     select_all
                     ;;
+                  src/filesystem.*|src/mmap_file.*|src/path_info.*|src/system_locale.*)
+                    select_all
+                    ;;
                   .github/actions/build-sdl3-shaders/*|gfx/*|tools/format/*|tools/gfx_tools/*)
+                    windows=true
+                    android=true
+                    ;;
+                  src/main.cpp|src/cata_allocator.*|src/multiplayer_client_ui.*|src/multiplayer_crypto.*|src/multiplayer_transport.*)
                     windows=true
                     android=true
                     ;;
@@ -163,7 +234,7 @@ jobs:
                     windows=true
                     android=true
                     ;;
-                  .github/vcpkg_triplets/*|msvc-full-features/*|src/mingw.thread.h|src/platform_win.h|src/resource.rc|src/third-party/snmalloc/pal/pal_windows.h|src/wincurse.cpp)
+                  .github/vcpkg_triplets/*|msvc-full-features/*|src/mingw.thread.h|src/multiplayer_server_config.*|src/multiplayer_server_log.*|src/platform_win.h|src/resource.rc|src/third-party/snmalloc/pal/pal_windows.h|src/wincurse.cpp)
                     windows=true
                     ;;
                   android/*|src/third-party/CMakeLists.txt)

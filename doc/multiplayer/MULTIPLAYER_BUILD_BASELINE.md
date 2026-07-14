@@ -22,7 +22,8 @@ Linux curses 包仍是无 SDL 的打包基线；同一 binary 已有显式 `--se
 - 面向 `multiplayer/main` 的 pull request 修改构建相关文件。
 
 工作流不创建 GitHub Release，不需要 Android keystore，也不会使用正式发布凭据。每个产物旁边包含构建 manifest、源码提交和 SHA-256。
-`workflow_dispatch` 始终选择 Linux、Windows、Android 全矩阵，供 Tier 3 milestone 使用。自动 push/PR run 先由
+`workflow_dispatch` 的 `target` 默认为 `all`，供 Tier 3 milestone 运行 Linux、Windows、Android 全矩阵；Tier 2
+也可显式选择 `linux`、`windows` 或 `android` 单平台。自动 push/PR run 先由
 `Select affected platform packages` 比较 event base 与当前 commit，再只启用受影响的平台 package；若无法可靠
 解析 base commit，则安全回退到全矩阵。
 
@@ -52,10 +53,13 @@ Linux curses 包仍是无 SDL 的打包基线；同一 binary 已有显式 `--se
 - 普通 `src/multiplayer_*` gameplay/policy source 不触发 package baseline；它由 Linux production workflow 和
   Tier 1 本地验证负责。
 - `android/**` 与 Android-owned build/runtime path 只选择 Android package 及其 translations/tileset/shaders 依赖。
-- `msvc-full-features/**`、vcpkg triplet 和 Win32-owned source 只选择 Windows package 及其四类 resource 依赖。
-- SDL/tiles/font/sound/ImGui 等共享 graphical UI path 选择 Windows 与 Android packages。
-- Make/CMake、build scripts、data/lang/version、baseline workflow 和其他共享 build/artifact-contract path 选择全矩阵。
-- 手工 `workflow_dispatch` 与无法解析 event base 的安全回退选择全矩阵。
+- `msvc-full-features/**`、vcpkg triplet、Windows PowerShell/MSVC/windist script 和 Win32-owned source 只选择
+  Windows package 及其四类 resource 依赖。
+- SDL/tiles/font/sound/ImGui、client UI、production transport/crypto 和 platform startup 等共享 graphical/platform
+  path 选择 Windows 与 Android packages；filesystem/mmap/path/locale adapter 选择全矩阵。
+- Linux/Android 环境脚本只选择 Linux 与 Android，明确 Linux-only script 只选择 Linux；其余共享 Make/CMake、
+  build scripts、data/lang/version、baseline workflow 和 artifact-contract path 选择全矩阵。
+- 手工 `workflow_dispatch` 默认 `target=all`；Tier 2 可选单平台。无法解析 event base 的安全回退仍选择全矩阵。
 
 changed-path selector 只是自动化优化，不替代工程判断。新增或重命名 platform-owned file 时，必须在同一改动中
 同步维护 push/PR 的两份 path list 与 selector case mapping。若普通路径内部新增 platform conditional，路径匹配

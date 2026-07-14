@@ -78,10 +78,10 @@ Android job 在与该 Windows 修复无关的 x86_64 debug build 阶段耗尽 ho
   留下一组与出口声明匹配的平台证据。
 - compile-only/cross-compile smoke 只证明对应 compiler/ABI boundary；不能替代 MSVC package、Android APK resources
   或 emulator/device lifecycle gate。按策略未运行/取消的平台必须记录，但不自动列为 blocker，也不能冒充绿色证据。
-- baseline workflow 现用 changed-path selector：手工 dispatch/共享 build-resource contract 跑全矩阵；Windows-owned
-  path 只跑 Windows，Android-owned path 只跑 Android，共享 graphical UI 跑两端，普通
-  `src/multiplayer_*` 不触发 package baseline。transport workflow 的 Linux job 是 production 主门禁，Windows/
-  Android jobs 仅是 transport-only portability probes。
+- baseline workflow 现用 changed-path selector：手工 dispatch 默认 `target=all`，也可显式选择单平台 Tier 2；
+  Windows-owned path 只跑 Windows，Android-owned path 只跑 Android，共享 graphical/platform adapter 跑受影响端，
+  共享 build-resource contract 跑全矩阵，普通 backend-neutral `src/multiplayer_*` 不触发 package baseline。
+  transport workflow 的 Linux job 是 production 主门禁，Windows/Android jobs 仅是 transport-only portability probes。
 
 ## 本批实现
 

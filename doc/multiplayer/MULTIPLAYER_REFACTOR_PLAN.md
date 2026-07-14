@@ -1202,12 +1202,12 @@ ASan/UBSan、Windows MSVC 目标 build/package、Android arm64/x86_64 目标 bui
 发布风险要求时纳入，但阶段退出至少保留一组与其产品声明匹配、可追溯到同一候选 source 的必要平台证据。
 每夜 4-client soak 可独立运行，不把其每次结果变成日常提交的同步前置。
 
-CI automation 与该策略对应：baseline workflow 的手工 dispatch 总是选择全矩阵；自动 push/PR 先按 changed path
-选择 package target，Windows-owned path 只跑 Windows，Android-owned path 只跑 Android，共享 graphical UI 跑
-两端，共享 build/resource/toolchain contract 或无法解析 base 时跑全矩阵，普通 backend-neutral
-`src/multiplayer_*` 不触发 package baseline。transport/protocol workflow 以 Linux production tests/process smokes
-为主门禁；其 Windows MSVC 与 Android NDK jobs 仅标为 portable transport-only portability probes，不能被描述为
-完整平台 package/runtime gate。
+CI automation 与该策略对应：baseline workflow 的手工 dispatch 默认 `target=all` 运行全矩阵，Tier 2 也可显式
+选择 Linux、Windows 或 Android 单平台；自动 push/PR 先按 changed path 选择 package target，Windows-owned path
+只跑 Windows，Android-owned path 只跑 Android，共享 graphical/platform adapter 跑受影响端，共享
+build/resource/toolchain contract 或无法解析 base 时跑全矩阵，普通 backend-neutral `src/multiplayer_*` 不触发
+package baseline。transport/protocol workflow 以 Linux production tests/process smokes 为主门禁；其 Windows MSVC
+与 Android NDK jobs 仅标为 portable transport-only portability probes，不能被描述为完整平台 package/runtime gate。
 
 ## 21. 可观测性与性能
 
