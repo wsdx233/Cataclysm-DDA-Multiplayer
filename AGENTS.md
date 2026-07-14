@@ -74,10 +74,16 @@ Clang 18 production tests and process smokes, Windows MSVC and Android NDK. Its 
 Android and all resource jobs succeeded, but Windows package job
 [`87109602068`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602/job/87109602068)
 failed in `Build package` because the handwritten `prebuild.cmd` validator rejected a legal 40-character lowercase
-SHA. This is a build-validator failure, not a scheduler compile failure. The current fix uses an anchored,
-case-sensitive PowerShell regex plus workflow preflight and immediate MSBuild exit gates; it still needs a
-terminal-green replacement hosted baseline. `players.max` must remain `1`, and Phase 3 is not complete. Phase 1 and Phase 2 local,
-hosted and Android lifecycle gates are green. The Phase 2 client
+SHA. This is a build-validator failure, not a scheduler compile failure. Commit
+`c9b28086e973fa497d5bd9f9a37e64a9ac22e464` fixes that Windows-specific path with an anchored, case-sensitive
+PowerShell regex plus workflow preflight and immediate MSBuild exit gates. Baseline run
+[`29344937410`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29344937410) proves the Windows x64
+MSVC tiles+sound package job succeeds with the fix. Attempt 1's Android job later exhausted hosted-runner disk while
+building the unrelated x86_64 debug artifact; attempt 2 was cancelled after adopting the tiered verification policy,
+so the run's overall conclusion is `cancelled`, not an all-platform success. Neither result is a scheduler or
+Windows-code failure, and a terminal-green all-platform rerun is not required for this Windows-only fix.
+`players.max` must remain `1`, and Phase 3 is not complete. Phase 1 and Phase 2 local, hosted
+and Android lifecycle gates are green. The Phase 2 client
 implements production transport/state, desktop/Android connection UI, semantic
 wait/move input, bounded full-scene fitting, heartbeat/manual reconnect, ordered clean session release and local
 remote-scene rendering. The final transport fix also keeps a closed logical connection's admission slot until its
@@ -116,15 +122,14 @@ Completed Phase 0 gates:
 
 The active work, in order, is:
 
-1. Obtain a terminal-green replacement hosted baseline for the current MSVC build-ID validator/workflow fail-fast
-   fix, pushing the pending commit first if necessary. Do not treat baseline run `29340056602` as a scheduler compile failure or as completed platform
-   evidence. The scheduler's `automatic_wait_pending` transition still requires a production forced/scoped wait
-   adapter, and its world ticket only guards claim/record state; neither API proves that the corresponding gameplay
-   callback ran.
-2. Extract a single-player-preserving phase adapter from `src/do_turn.cpp::game::do_turn_impl()`: invoke scoped
+1. Extract a single-player-preserving phase adapter from `src/do_turn.cpp::game::do_turn_impl()`: invoke scoped
    player work through the existing registry/guard, execute authoritative automatic wait before recording it, and place the
    real world callback behind the scheduler's `world_ready` -> `world_processing` claim. Start by inspecting
    `src/do_turn.cpp` and `tests/multiplayer_turn_phase_test.cpp`.
+2. Verify the adapter on Linux first with focused scheduler/turn-phase tests, the complete `[multiplayer]` suite when
+   shared turn semantics change, and a real headless-server/native-client PTY loopback when the production runtime
+   path is connected. The scheduler's `automatic_wait_pending` transition still requires a production forced/scoped
+   wait adapter, and its world ticket only guards claim/record state; neither API proves that the gameplay callback ran.
 3. Add a production session/runtime directory and a two-runtime wait-only integration path, then close movement,
    collision, monster/death, field/scent/NPC, tether/group-shift and player-state isolation gates before allowing
    `players.max > 1`. Do not pull portable characters, multiple save generations or Phase 4 durable process-restart
@@ -145,7 +150,11 @@ The fork-specific workflow is [`.github/workflows/multiplayer-baseline.yml`](.gi
 - Pinned default tileset, soundpack, desktop shaders, and compiled translations.
 - Per-artifact provenance, SHA-256, CLI/resource and smoke-test output.
 
-The workflow runs manually and on relevant changes pushed to, or proposed against, `multiplayer/main`. It does not create a GitHub Release and does not need production signing secrets.
+The workflow runs manually and on relevant changes pushed to, or proposed against, `multiplayer/main`. Manual runs
+select the full Tier 3 matrix; automatic runs compare changed paths and select only affected packages. Ordinary
+backend-neutral `src/multiplayer_*` changes do not trigger the package baseline. Windows-owned paths select Windows,
+Android-owned paths select Android, shared graphical UI selects both, and shared build/resource/toolchain paths or an
+unresolvable base select all. It does not create a GitHub Release and does not need production signing secrets.
 
 Pinned build values include:
 
@@ -180,11 +189,14 @@ Default local locations are:
 - Android SDK: `~/Android/Sdk`
 - User-level Linux toolchain: `~/.local/toolchains/cdda-linux`
 
-Run the environment gate with:
+For the default Linux-first development loop, run:
 
 ```bash
-./build-scripts/check-multiplayer-build-env.sh all
+./build-scripts/check-multiplayer-build-env.sh linux
 ```
+
+Use `./build-scripts/check-multiplayer-build-env.sh all` only when an Android/toolchain change or a Tier 3 matrix
+requires every configured toolchain.
 
 The local Linux toolchain uses GCC 13, Make, gettext, ncurses, zlib, and bzip2 from the user prefix because system package installation may not be available. The prefix must include matching ncursesw/tinfo runtime libraries as well as development files; the environment gate rejects mixed shared ncurses/static tinfo links. Local `ccache` is optional; CI enables it.
 
@@ -276,20 +288,41 @@ msbuild -m `
 .\build-scripts\windist.ps1 -SDL3
 ```
 
-MinGW cross-compilation on Linux does not replace the required MSVC build. Validate Windows changes on the hosted `windows-2022` job.
+MinGW cross-compilation on Linux does not replace native MSVC evidence. Run the hosted `windows-2022` job for
+Windows-specific changes and Tier 3 milestones; backend-neutral shared C++ changes do not require a full Windows
+package on every iteration.
 
 ## Verification Expectations
 
-For build-script, workflow, or toolchain changes:
+Use the three verification tiers defined in the refactor plan and build baseline:
 
-1. Run `./build-scripts/check-multiplayer-build-env.sh all` where applicable.
-2. Run `bash -n` and ShellCheck on changed Bash scripts.
-3. Run `actionlint` on `.github/workflows/multiplayer-baseline.yml`.
-4. Run the relevant local Linux or Android build and its package smoke checks.
-5. Run the hosted Windows job for MSVC-specific or shared C++ changes before considering the baseline green.
-6. Verify generated artifacts contain only the requested ABI/platform and include build provenance plus SHA-256.
+1. **Tier 1 — daily Linux evidence.** Backend-neutral gameplay, scheduler, protocol and transport work defaults to a
+   Linux build plus focused tests. Add the complete `[multiplayer]` suite, sanitizers and a real Linux headless-server/
+   native-client PTY loopback according to risk. A Linux curses or SDL client and Linux `--server` process are valid
+   daily functional evidence for shared code.
+2. **Tier 2 — platform-targeted evidence.** Run Windows MSVC/package tests only when Windows-owned build/runtime
+   surfaces change; run Android NDK/APK/emulator or device tests only when Android-owned build/runtime surfaces
+   change. Shared portable C++ alone does not automatically require both packages. A compile-only or cross-compile
+   smoke proves only that boundary and never substitutes for native packaging or lifecycle evidence when those are
+   the acceptance target.
+3. **Tier 3 — recorded milestone matrix.** Run the necessary Linux, Windows and Android matrix for phase exits,
+   release candidates, pinned toolchain/artifact changes and explicit protocol-compatibility milestones. Every phase
+   exit must retain at least one recorded set of platform evidence appropriate to its exit criteria.
 
-For multiplayer simulation changes, scale tests with risk. Phase 0 requires sanitizer-backed stable-avatar context, persistent-reference, and player-runtime invariants; the full-swap tests remain a negative comparison. Later phases require loopback server/client tests, two-player conflict tests, reconnect/idempotency tests, save round trips, visibility leak tests, fuzzing, and soak tests as specified in the plan.
+Platform-owned surfaces include `msvc-full-features/`, Windows batch/PowerShell/package code, Win32-only filesystem/
+process/socket/ACL or SDL behavior, plus Android Gradle/CMake/manifest/Java/JNI/ABI/resource/touch/lifecycle code.
+Portable `src/multiplayer_*` policy/rule code is not platform-owned unless it crosses one of those boundaries or adds
+platform conditionals. Record the selected tier, commands, results and intentionally unrun platforms in `STATUS.md`;
+"not run by policy" is not a blocker, but it cannot be presented as platform evidence.
+
+The baseline changed-path selector is an optimization, not an authority oracle. When a platform-owned file is added
+or renamed, update both push/pull-request path lists and the selector mapping in the same change. If a generic path
+gains a platform conditional that path matching cannot detect, run the affected Tier 2 gate explicitly and either
+extend the selector or record why the case remains manual.
+
+For changed Bash/workflow/toolchain code, still run the relevant syntax/lint checks. Verify artifact ABI, provenance
+and SHA-256 whenever an artifact is actually part of the selected tier. Multiplayer simulation tests continue to
+scale with risk; the full-swap tests remain a negative identity comparison.
 
 ## Engineering Constraints
 

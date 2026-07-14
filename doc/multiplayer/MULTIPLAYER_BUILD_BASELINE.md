@@ -22,6 +22,9 @@ Linux curses 包仍是无 SDL 的打包基线；同一 binary 已有显式 `--se
 - 面向 `multiplayer/main` 的 pull request 修改构建相关文件。
 
 工作流不创建 GitHub Release，不需要 Android keystore，也不会使用正式发布凭据。每个产物旁边包含构建 manifest、源码提交和 SHA-256。
+`workflow_dispatch` 始终选择 Linux、Windows、Android 全矩阵，供 Tier 3 milestone 使用。自动 push/PR run 先由
+`Select affected platform packages` 比较 event base 与当前 commit，再只启用受影响的平台 package；若无法可靠
+解析 base commit，则安全回退到全矩阵。
 
 完整 `.po` 不在 Git 仓库中，而是在上游发布时从 Transifex 拉取。基线 workflow 不依赖 fork 私有的 Transifex token；它会校验并从固定的官方基线包提取已编译 `.mo`，供三端打包使用。
 
@@ -30,6 +33,38 @@ Linux curses 包仍是无 SDL 的打包基线；同一 binary 已有显式 `--se
 交叉编译门禁；Linux job 还会构建真实 game/tests，运行完整 `[multiplayer]`、headless process smoke 和生产
 `cataclysm --connect` PTY resume smoke。standalone spike 本身仍不构成生产 transport 或 TLS，生产边界位于
 `src/multiplayer_*`。
+
+### 2.1 何时运行平台构建
+
+本文件保留三平台产物契约，但不要求每个 shared C++ 提交都完成整套 package。具体测试内容遵循重构计划
+第 20.6 节的三层策略：
+
+- Tier 1 日常默认使用 Linux native client/server、focused tests，并按风险增加完整 `[multiplayer]`、sanitizer
+  与真实 PTY loopback。portable scheduler/game-rule/protocol routine 的 Linux 结果可作为日常功能证据。
+- Tier 2 只为受影响的平台补定向证据：Windows-owned MSVC/project/batch/PowerShell/windist/Win32/SDL 变更跑
+  Windows；Android Gradle/CMake/manifest/Java/JNI/ABI/resource/touch/lifecycle 变更跑 Android。shared C++ 本身
+  不自动触发两端完整 package 要求。
+- Tier 3 在 phase exit、release candidate、pinned toolchain/artifact contract 或 protocol compatibility milestone
+  手工运行并记录必要的 Linux、Windows、Android 矩阵。
+
+自动 baseline selector 的当前规则是：
+
+- 普通 `src/multiplayer_*` gameplay/policy source 不触发 package baseline；它由 Linux production workflow 和
+  Tier 1 本地验证负责。
+- `android/**` 与 Android-owned build/runtime path 只选择 Android package 及其 translations/tileset/shaders 依赖。
+- `msvc-full-features/**`、vcpkg triplet 和 Win32-owned source 只选择 Windows package 及其四类 resource 依赖。
+- SDL/tiles/font/sound/ImGui 等共享 graphical UI path 选择 Windows 与 Android packages。
+- Make/CMake、build scripts、data/lang/version、baseline workflow 和其他共享 build/artifact-contract path 选择全矩阵。
+- 手工 `workflow_dispatch` 与无法解析 event base 的安全回退选择全矩阵。
+
+changed-path selector 只是自动化优化，不替代工程判断。新增或重命名 platform-owned file 时，必须在同一改动中
+同步维护 push/PR 的两份 path list 与 selector case mapping。若普通路径内部新增 platform conditional，路径匹配
+无法自动识别；应显式运行受影响的 Tier 2 gate，并决定扩展 selector 或在 `STATUS.md` 记录继续手工触发的理由。
+
+`multiplayer-transport-spike.yml` 的 Linux job 是 production tests/process-smoke 主门禁；Windows MSVC 与 Android
+NDK jobs 明确只是 portable transport-only portability probes，不是完整 platform package 或 runtime gate。MinGW/NDK
+cross-compile、MSVC loopback 或 compile-only APK 只证明各自边界，不能替代目标为 native package、resource 或
+emulator/device lifecycle 时的完整平台 gate。
 
 ## 3. 固定依赖
 
@@ -182,7 +217,8 @@ msbuild -m `
 .\build-scripts\windist.ps1 -SDL3
 ```
 
-正式基线以 `windows-2022` GitHub hosted runner 为准，Linux 上的 MinGW 交叉编译不能替代 MSVC 验证。
+需要 Windows 证据时以 `windows-2022` GitHub hosted runner 为准，Linux 上的 MinGW 交叉编译不能替代 MSVC
+验证。backend-neutral Tier 1 改动不因此自动要求 Windows package。
 
 ## 8. Fork remote
 
@@ -437,7 +473,7 @@ command/resume smoke、local-input network-client UI resume smoke 和 Android ND
 canonical build-ID hardening 的 hosted gate；结合精确归属于 `e078eb6` 的 Android KVM lifecycle，Phase 2 于
 2026-07-14 正式关闭。
 
-### Phase 3 scheduler source hosted gate（Windows validator 修复待重跑）
+### Phase 3 scheduler source 与 Windows validator 定向证据
 
 首个纯 scheduler policy 的 source commit 为 `45be077ac2d0d042190e54d1bdb77d48676b67e6`。它的
 transport/protocol run
@@ -453,10 +489,24 @@ Android NDK arm64 compile jobs 也成功。
 的 `Build package` step：`msvc-full-features/prebuild.cmd` 的手写 validator 误拒合法 40 位小写 canonical SHA。
 这不是 scheduler source 的 MSVC compile failure；同一提交的 transport Windows MSVC job 已绿色。
 
-当前修复让 `prebuild.cmd` 从环境读取 ID，并用 anchored、case-sensitive PowerShell regex
-`\A[0-9a-f]{40}(?:-dirty)?\z` 校验；baseline workflow 还会在 MSBuild 前显式运行 prebuild，并在 prebuild 或
-MSBuild 返回非零时立即失败。该修复尚无 replacement hosted baseline 结果。必须等新 baseline 的
-Windows package terminal green 后，才能补齐该 scheduler slice 的 hosted platform evidence；Phase 3 未完成且
-`players.max` 必须保持 `1`。
+commit `c9b28086e973fa497d5bd9f9a37e64a9ac22e464` 让 `prebuild.cmd` 从环境读取 ID，并用 anchored、
+case-sensitive PowerShell regex `\A[0-9a-f]{40}(?:-dirty)?\z` 校验；baseline workflow 还会在 MSBuild 前显式
+运行 prebuild，并在 prebuild 或 MSBuild 返回非零时立即失败。baseline run
+[`29344937410`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29344937410) 的 attempt 1 已让
+Windows x64 MSVC tiles+sound package job
+[`87126475702`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29344937410/job/87126475702)
+完整 terminal `success`，包括 prebuild、MSBuild、windist、native `--version`/`--help` 和 package smoke；这关闭
+该 Windows-specific validator 修复的 Tier 2 gate。
+
+同一 attempt 的 Linux package 与四个 resource jobs 也成功。Android job
+[`87126475664`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29344937410/job/87126475664)
+已完成 arm64 release build，但随后的 x86_64 debug build 因 hosted runner `No space left on device` 失败；attempt 2
+的 Android-only job
+[`87137475194`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29344937410/job/87137475194)
+随后按新的分层验证策略由用户取消。Android 没有被 `c9b2808` 修改，且 `45be077` 已有成功的 Android package 与 NDK
+compile evidence，因此这两次 Android 结果既不是 scheduler/code failure，也不阻塞 Linux-first Phase 3 工作。
+run `29344937410` 不能标成 terminal-green 全平台矩阵；它的可用结论是 Windows Tier 2 成功、Android attempt 1
+runner-capacity failure、attempt 2 policy cancellation。Phase 3 退出时仍须按 Tier 3 为同一候选 source 记录必要
+平台矩阵；当前 `players.max` 必须保持 `1`。
 
 本地生成物位于仓库默认的忽略目录中，不作为源码提交。规范产物和 hash 以 fork 上的 `multiplayer-baseline` workflow 为准。

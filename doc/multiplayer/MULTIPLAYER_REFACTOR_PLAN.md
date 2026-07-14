@@ -1160,16 +1160,54 @@ TCP 不会乱序交付同一连接中的字节，但业务测试仍要覆盖重�
 
 所有 fuzz target 必须在无 UI、无真实网络、固定内存限制下运行。
 
-### 20.6 CI 矩阵
+### 20.6 分层验证与 CI 矩阵
 
-- Linux GCC headless server + unit/integration。
-- Linux Clang ASan/UBSan。
-- Windows MSVC tiles client build + loopback tests。
-- Android arm64/x86_64 NDK build。
-- Android emulator 与 Linux server 的最小 connect/handshake smoke test。
-- 协议 generated header 一致性检查。
-- 单人 save compatibility suite。
-- 每夜 4 客户端 soak test。
+验证按风险与里程碑分为三层，不要求每个 backend-neutral shared C++ 提交都重新完成 Windows package 和
+Android APK。每次交接在 `STATUS.md` 记录所选层级、原因、精确命令、结果和按策略未运行的平台；“本批按策略
+未运行”不是 blocker，也不能冒充对应平台证据。
+
+**Tier 1：日常 Linux 闭环。** 这是 scheduler、game rule、协议状态机、服务器和 portable transport 变更的默认层级：
+
+- 在 Linux GCC 上构建受影响的 native client/server 或 tests，并运行 changed-area focused tests。
+- 共享 turn、authority、session、protocol、visibility、save 或 transport invariant 改变时，增加完整
+  `[multiplayer]` suite；涉及地址/生命周期/线程/内存所有权时按风险增加 ASan/UBSan/LSan。
+- 接通 production transport、session、command 或 UI 路径时，运行真实 Linux `--server` 与 native client 的 PTY/
+  loopback smoke；客户端默认可用 curses，触及 SDL/tiles renderer 时改用对应 Linux graphical build。
+- Linux native client（curses 或 SDL）与 headless server 共享 semantic executor 和 protocol，因此可作为
+  backend-neutral 功能的日常证据。它不证明 Windows package、Android Activity lifecycle 或平台专属行为。
+
+**Tier 2：平台专属定向验证。** 只有改动跨入平台拥有的 build/runtime boundary 时才要求对应平台：
+
+- Windows：`msvc-full-features/`、batch/PowerShell/windist、MSVC-only compiler boundary、Win32 filesystem/process/
+  socket/ACL 或 Windows SDL input/rendering。按改动运行 hosted MSVC compile、loopback、package 或 native smoke；
+  只有 package/runtime 是验收目标时才要求完整 tiles+sound package。
+- Android：Gradle/CMake/manifest、Java/JNI、ABI/resources、SDL touch/rendering、credential storage、Activity
+  pause/resume/reconnect。按改动运行 NDK compile、目标 ABI APK/resource smoke；触及 lifecycle/runtime 行为时必须
+  再跑 emulator 或 device，compile-only APK 不能替代运行证据。
+- backend-neutral `src/multiplayer_*` policy/rule routine 不因使用 shared C++ 就自动要求 Windows+Android 完整
+  package。若引入 platform conditional、compiler-sensitive ABI/header 或平台 adapter，则只补对应的定向门禁。
+- MinGW/NDK 等廉价 cross-compile smoke 只证明该编译边界；它不能关闭 MSVC package、Android APK resource 或
+  emulator/device lifecycle gate。反过来，非当前验收目标的平台完整 package 也不是日常 shared-code 进度的前置。
+
+**Tier 3：阶段出口与发布矩阵。** 下列节点必须手工运行并记录当时必要的完整平台证据：
+
+- 每个 phase exit；
+- release candidate 与正式发布；
+- pinned compiler/NDK/JDK/vcpkg/Asio/FlatBuffers、workflow、artifact/ABI/signing contract 的里程碑变更；
+- protocol compatibility/version milestone，或明确宣称跨平台兼容性的 gate。
+
+Tier 3 至少覆盖 Linux GCC headless server + unit/integration + native client process smoke、Linux Clang
+ASan/UBSan、Windows MSVC 目标 build/package、Android arm64/x86_64 目标 build，以及 protocol generated-header
+一致性。Android emulator/device、单人 save compatibility、跨平台 loopback、fuzz/soak 只在对应阶段退出标准或
+发布风险要求时纳入，但阶段退出至少保留一组与其产品声明匹配、可追溯到同一候选 source 的必要平台证据。
+每夜 4-client soak 可独立运行，不把其每次结果变成日常提交的同步前置。
+
+CI automation 与该策略对应：baseline workflow 的手工 dispatch 总是选择全矩阵；自动 push/PR 先按 changed path
+选择 package target，Windows-owned path 只跑 Windows，Android-owned path 只跑 Android，共享 graphical UI 跑
+两端，共享 build/resource/toolchain contract 或无法解析 base 时跑全矩阵，普通 backend-neutral
+`src/multiplayer_*` 不触发 package baseline。transport/protocol workflow 以 Linux production tests/process smokes
+为主门禁；其 Windows MSVC 与 Android NDK jobs 仅标为 portable transport-only portability probes，不能被描述为
+完整平台 package/runtime gate。
 
 ## 21. 可观测性与性能
 
@@ -1252,8 +1290,8 @@ canonical generation save 和实际远程命令均未被 Phase 0 spike 冒充完
 schema/handshake、真实 ordered content SHA-256、严格 config/token、headless world bootstrap、JSON log、signal
 save/shutdown 和真实进程 loopback 均已验证；baseline run `29219328448` 与 transport/protocol run
 `29219953446` 分别覆盖 Linux package、Windows MSVC tiles+sound、Android arm64 APK，以及 GCC 13、Clang 18、
-MSVC 和 Android NDK gates。每个后续客户端提交仍须取得自己的 hosted 结果，不能复用 Phase 1 run 冒充新代码
-证据；当前 Phase 2 batch 的对应结果记录在下节。
+MSVC 和 Android NDK gates。后续改动按第 20.6 节选 Tier 1/2/3，不能复用 Phase 1 run 冒充新代码证据，也不再
+要求每个 backend-neutral shared C++ 提交都完成全平台 package；当前 Phase 2 batch 的对应结果记录在下节。
 
 ### Phase 2：单远程玩家垂直切片（已于 2026-07-14 关闭）
 
@@ -1301,7 +1339,7 @@ assertion、生产 tests/process smoke 和 transport gates。至此 Phase 2 的 
 canonical build identity 与 Android lifecycle exit criteria 均有记录证据，Phase 2 于 2026-07-14 正式关闭。
 完整 lifecycle polish、remote avatar replica 与更完整 scene layers 仍属于后续 Phase 4，不能因阶段关闭而视为完成。
 
-### Phase 3：第二玩家与共享 Scheduler（5 至 8 周，首个纯策略切片进行中）
+### Phase 3：第二玩家与共享 Scheduler（5 至 8 周，纯策略切片已落地，phase adapter 为下一入口）
 
 ADR-0002 所需的首轮 source/ownership audit 已完成，未发现需要推翻 accepted ADR 的冲突。Phase 0 已经提供
 地址稳定的 player registry/runtime、active-player guard 和额外 human tracker/query/map-shift 基础；Phase 3 的
@@ -1320,7 +1358,10 @@ world claim/record 状态；它尚未接入 `do_turn_remote()`/dedicated server�
 - 消息、safe mode、stats 基础隔离。
 - 实现 tether 和 group-centered map shift。
 
-退出标准：两个 test client 能在同一 bubble 中连续游戏 60 分钟，怪物可正确攻击任一玩家，ASan/UBSan 无错误。
+退出标准：两个 test client 能在同一 bubble 中连续游戏 60 分钟，怪物可正确攻击任一玩家，ASan/UBSan 无错误；
+按 Tier 3 对同一 Phase 3 候选 source 记录一次与该出口声明匹配的 Linux headless/client、Windows MSVC 和 Android
+build evidence。若 Phase 3 不改变 Android lifecycle，本阶段无需重复 Phase 2 的完整设备 lifecycle 剧本，但仍须
+保留 Android 目标 compile/package 证据；任何新增平台专属行为都必须补对应 Tier 2 runtime gate。
 
 ### Phase 4：客户端 replica 与渲染完整度（6 至 10 周）
 

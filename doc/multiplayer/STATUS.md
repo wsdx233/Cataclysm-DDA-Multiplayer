@@ -2,13 +2,13 @@
 
 - 更新日期：2026-07-14
 - 分支：`multiplayer/main`
-- 当前阶段：**Phase 3，首个 shared-scheduler 纯策略/测试切片进行中**
+- 当前阶段：**Phase 3，shared-scheduler 纯策略切片已落地，Linux-first phase adapter 为下一入口**
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
-- 当前已推送 scheduler source 提交：`45be077ac2d0d042190e54d1bdb77d48676b67e6`（transport terminal success；baseline 仅 Windows validator failure）
+- 当前 scheduler source 提交：`45be077ac2d0d042190e54d1bdb77d48676b67e6`（transport 全绿；baseline 的 Linux、Android、resources 成功，Windows validator failure）
 - 上一个完整 hosted platform gate 全绿提交：`86336ea847bea45f727fd97d74a811a32712518c`（canonical build-ID hardening）
 - 当前 Phase 3 slice：`src/multiplayer_turn_scheduler.h/.cpp`、`tests/multiplayer_scheduler_test.cpp` 和对应文档更新
-- 当前待 hosted 验证的 build 修复：`msvc-full-features/prebuild.cmd` PowerShell regex validator，以及 baseline workflow
-  preflight/MSBuild immediate exit gate
+- 当前 Windows 定向修复：`c9b28086e973fa497d5bd9f9a37e64a9ac22e464`；hosted MSVC package 已完整成功
+- 当前下一行动：按 Tier 1 在 Linux 上实现并验证 single-player-preserving phase adapter；`players.max` 保持 `1`
 
 ## 当前结论
 
@@ -55,10 +55,33 @@ baseline run [`29340056602`](https://github.com/wsdx233/Cataclysm-DDA-Multiplaye
 只有 Windows package job
 [`87109602068`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602/job/87109602068)
 在 `Build package` 失败；Linux、Android 与 translations/tileset/shaders/soundpack resource jobs 均成功。根因是
-`prebuild.cmd` 的手写 validator 误拒合法 40 位小写 SHA，不是 scheduler source 的 MSVC 编译错误。当前工作区
-已改用从环境读取 ID 的 anchored、case-sensitive PowerShell regex，并在 workflow 中增加独立 preflight 与
-MSBuild 非零后的 immediate exit gate；当前尚无新的 hosted baseline 结果。因此 Phase 3 platform
-gate 仍未关闭，`players.max` 保持 `1`。
+`prebuild.cmd` 的手写 validator 误拒合法 40 位小写 SHA，不是 scheduler source 的 MSVC 编译错误。commit
+`c9b28086e973fa497d5bd9f9a37e64a9ac22e464` 已改用从环境读取 ID 的 anchored、case-sensitive PowerShell regex，
+并在 workflow 中增加独立 preflight 与 MSBuild immediate-exit gate。baseline run
+[`29344937410`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29344937410) 的 Windows x64 MSVC
+tiles+sound package job 已完整 terminal `success`，所以该 Windows-specific Tier 2 gate 已关闭。attempt 1 的
+Android job 在与该 Windows 修复无关的 x86_64 debug build 阶段耗尽 hosted-runner disk；attempt 2 按用户采用的
+新分层策略取消。
+二者都不是 scheduler/code failure，也不阻塞 Linux-first phase adapter。Phase 3 exit gate 仍未关闭，
+`players.max` 保持 `1`。
+
+## 当前验证策略
+
+- **Tier 1（日常默认）**：backend-neutral scheduler/game rule/protocol/transport 工作先在 Linux native
+  client/server 上闭环。至少运行 changed-area focused tests；共享语义或 authority invariant 变化时增加完整
+  `[multiplayer]`，地址/线程/生命周期高风险时增加 sanitizer，接通 production runtime 时增加真实 PTY loopback。
+- **Tier 2（平台定向）**：只在平台-owned boundary 变化时跑对应 Windows 或 Android。Windows 包括 MSVC project、
+  batch/PowerShell/windist、Win32/ACL/process/socket 和 Windows SDL；Android 包括 Gradle/CMake/manifest、Java/JNI、
+  ABI/resources/touch/lifecycle。portable shared C++ routine 不再自动要求两端完整 package。
+- **Tier 3（里程碑矩阵）**：phase exit、release candidate、pinned toolchain/artifact contract 和 protocol
+  compatibility milestone 才手工跑必要的 Linux/Windows/Android 矩阵。每个 phase exit 仍需对同一候选 source
+  留下一组与出口声明匹配的平台证据。
+- compile-only/cross-compile smoke 只证明对应 compiler/ABI boundary；不能替代 MSVC package、Android APK resources
+  或 emulator/device lifecycle gate。按策略未运行/取消的平台必须记录，但不自动列为 blocker，也不能冒充绿色证据。
+- baseline workflow 现用 changed-path selector：手工 dispatch/共享 build-resource contract 跑全矩阵；Windows-owned
+  path 只跑 Windows，Android-owned path 只跑 Android，共享 graphical UI 跑两端，普通
+  `src/multiplayer_*` 不触发 package baseline。transport workflow 的 Linux job 是 production 主门禁，Windows/
+  Android jobs 仅是 transport-only portability probes。
 
 ## 本批实现
 
@@ -196,10 +219,11 @@ git diff --check
 - 最新 sanitizer binary 重新构建后，focused `[multiplayer][scheduler]` 为 6 cases / 424 assertions 全过，exit 0；
   无 ASan、UBSan、LSan 或 stack-use-after-return finding。完整 `[multiplayer]` sanitizer suite 本批尚未重跑。
 - AStyle 3.1 报告 `no astyle regressions`；`git diff --check` 通过。
-- scheduler source 的 transport/protocol hosted run 已全绿；baseline 仅 Windows package validator 失败，修复
-  尚待新 hosted baseline。因此这里仍不关闭 Phase 3 platform 或 exit gate。
+- scheduler source 的 transport/protocol hosted run 已全绿；`45be077` baseline 的 Linux、Android 和 resources
+  已成功。Windows validator failure 已由 `c9b2808` 的 hosted Windows package 定向成功取代。按当前策略无需为
+  这个 Windows-only fix 等待 Android 全包重跑；Phase 3 exit gate 仍保持未关闭。
 
-### Phase 3 scheduler source hosted evidence（transport 绿色，baseline 待重跑）
+### Phase 3 scheduler source 与 Windows validator hosted evidence
 
 - source commit：`45be077ac2d0d042190e54d1bdb77d48676b67e6`。
 - transport/protocol run
@@ -213,12 +237,24 @@ git diff --check
   [`87109602068`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29340056602/job/87109602068)
   的 `Build package` step。
 - 失败来自 `msvc-full-features/prebuild.cmd` 的手写 canonical build-ID validator 误拒合法 40 位小写 SHA；
-  hosted transport 的 Windows MSVC job 已成功，因此不能把它描述为 scheduler compile failure。当前工作区候选
-  修复改为 PowerShell `-cmatch` 的 anchored、case-sensitive regex，并在 baseline workflow 的 package step 中
-  先显式运行 prebuild，再分别对 prebuild 与 MSBuild 的非零 exit code 立即失败。
-- 当前修复尚无新 hosted baseline；必须先取得 replacement baseline 的 Windows package 绿色
-  终态，才可把 scheduler slice 的 platform evidence 记为完整。Phase 3 shared-scheduler gate 仍远未完成，
-  `players.max` 继续为 `1`。
+  hosted transport 的 Windows MSVC job 已成功，因此不能把它描述为 scheduler compile failure。
+- 修复 commit `c9b28086e973fa497d5bd9f9a37e64a9ac22e464` 改为 PowerShell `-cmatch` 的 anchored、case-sensitive
+  regex，并在 baseline workflow 的 package step 中先显式运行 prebuild，再分别对 prebuild 与 MSBuild 的非零
+  exit code 立即失败。
+- baseline run
+  [`29344937410`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29344937410) 整体最终为
+  `cancelled`，但 attempt 1 的 Windows x64 MSVC tiles+sound package job
+  [`87126475702`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29344937410/job/87126475702)
+  已完整 terminal `success`，覆盖 prebuild、MSBuild、windist、native version/help 与 package smoke。Linux package
+  和 translations/tileset/shaders/soundpack jobs 同样成功。
+- attempt 1 的 Android job
+  [`87126475664`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29344937410/job/87126475664)
+  在 arm64 release build 完成后，于 x86_64 debug build 因 hosted runner `No space left on device` 失败；attempt 2
+  的 Android-only job
+  [`87137475194`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29344937410/job/87137475194)
+  随后由用户按新验证策略取消。run 整体不能标为全平台绿色，但这不是
+  Android 或 scheduler 代码失败；`c9b2808` 没有修改 Android boundary，Windows-specific Tier 2 gate 已由成功 job
+  关闭。Phase 3 shared-scheduler/exit gate 仍远未完成，`players.max` 继续为 `1`。
 
 ### Windows build-ID validator 修复的本地静态门禁
 
@@ -249,8 +285,8 @@ git diff --check
 - Linux/Android environment gate 通过；该变更没有修改两者 toolchain。
 - `actionlint` 无输出并返回 0；`git diff --check` 通过。
 - anchored regex contract 的合法 40 位小写 SHA、合法 `-dirty`、大写、短值、非法后缀正反例检查通过。
-- 当前机器没有 Windows shell，因此 `prebuild.cmd` 的最终执行证据必须来自 replacement hosted Windows package、
-  windist 和大小写敏感 `--version` smoke，不能用上述静态检查替代。
+- 当前机器没有 Windows shell；上述静态检查不能替代平台证据。最终 Windows 证据已由 run `29344937410`
+  attempt 1 的成功 MSVC package/windist/native smoke job 提供。
 
 ### Hosted Phase 1/baseline（已绿色）
 
@@ -580,9 +616,10 @@ git diff --check
 
 ## 已知限制和未完成项
 
-- Phase 3 scheduler commit `45be077` 的 transport/protocol gate 已全绿，但 baseline run `29340056602` 仍因
-  Windows `prebuild.cmd` validator 误拒合法 canonical SHA 而失败；当前修复尚待 replacement hosted
-  baseline，不能把 platform gate 标为绿色。
+- Phase 3 scheduler commit `45be077` 的 transport/protocol gate 已全绿；其 baseline 的 Linux、Android 与
+  resources 成功，Windows validator failure 已由 `c9b2808` 的 hosted MSVC package 定向成功关闭。run
+  `29344937410` 整体因 Android runner no-space 后的 policy cancellation 为 `cancelled`，不能称为全平台绿色，
+  但按当前 Tier 2 策略不构成 active blocker。
 - Phase 3 只有纯 scheduler policy/test 切片；stable registry/runtime、active-player guard 和 human tracker 基础已
   存在，但 production session directory、phase adapter 和 dedicated-server routing 尚未接入。`players.max > 1`
   仍未实现。
@@ -616,18 +653,9 @@ git diff --check
 ## 下一门禁和首个动作
 
 Phase 2 已关闭；Phase 3 的 source/ownership audit 和首个 pure scheduler policy 已有本地 evidence，transport/
-protocol hosted run 也已全绿，但 baseline platform gate 仍因 Windows validator failure 未关闭。当前首要动作不是
-phase adapter，而是让当前 build 修复触发 replacement baseline，并等待终态：
-
-```bash
-git show --stat --oneline HEAD
-git push origin multiplayer/main
-```
-
-如果该提交尚未在 `origin multiplayer/main`，先推送；随后等待新 baseline run terminal green。若 Windows package
-仍失败，先修复并重跑，不能越过该 platform gate。只有 replacement baseline 绿色后，
-下一代码门禁才是**保持单人行为的 phase adapter/extraction**，而不是 live multi-session 或 move。届时首个要检查
-的文件和命令是：
+protocol hosted run 也已全绿，Windows validator fix 的 Tier 2 MSVC package evidence 已取得。当前不再等待
+replacement 全平台 baseline；下一代码门禁直接是 **Linux-first、保持单人行为的 phase adapter/extraction**，
+而不是 live multi-session 或 move。首个要检查的文件和命令是：
 
 ```bash
 sed -n '533,835p' src/do_turn.cpp
@@ -638,7 +666,13 @@ sed -n '1,140p' tests/multiplayer_turn_phase_test.cpp
 phase-order regression；再用 existing registry/guard 实现 forced/scoped automatic wait 与可计数的真实 world
 callback，覆盖 wait/world callback 失败。随后增加两个 runtime 的 wait-only barrier integration，最后才扩展
 production session directory、move/collision、monster/death、field/scent/NPC、tether/group shift 和 player-state
-isolation。该 shared C++ source 推送后还需要 hosted Windows MSVC、Android 和 Linux 结果；不得仅因 policy tests
-绿色就打开 `players.max > 1`。
+isolation。
+
+本入口切片按 Tier 1 在 Linux 验证：先跑 focused `[multiplayer][turn_phase]`、`[multiplayer][scheduler]` 和
+相关 registry/guard tests；若改变 shared turn/authority semantics，再跑完整 `[multiplayer]`；一旦接入真实
+production runtime，增加 Linux headless server + native client PTY loopback；地址/生命周期风险变化时增加
+sanitizer。除非该切片同时修改 Windows/Android-owned boundary，否则不要求每次推送都完成 MSVC package 与 Android
+APK。到 Phase 3 exit 时再按 Tier 3 对同一候选 source 记录必要平台矩阵。无论日常验证层级如何，只有真实
+two-runtime integration、collision/monster/death/tether/player-isolation 等 gate 关闭后才能考虑 `players.max > 1`。
 
 不得把本批单客户端 UI smoke 描述为两玩家/shared-barrier、完整 remote avatar replica、portable character 或生产发布完成。

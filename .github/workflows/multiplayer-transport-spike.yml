@@ -1,4 +1,4 @@
-name: Multiplayer transport and protocol gates
+name: Multiplayer Linux production and portable transport gates
 
 on:
   workflow_dispatch:
@@ -98,7 +98,7 @@ env:
 
 jobs:
   linux:
-    name: Linux GCC 13 and Clang 18 loopback
+    name: Primary Linux production tests and process smokes
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout source
@@ -400,7 +400,7 @@ jobs:
           retention-days: 14
 
   windows:
-    name: Windows x64 MSVC loopback
+    name: Portable transport-only Windows MSVC probe
     runs-on: windows-2022
     steps:
       - name: Checkout source
@@ -462,7 +462,7 @@ jobs:
           retention-days: 14
 
   android:
-    name: Android NDK arm64 compile
+    name: Portable transport-only Android NDK compile probe
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout source

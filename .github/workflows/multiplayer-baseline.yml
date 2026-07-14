@@ -2,11 +2,14 @@ name: Multiplayer vanilla build baseline
 
 on:
   workflow_dispatch:
+  # Keep both event path lists and jobs.changes in sync when adding or
+  # renaming a platform-owned path.
   push:
     branches:
       - multiplayer/main
     paths:
-      - '.github/actions/**'
+      - '.github/actions/build-sdl3-shaders/**'
+      - '.github/vcpkg_triplets/**'
       - '.github/workflows/multiplayer-baseline.yml'
       - 'android/**'
       - 'build-scripts/**'
@@ -14,14 +17,32 @@ on:
       - 'gfx/**'
       - 'lang/**'
       - 'msvc-full-features/**'
-      - 'src/**'
-      - 'Makefile'
+      - 'src/*font*'
+      - 'src/*imgui*'
+      - 'src/*sound*'
+      - 'src/*tileset*'
+      - 'src/cata_tiles.*'
+      - 'src/get_version.h'
+      - 'src/mingw.thread.h'
+      - 'src/platform_win.h'
+      - 'src/resource.rc'
+      - 'src/sdl*'
+      - 'src/third-party/CMakeLists.txt'
+      - 'src/third-party/imgui/**'
+      - 'src/third-party/snmalloc/pal/pal_windows.h'
+      - 'src/version.cmake'
+      - 'src/version.cpp'
+      - 'src/wincurse.cpp'
+      - 'tools/format/**'
+      - 'tools/gfx_tools/**'
       - 'CMakeLists.txt'
+      - 'Makefile'
   pull_request:
     branches:
       - multiplayer/main
     paths:
-      - '.github/actions/**'
+      - '.github/actions/build-sdl3-shaders/**'
+      - '.github/vcpkg_triplets/**'
       - '.github/workflows/multiplayer-baseline.yml'
       - 'android/**'
       - 'build-scripts/**'
@@ -29,9 +50,26 @@ on:
       - 'gfx/**'
       - 'lang/**'
       - 'msvc-full-features/**'
-      - 'src/**'
-      - 'Makefile'
+      - 'src/*font*'
+      - 'src/*imgui*'
+      - 'src/*sound*'
+      - 'src/*tileset*'
+      - 'src/cata_tiles.*'
+      - 'src/get_version.h'
+      - 'src/mingw.thread.h'
+      - 'src/platform_win.h'
+      - 'src/resource.rc'
+      - 'src/sdl*'
+      - 'src/third-party/CMakeLists.txt'
+      - 'src/third-party/imgui/**'
+      - 'src/third-party/snmalloc/pal/pal_windows.h'
+      - 'src/version.cmake'
+      - 'src/version.cpp'
+      - 'src/wincurse.cpp'
+      - 'tools/format/**'
+      - 'tools/gfx_tools/**'
       - 'CMakeLists.txt'
+      - 'Makefile'
 
 concurrency:
   group: multiplayer-baseline-${{ github.event.pull_request.number || github.ref_name }}
@@ -49,8 +87,90 @@ env:
   ZSTD_CLEVEL: 17
 
 jobs:
+  changes:
+    name: Select affected platform packages
+    runs-on: ubuntu-24.04
+    outputs:
+      android: ${{ steps.scope.outputs.android }}
+      linux: ${{ steps.scope.outputs.linux }}
+      windows: ${{ steps.scope.outputs.windows }}
+    steps:
+      - name: Checkout source and event history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select package targets
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          linux=false
+          windows=false
+          android=false
+
+          select_all() {
+            linux=true
+            windows=true
+            android=true
+          }
+
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            echo "Manual milestone run: select the full platform matrix."
+            select_all
+          elif [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]] ||
+               ! git cat-file -e "$BASE_SHA^{commit}"; then
+            echo "Unable to resolve the event base commit; selecting all targets."
+            select_all
+          else
+            echo "Changed paths from $BASE_SHA to $GITHUB_SHA:"
+            while IFS= read -r -d '' path; do
+              echo "  $path"
+              case "$path" in
+                .github/workflows/multiplayer-baseline.yml|build-scripts/*|CMakeLists.txt|Makefile)
+                  select_all
+                  ;;
+                data/*|lang/*|src/get_version.h|src/version.cmake|src/version.cpp)
+                  select_all
+                  ;;
+                .github/actions/build-sdl3-shaders/*|gfx/*|tools/format/*|tools/gfx_tools/*)
+                  windows=true
+                  android=true
+                  ;;
+                src/sdl*|src/cata_tiles.*|src/*font*|src/*imgui*|src/*sound*|src/*tileset*)
+                  windows=true
+                  android=true
+                  ;;
+                .github/vcpkg_triplets/*|msvc-full-features/*|src/mingw.thread.h|src/platform_win.h|src/resource.rc|src/third-party/snmalloc/pal/pal_windows.h|src/wincurse.cpp)
+                  windows=true
+                  ;;
+                android/*|src/third-party/CMakeLists.txt)
+                  android=true
+                  ;;
+              esac
+            done < <(git diff --no-renames --name-only -z "$BASE_SHA" "$GITHUB_SHA")
+          fi
+
+          if [[ "$linux" == false && "$windows" == false && "$android" == false ]]; then
+            echo "The workflow was triggered, but no package target matched; failing closed." >&2
+            exit 1
+          fi
+
+          {
+            echo "linux=$linux"
+            echo "windows=$windows"
+            echo "android=$android"
+          } | tee -a "$GITHUB_OUTPUT"
+
   translations:
     name: Extract pinned release translations
+    needs:
+      - changes
+    if: ${{ needs.changes.outputs.linux == 'true' || needs.changes.outputs.windows == 'true' || needs.changes.outputs.android == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Download and verify baseline release package
@@ -79,6 +199,9 @@ jobs:
 
   default-tileset:
     name: Compose default tileset
+    needs:
+      - changes
+    if: ${{ needs.changes.outputs.windows == 'true' || needs.changes.outputs.android == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout source
@@ -137,6 +260,9 @@ jobs:
 
   soundpack:
     name: Fetch pinned soundpack
+    needs:
+      - changes
+    if: ${{ needs.changes.outputs.windows == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Fetch CC-Sounds
@@ -160,6 +286,9 @@ jobs:
 
   shaders:
     name: Compile SDL3 shaders
+    needs:
+      - changes
+    if: ${{ needs.changes.outputs.windows == 'true' || needs.changes.outputs.android == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout source
@@ -177,7 +306,9 @@ jobs:
     name: Linux x64 curses package
     runs-on: ubuntu-24.04
     needs:
+      - changes
       - translations
+    if: ${{ needs.changes.outputs.linux == 'true' }}
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
@@ -285,10 +416,12 @@ jobs:
     name: Windows x64 MSVC tiles and sound package
     runs-on: windows-2022
     needs:
+      - changes
       - default-tileset
       - soundpack
       - shaders
       - translations
+    if: ${{ needs.changes.outputs.windows == 'true' }}
     env:
       BACKTRACE: 1
       CDDA_RELEASE_BUILD: 1
@@ -470,9 +603,11 @@ jobs:
     name: Android arm64 release APK
     runs-on: ubuntu-24.04
     needs:
+      - changes
       - default-tileset
       - shaders
       - translations
+    if: ${{ needs.changes.outputs.android == 'true' }}
     steps:
       - name: Checkout source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
