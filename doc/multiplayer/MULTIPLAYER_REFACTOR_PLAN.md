@@ -1194,7 +1194,8 @@ canonical generation save 和实际远程命令均未被 Phase 0 spike 冒充完
 schema/handshake、真实 ordered content SHA-256、严格 config/token、headless world bootstrap、JSON log、signal
 save/shutdown 和真实进程 loopback 均已验证；baseline run `29219328448` 与 transport/protocol run
 `29219953446` 分别覆盖 Linux package、Windows MSVC tiles+sound、Android arm64 APK，以及 GCC 13、Clang 18、
-MSVC 和 Android NDK gates。后续客户端提交仍需自己的 hosted 结果，不能复用 Phase 1 run 冒充新代码证据。
+MSVC 和 Android NDK gates。每个后续客户端提交仍须取得自己的 hosted 结果，不能复用 Phase 1 run 冒充新代码
+证据；当前 Phase 2 batch 的对应结果记录在下节。
 
 ### Phase 2：单远程玩家垂直切片（4 至 7 周）
 
@@ -1219,10 +1220,11 @@ keys/touch → semantic wait/move、curses fallback 和 `cata_tiles::draw_remote
 connect/reset churn 挤掉 terminal control event，防御性 control-enqueue fatal detail 也独立持久化。真实 Linux
 PTY 的最终 release 与 sanitizer binary 均已完成 auth/scene/断线/resume/replay/move/quit smoke，完整
 `[multiplayer]` sanitizer suite 也无 ASan/UBSan/LSan/stack-use-after-return finding。Android arm64/x86_64 debug
-APK 已编译 Java connect 表单和 SDL renderer。Phase 2 仍保持进行中，因为本批尚需对应提交的 hosted
-MSVC/Android 结果，Android 还缺
-emulator/真机最小 pause/resume/network reconnect 证据；完整 lifecycle polish、remote avatar replica 与更完整
-scene layers 属于后续 Phase 4。
+APK 已编译 Java connect 表单和 SDL renderer。source `6403a949fb537be14ec4d5757f295adbf5c5f99b` 的 baseline
+run `29303564150` 与 transport/protocol run `29303564152` 均为 terminal `success`，已关闭本批 Linux、Windows
+MSVC 和 Android package/compile platform gate。Phase 2 仍保持进行中，因为 Android 还缺
+emulator/真机最小 auth/render/wait/move、pause/resume 和 network disconnect/reconnect 证据；完整 lifecycle
+polish、remote avatar replica 与更完整 scene layers 属于后续 Phase 4。
 
 ### Phase 3：第二玩家与共享 Scheduler（5 至 8 周）
 

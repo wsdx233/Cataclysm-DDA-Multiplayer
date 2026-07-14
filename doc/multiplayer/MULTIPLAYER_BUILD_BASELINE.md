@@ -266,7 +266,34 @@ permission、单一目标 ABI `libmain.so` 和 multiplayer launcher resources。
 Windows package 中检查 `--connect` CLI，在 Android APK 中检查 connect UI resources；transport workflow
 会运行生产 network-client UI smoke。
 
-这些本地结果不能替代当前客户端提交的 hosted MSVC/Android artifacts。客户端批次推送后仍须在本节和
-`STATUS.md` 记录新 run ID，才能关闭对应平台 gate。Android emulator/真机运行证据也不由 APK compile 自动满足。
+### Phase 2 network-client batch hosted gate
+
+source `6403a949fb537be14ec4d5757f295adbf5c5f99b` 的 hosted baseline run
+[`29303564150`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29303564150) 为 terminal
+`success`。平台 job durations 为 Linux `18m57s`、Android `39m04s`、Windows `32m34s`；规范 artifacts 为：
+
+| Artifact | Artifact ID | GitHub artifact digest |
+| --- | ---: | --- |
+| Linux curses x64 | `8299663785` | `d9e228af65de0dcf52c4849a63a4de76267c8b1701de560518b13c01e4648069` |
+| Windows x64 MSVC tiles+sound | `8299880246` | `1ca0a557fc27235bda25b2579542c4f058c8c554561612ff37c13018e9289b44` |
+| Android arm64 release | `8299976619` | `d3d7382affbd7342951ca32957be2521165fbf2548f74e1d68d6ca22f86b4413` |
+| Android x86_64 debug compile evidence | `8299977114` | `351094bbbd92664bb1245b586db978a257aed05daef6a51ae4316b8e39b3b16f` |
+| Pinned tileset | `8299414855` | `6403077a11ae9696a41780f162553f980fcb594f1395b2d0f8daac9844eaadde` |
+| Desktop shaders | `8299426143` | `098ede9628ca24e16ac8df6253ca8b88c26ce86e7d57fcd5048d274d674e92ee` |
+| Pinned soundpack | `8299403377` | `37749d3ac9d82f8199a57f6ce603e0785bf3151062e95c9c22177a8921cacee4` |
+| Compiled translations | `8299405280` | `b7ad074c2acb2ff9ae0fc9d7fae68cbb063082ec12332353c5f63f2b0156650b` |
+
+同一 source 的 transport/protocol run
+[`29303564152`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29303564152) 也为 terminal
+`success`。job durations 为 Linux `36m05s`、Windows `58s`、Android `33s`：
+
+| Artifact | Artifact ID | GitHub artifact digest |
+| --- | ---: | --- |
+| Linux GCC 13/Clang 18 + production game/process | `8299903967` | `0b38eaf73e9178895b8fe589573919582bf0144f6f7fa7346469966a14061013` |
+| Windows MSVC | `8299413066` | `f203a9ab7fb6d59aa65fe5ea671ae0bb90621bc7c77e4d59c23d775da21ea430` |
+| Android NDK arm64 | `8299407650` | `2c58a77c426dadf310948c945e64e25331dea2c7313ef2e62ab7effe41b37552` |
+
+这两个 runs 关闭当前客户端批次的 hosted platform build gate。Android artifacts 仍只证明 package/resource/ABI
+与 NDK compile；不能替代 emulator/真机 auth/render/wait/move、pause/resume 和 network reconnect smoke。
 
 本地生成物位于仓库默认的忽略目录中，不作为源码提交。规范产物和 hash 以 fork 上的 `multiplayer-baseline` workflow 为准。

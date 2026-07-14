@@ -67,9 +67,10 @@ Phase 0 closed with recorded evidence on 2026-07-12. The project is now in **Pha
 are green. The current client batch implements production transport/state, desktop/Android connection UI, semantic
 wait/move input, bounded full-scene fitting, heartbeat/manual reconnect, ordered clean session release and local
 remote-scene rendering. The final transport fix also keeps a closed logical connection's admission slot until its
-terminal event is consumed, so reset churn cannot crowd terminal events out of the bounded queue. The batch still needs
-its hosted MSVC/Android evidence and an Android emulator/device lifecycle smoke. Do not skip ahead to the Phase 3
-two-player scheduler or describe the isolated
+terminal event is consumed, so reset churn cannot crowd terminal events out of the bounded queue. Commit
+`6403a949fb537be14ec4d5757f295adbf5c5f99b` has a green hosted platform gate in baseline run `29303564150` and
+transport/protocol run `29303564152`; the remaining Phase 2 platform evidence is an Android emulator/device lifecycle
+smoke. Do not skip ahead to the Phase 3 two-player scheduler or describe the isolated
 `tools/` transport spike as production networking.
 
 Completed Phase 0 gates:
@@ -89,19 +90,18 @@ Completed Phase 0 gates:
 
 The active work, in order, is:
 
-1. Push the current network-client source and record its complete hosted baseline plus multiplayer transport/protocol
-   workflow results; fix any MSVC, Android or Linux failure before closing the Phase 2 platform build gate.
-2. Run the Android touch/tiles client against a real server through app pause/resume, network disconnect and reconnect
-   on an emulator or device; compile-only APK evidence is not a runtime smoke.
-3. Keep the server/client slice hardened: visibility leak tests, resync/idempotency, existing canonical save/restart,
+1. Run `adb devices -l`, then exercise the Android touch/tiles client against a real server through auth/render,
+   wait/move, app pause/resume, network disconnect and reconnect on an emulator or device; hosted APK/NDK evidence is
+   not a runtime smoke.
+2. Keep the server/client slice hardened: visibility leak tests, resync/idempotency, existing canonical save/restart,
    graceful-disconnect timeout/error paths and unsupported-action rejection. Durable client process-restart resume
    checkpointing remains Phase 4 work.
-4. Only after the Phase 2 client/platform evidence is green, begin ADR-0002's second-player shared scheduler. Do not
+3. Only after the Phase 2 Android lifecycle evidence is green, begin ADR-0002's second-player shared scheduler. Do not
    enable `players.max > 1`, portable characters or multiple save generations before their planned gates.
 
 The Linux curses artifact is still the non-SDL packaging baseline, but the same binary now has an explicitly selected
-`--server` runtime path. Do not ship it as a production dedicated-server package until hosted evidence, operational docs
-and the later release/operations gates are complete.
+`--server` runtime path. Do not ship it as a production dedicated-server package until dedicated-server packaging
+evidence, operational docs and the later release/operations gates are complete.
 
 ## Build Baseline
 

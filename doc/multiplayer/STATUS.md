@@ -4,7 +4,7 @@
 - 分支：`multiplayer/main`
 - 当前阶段：**Phase 2，单远程玩家垂直切片**
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
-- 当前已推送父提交：`bc7efe0`（FlatBuffers GCC 13 最小 warning 例外）；本文件所在客户端批次尚需推送并取得 hosted 结果
+- 当前已推送 source 提交：`6403a949fb537be14ec4d5757f295adbf5c5f99b`（Phase 2 production network-client batch）
 
 ## 当前结论
 
@@ -12,7 +12,14 @@ Phase 0 已关闭，ADR-0001 至 ADR-0009 继续有效。Phase 1 的本地门禁
 
 Phase 2 的服务器侧单远程玩家纵向切片保持完成。本批又实现了可复用的生产客户端 transport/state machine、桌面/Android connection UI、本地 input → semantic wait/move、visibility-filtered scene → 本地 curses/tiles renderer、heartbeat/manual reconnect、断线 resume、exactly-once replay 和按 simulation FIFO 完成的 typed clean session release。最终 source 的普通 release 与 ASan/UBSan binary 都已通过真实 Linux PTY auth、scene、wait、强制断线、resume、未确认命令重放、move 和 clean quit。
 
-**Phase 2 仍不标记关闭。** 当前客户端批次尚未取得对应提交的 hosted MSVC tiles、Android arm64 release 和 Android x86_64 debug 结果；Android 两个 debug ABI 已完成本地构建和资源检查，但尚没有 emulator/真机连接、pause/resume 或 network reconnect 证据。服务器仍只允许一个 remote player；不能把本批描述为 shared barrier 或完整多人游戏。
+本批提交 `6403a949fb537be14ec4d5757f295adbf5c5f99b` 的 hosted platform build gate 已关闭：baseline run
+`29303564150` 和 transport/protocol run `29303564152` 均为 terminal `success`，覆盖 Linux curses、Windows x64
+MSVC tiles+sound、Android arm64 release/x86_64 debug、生产 Linux process/client smoke、standalone GCC/Clang/MSVC
+transport 和 Android NDK arm64。
+
+**Phase 2 仍不标记关闭。** Android 尚没有 emulator/真机 auth/render/wait/move、pause/resume 或 network
+disconnect/reconnect 证据；hosted APK/NDK compile 不是运行时 smoke。服务器仍只允许一个 remote player；不能把
+本批描述为 shared barrier 或完整多人游戏。
 
 ## 本批实现
 
@@ -76,7 +83,29 @@ Phase 2 的服务器侧单远程玩家纵向切片保持完成。本批又实现
   - Windows MSVC artifact `8267835930`，digest `e509b6579b874ce57cfbabda488cbff24a48c2757a0ba19a6d3f286a75eaaf78`；
   - Android NDK arm64 artifact `8267835710`，digest `1ea5da10ed8e951201d2cae95d58850b4edc982a69f52172ca2c0990ffb6ad5c`。
 
-这些 runs 关闭 Phase 1 hosted gate，但早于本批 graphical/network client source，不能替代本批新 hosted 结果。
+这些 runs 关闭 Phase 1 hosted gate，但早于本批 graphical/network client source；本批自己的 hosted 证据记录如下。
+
+### Hosted Phase 2 network-client batch（已绿色）
+
+- baseline run [`29303564150`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29303564150)，
+  source `6403a949fb537be14ec4d5757f295adbf5c5f99b`，结论 `success`；Linux job `18m57s`、Android
+  job `39m04s`、Windows job `32m34s`：
+  - Linux curses artifact `8299663785`，digest `d9e228af65de0dcf52c4849a63a4de76267c8b1701de560518b13c01e4648069`；
+  - Windows x64 MSVC tiles+sound artifact `8299880246`，digest `1ca0a557fc27235bda25b2579542c4f058c8c554561612ff37c13018e9289b44`；
+  - Android arm64 release artifact `8299976619`，digest `d3d7382affbd7342951ca32957be2521165fbf2548f74e1d68d6ca22f86b4413`；
+  - Android x86_64 debug artifact `8299977114`，digest `351094bbbd92664bb1245b586db978a257aed05daef6a51ae4316b8e39b3b16f`；
+  - tileset artifact `8299414855`，digest `6403077a11ae9696a41780f162553f980fcb594f1395b2d0f8daac9844eaadde`；
+  - shaders artifact `8299426143`，digest `098ede9628ca24e16ac8df6253ca8b88c26ce86e7d57fcd5048d274d674e92ee`；
+  - soundpack artifact `8299403377`，digest `37749d3ac9d82f8199a57f6ce603e0785bf3151062e95c9c22177a8921cacee4`；
+  - translations artifact `8299405280`，digest `b7ad074c2acb2ff9ae0fc9d7fae68cbb063082ec12332353c5f63f2b0156650b`。
+- transport/protocol run [`29303564152`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29303564152)，
+  同一 source，结论 `success`；Linux job `36m05s`、Windows job `58s`、Android job `33s`：
+  - Linux GCC 13/Clang 18 + production game/process artifact `8299903967`，digest `0b38eaf73e9178895b8fe589573919582bf0144f6f7fa7346469966a14061013`；
+  - Windows MSVC artifact `8299413066`，digest `f203a9ab7fb6d59aa65fe5ea671ae0bb90621bc7c77e4d59c23d775da21ea430`；
+  - Android NDK arm64 artifact `8299407650`，digest `2c58a77c426dadf310948c945e64e25331dea2c7313ef2e62ab7effe41b37552`。
+
+这些 terminal-success runs 关闭本批 hosted platform build gate，但 Android jobs 仍只是 package/compile evidence，
+没有 emulator/真机 runtime lifecycle 结论。
 
 ### GCC 13 release
 
@@ -217,9 +246,7 @@ git diff --check
 
 ## 已知限制和未完成项
 
-- 当前客户端批次的 hosted baseline/transport jobs 尚未运行；在 MSVC tiles 和 Android release compile 绿色前不能关闭 Phase 2。
 - Android 尚无 emulator/真机 auth/render/wait/move、Activity pause/resume 和网络切换 smoke；这些是当前 Phase 2 设备证据缺口。
-- Windows 本地键位/tiles renderer 已有共享 source 和 Android TILES compile，仍需当前提交的 hosted MSVC build；workflow 新增 `--connect` CLI smoke。
 - remote scene 仍只有 full snapshot；512 KiB fitter 会有损缩小可见半径，尚无 delta/chunk/compression 或 reduced-viewport metadata。scene 已携带 lighting byte，但 curses/tiles renderer 暂按全亮绘制；isometric terrain/entity painter ordering 也未完成。items、fields、vehicles、overlays、messages、sound、avatar replica/panels 仍缺失。
 - visibility regression 目前覆盖遮挡怪物不泄漏，但 ADR-0006 要求的隐藏陷阱、未探索地形、不可见物品以及 delta 路径 leak matrix 尚未完成；其中 items/delta 也尚未实现。
 - heartbeat 目前只有 30 秒 ping、120 秒 timeout 与手动 confirm reconnect；Android background timing、half-open recovery、自动 retry/backoff 和 graceful-disconnect timeout 尚无运行证据。若服务端在 clean release 时不回 ACK，UI 仍需第二次 quit 才能强制离开。
@@ -233,15 +260,17 @@ git diff --check
 
 ## 下一门禁和首个动作
 
-1. 本地门禁已齐；首个具体动作是提交本批后执行：
+1. hosted platform gate 已齐；首个具体动作是执行：
 
 ```bash
-git push origin HEAD:refs/heads/multiplayer/main
+adb devices -l
 ```
 
-   随后等待并记录新的 `multiplayer-baseline` 与 `Multiplayer transport and protocol gates` run ID、artifact ID/digest；任一 GCC/Clang/MSVC/Android failure 必须先修复。
-2. 在 hosted 结果绿色后，先执行 `adb devices -l` 并在可用 emulator/真机上跑 connect/render/pause/resume/network reconnect 最小 smoke；第一代码检查点是 `android/app/src/main/java/com/cleverraven/cataclysmdda/SplashScreen.java` 与 `CataclysmDDA.getArguments()` 的 Activity lifecycle/Intent persistence。
-3. Phase 2 平台退出证据齐全后，才扩大 server config 到第二玩家。Phase 3 第一条代码调查命令仍是：
+   在可用 emulator/真机上安装匹配 ABI 的 debug APK，对真实 server 跑 auth/render/wait/move、Activity
+   pause/resume、强制 network disconnect 和 reconnect 最小 smoke。第一代码检查点是
+   `android/app/src/main/java/com/cleverraven/cataclysmdda/SplashScreen.java` 与 `CataclysmDDA.getArguments()` 的
+   Activity lifecycle/Intent persistence。
+2. Android lifecycle 退出证据齐全后，才扩大 server config 到第二玩家。Phase 3 第一条代码调查命令仍是：
 
 ```bash
 rg -n "do_turn_remote|do_turn_impl|active_remote_session|multiplayer_players|active_player_guard|all_monsters|monmove" \
