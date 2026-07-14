@@ -64,8 +64,10 @@ See the plan sections on authority, threading, state scope, scheduling, action/U
 ## Current Phase
 
 Phase 0 closed with recorded evidence on 2026-07-12, and Phase 2 closed with recorded evidence on 2026-07-14. The
-project is now in **Phase 3: second-player/shared-scheduler investigation**; no second-player scheduler has been
-implemented yet. Phase 1 and Phase 2 local, hosted and Android lifecycle gates are green. The Phase 2 client
+project is now in **Phase 3: second-player/shared-scheduler implementation**. The first Phase 3 source slice is a
+pure `multiplayer_turn_scheduler` policy with tests; it owns no avatars, sockets, command payloads or world callback
+and is not connected to the production dedicated server. `players.max` must remain `1`. Phase 1 and Phase 2 local,
+hosted and Android lifecycle gates are green. The Phase 2 client
 implements production transport/state, desktop/Android connection UI, semantic
 wait/move input, bounded full-scene fitting, heartbeat/manual reconnect, ordered clean session release and local
 remote-scene rendering. The final transport fix also keeps a closed logical connection's admission slot until its
@@ -80,9 +82,12 @@ transport/protocol run `29328086326` are terminal `success`, including Linux, Wi
 follow-up read-only audit found stale-CMake-generation, Make dirty-state error handling and Windows assertion-case
 gaps; pushed commit `86336ea847bea45f727fd97d74a811a32712518c` fixes them. Its baseline run `29330811779`
 and transport/protocol run `29330811746` are terminal `success`; this closes Phase 2. The Android KVM lifecycle
-evidence belongs exactly to `e078eb6`; do not imply it was rerun for `86336ea`. Phase 3 begins with source/ownership
-investigation, not a claim that the two-player scheduler already exists. Do not describe the isolated `tools/`
-transport spike as production networking.
+evidence belongs exactly to `e078eb6`; do not imply it was rerun for `86336ea`. The Phase 3 source/ownership audit
+found that the stable runtime registry and `multiplayer_active_player_guard` already exist as tested foundations;
+they need production scheduler/session integration, not replacement. The five `do_turn()` trace labels are profiling
+observation points, not safe ownership boundaries: their current ranges still mix per-player and world-once work.
+Do not describe the isolated `tools/` transport spike or the pure scheduler policy as production networking or a
+working two-player server.
 
 Completed Phase 0 gates:
 
@@ -101,12 +106,17 @@ Completed Phase 0 gates:
 
 The active work, in order, is:
 
-1. Begin ADR-0002's Phase 3 investigation with the ordered `do_turn`/active-player/monster ownership source audit
-   recorded in `STATUS.md`; document conflicts before expanding implementation.
-2. Design the smallest second-player registry/context/scheduler slice consistent with the accepted ADRs, then add
-   conflict, fairness, tether and player-state isolation tests before enabling `players.max > 1`.
-3. Keep the Phase 2 server/client slice hardened, but do not pull portable characters, multiple save generations or
-   Phase 4 durable process-restart resume into the scheduler entry slice.
+1. Finish local and hosted evidence for the pure scheduler policy without calling the Phase 3 gate complete. Its
+   `automatic_wait_pending` transition still requires a production forced/scoped wait adapter, and its world ticket
+   only guards claim/record state; neither API proves that the corresponding gameplay callback ran.
+2. Extract a single-player-preserving phase adapter from `src/do_turn.cpp::game::do_turn_impl()`: invoke scoped
+   player work through the existing registry/guard, execute authoritative automatic wait before recording it, and place the
+   real world callback behind the scheduler's `world_ready` -> `world_processing` claim. Start by inspecting
+   `src/do_turn.cpp` and `tests/multiplayer_turn_phase_test.cpp`.
+3. Add a production session/runtime directory and a two-runtime wait-only integration path, then close movement,
+   collision, monster/death, field/scent/NPC, tether/group-shift and player-state isolation gates before allowing
+   `players.max > 1`. Do not pull portable characters, multiple save generations or Phase 4 durable process-restart
+   resume into this entry slice.
 
 The Linux curses artifact is still the non-SDL packaging baseline, but the same binary now has an explicitly selected
 `--server` runtime path. Do not ship it as a production dedicated-server package until dedicated-server packaging

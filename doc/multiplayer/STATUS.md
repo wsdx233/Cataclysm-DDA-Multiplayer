@@ -2,10 +2,11 @@
 
 - 更新日期：2026-07-14
 - 分支：`multiplayer/main`
-- 当前阶段：**Phase 3，第二玩家/shared scheduler 调查起点**
+- 当前阶段：**Phase 3，首个 shared-scheduler 纯策略/测试切片进行中**
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
 - 当前已推送 source/build 提交：`86336ea847bea45f727fd97d74a811a32712518c`（两条 hosted workflows terminal success）
 - 上一个 terminal-success source 提交：`e078eb6aef25a9cc72eea45793114c931a52b896`（canonical build ID）
+- 当前 Phase 3 slice：`src/multiplayer_turn_scheduler.h/.cpp`、`tests/multiplayer_scheduler_test.cpp` 和对应文档更新
 
 ## 当前结论
 
@@ -31,11 +32,49 @@ pushed commit `86336ea847bea45f727fd97d74a811a32712518c` 已修复。baseline ru
 transport/protocol run `29330811746` 均为 terminal `success`，分别 7/7 和 3/3 jobs 全绿。
 
 **Phase 2 已于 2026-07-14 正式关闭。** Android KVM lifecycle 证据精确属于 `e078eb6`，没有为 `86336ea`
-重跑；`86336ea` 的 hosted runs 关闭后续 build-generator hardening gate。项目现在进入 Phase 3 的 source/ownership
-调查起点，但第二玩家 registry、shared scheduler、tether 和 `players.max > 1` 尚未实现，不能把阶段进入描述为
-完整多人游戏。
+重跑；`86336ea` 的 hosted runs 关闭后续 build-generator hardening gate。
+
+Phase 3 的首轮 source/ownership audit 已完成，未发现需要推翻 ADR-0002 的冲突。Phase 0 的地址稳定
+`multiplayer_player_registry`/runtime、`multiplayer_active_player_guard` 和 human tracker/query/map-shift 支持已经
+存在；后续工作是接入 production session/scheduler，而不是新建第二套 registry/context。audit 同时确认五个
+`do_turn()` trace labels 只是观测点：`player_begin`、`player_input`、`world`、`player_end` 都仍混合 per-player、
+world-once 或 local-UI 工作，不能按 label 机械变成 ownership boundary。
+
+当前 Phase 3 source slice 新增首个纯 `multiplayer_turn_scheduler` policy/test。它实现 immutable roster
+snapshot、稳定首位轮转、typed action disposition、generation resume、current-only timeout、
+`automatic_wait_pending` 和 `world_ready -> world_processing` ticket 状态语义，但没有接入 production
+`src/main.cpp`/`do_turn_remote()`，也不拥有 avatar、socket、command payload 或 gameplay callback。服务器仍只有
+一个 `active_remote_session`，`players.max` 继续只能是 `1`；不能把这个 policy 或其单测描述为已完成两玩家 server。
 
 ## 本批实现
+
+### Phase 3 source audit 与纯 scheduler policy
+
+- `src/multiplayer_turn_scheduler.h/.cpp` 是不可复制/移动的单一权威纯 simulation policy：最多四名参与者，turn 开始时复制并校验 roster，
+  turn 内 snapshot 不受外部 vector 或 mid-turn join 影响；participant 以稳定 `player_id` 标识，generation 只作经
+  transition 校验的 session metadata。
+- roster 使用 canonical `player_id` 排序；每个完成 turn 记录其首位，下一 turn 从该 ID 的字典序后继开始，末尾
+  回绕。因此 roster 增删不会把公平策略退化为固定 host-first。ordering key 包含 shared turn、round、slot 和
+  `player_id`，current slot 在没有 accepted action 时保持稳定。
+- action result 采用 `accepted_remains_eligible`、`accepted_finished`、`rejected`、`duplicate` 四种 typed
+  disposition；后两者明确不推进 cursor/round。resume 要求精确旧 generation 且只允许 `+1`，并拒绝 overflow。
+- disconnect 是 barrier-local 状态，不替代 authoritative session owner。只有 current `disconnected_grace` slot 可
+  应用 timeout；`automatic_wait`/`remove_from_barrier` 先进入 `automatic_wait_pending`，调用方执行真实规则后才可
+  调用 `record_automatic_wait_executed()`。removed participant 在本 turn snapshot 中保留到 world 完成。
+- 所有参与者 terminal 后进入 `world_ready`；`claim_world()` 只可成功一次并转换到 `world_processing`，返回执行
+  当前 shared-turn world phase 的 permission marker；`record_world_completed()` 拒绝未 claim、stale 和 double
+  record。
+- `tests/multiplayer_scheduler_test.cpp` 覆盖 invalid/duplicate roster、mid-turn join 延后、round-robin、
+  rejected/duplicate 不推进、roster churn 首位轮转、四玩家无饥饿、generation resume、timeout/remove 以及真实
+  alpha/beta registry/guard wait-only adapter。该 adapter 在 policy record 前实际调用 shared wait executor，并用
+  scoped restore 保持临时 safe-mode 改动不泄漏。
+- API 名称刻意使用 `record_automatic_wait_executed()`/`record_world_completed()`：纯 policy 只能记录编排器报告，
+  无法证明外部 wait/world 副作用真的执行。production 必须提供不可绕过的 forced/scoped adapter。world ticket 也
+  只约束 claim/record 状态，不证明真实 callback exactly-once；claim 后 callback 失败目前没有 retry、abort、
+  rollback 或恢复协议。
+- source audit 的详细 mixed-ownership 清单已写入 `DO_TURN_PHASE_AUDIT.md`：现有 moves 在 `player_end` 的
+  `u.process_turn()` 补充；single-`u` walk/field/scent/monster/NPC/group-center 等仍需逐项适配，不能由纯 scheduler
+  隐式解决。
 
 ### 生产 server/client transport 与客户端协议状态机
 
@@ -103,6 +142,48 @@ transport/protocol run `29330811746` 均为 terminal `success`，分别 7/7 和 
   handshake identity。
 
 ## 验证证据
+
+### Phase 3 scheduler policy 本地验证（当前 source state）
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+make -j"$(nproc)" \
+  COMPILER=g++-13 TILES=0 SOUND=0 RELEASE=1 LOCALIZE=0 \
+  BACKTRACE=0 PCH=0 ASTYLE=0 tests
+./tests/cata_test '[multiplayer][scheduler]' --rng-seed 0 \
+  --user-dir /tmp/cdda-mp-scheduler-final-2
+./tests/cata_test '[multiplayer][turn_phase]' --rng-seed 0 \
+  --user-dir /tmp/cdda-mp-turn-phase
+./tests/cata_test '[multiplayer][player_bridge]' --rng-seed 0 \
+  --user-dir /tmp/cdda-mp-player-bridge
+./tests/cata_test '[multiplayer]' --rng-seed 0 \
+  --user-dir /tmp/cdda-mp-full-final-2
+
+make -j"$(nproc)" AUTO_BUILD_PREFIX=1 \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 \
+  SANITIZE=address,undefined \
+  WARNINGS='-Wall -Wextra -Wno-error=array-bounds' tests
+ASAN_OPTIONS='detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1:abort_on_error=1' \
+UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1' \
+./tests/release-local-back-sanitize-cata_test '[multiplayer][scheduler]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-scheduler-sanitize-final-2
+
+make ASTYLE_BINARY="$HOME/.cache/cdda-tools/astyle-3.1-3build1/root/usr/bin/astyle" astyle-check
+git diff --check
+```
+
+- GCC 13 release `tests` target 已是最新并成功。
+- focused scheduler：6 cases / 424 assertions，全部通过。
+- focused turn phase：1 case / 8 assertions，全部通过。
+- focused player bridge：5 cases / 325 assertions；三个稳定 registry/guard 正向 cases 的 322 assertions 通过，
+  两个 full-avatar move-swap `[!mayfail]` 负面对照保留 3 个 expected failures，进程 exit 0。
+- 完整 `[multiplayer]`：60 cases，其中 58 通过，两个 full-avatar move-swap cases 按既有 `[!mayfail]` 设计报告
+  expected failure；3,496 assertions 中 3,493 通过、3 个 expected failures，进程 exit 0。
+- 最新 sanitizer binary 重新构建后，focused `[multiplayer][scheduler]` 为 6 cases / 424 assertions 全过，exit 0；
+  无 ASan、UBSan、LSan 或 stack-use-after-return finding。完整 `[multiplayer]` sanitizer suite 本批尚未重跑。
+- AStyle 3.1 报告 `no astyle regressions`；`git diff --check` 通过。
+- 尚无该 scheduler source 的 hosted Windows MSVC/Android/Linux workflow 结果；因此这里只记录本地
+  policy/registry regression evidence，不关闭 Phase 3 platform 或 exit gate。
 
 ### Hosted Phase 1/baseline（已绿色）
 
@@ -432,8 +513,18 @@ git diff --check
 
 ## 已知限制和未完成项
 
-- Phase 3 目前只是 source/ownership 调查起点：第二玩家 registry、active-player context 扩展、shared scheduler、
-  fairness/barrier、tether/group shift 和 `players.max > 1` 都尚未实现。
+- Phase 3 只有纯 scheduler policy/test 切片；stable registry/runtime、active-player guard 和 human tracker 基础已
+  存在，但 production session directory、phase adapter 和 dedicated-server routing 尚未接入。`players.max > 1`
+  仍未实现。
+- 五个 `do_turn()` trace labels 不是 ownership boundary。`player_begin`/`player_input`/`player_end` 仍混入 world/UI
+  工作；当前 `do_turn_remote()` 仍让单 avatar 用尽 moves 才执行一次 world phase。moves 在 `player_end` 的
+  `u.process_turn()` 补充，尚未证明迁到 target turn-begin 模型时的 off-by-one 等价。
+- `record_automatic_wait_executed()` 不能证明真实 wait 已执行；测试 adapter 虽遵守 execute-before-record，但公共
+  policy API 仍需 production forced/scoped wrapper 才能防止调用方绕过。world ticket 与
+  `record_world_completed()` 只验证 claim/record 状态，不证明真实 bubble/world callback exactly-once；claim 后
+  callback 失败没有 retry/abort/rollback/recovery。
+- `game::walk_move()` 仍使用固定 `game::u`；human-human collision、monster target/attack、death、field、single
+  `typescent`/scent center、NPC/overmap anchor、tether/group-centered shift 和 player-state isolation 均未关闭。
 - 本地 Android diagnostic package 缺 `grayscale.frag.spv`，因此该 shader variant 被禁用；ASCIITiles scene 已正常
   渲染，hosted baseline 会提供 shaders。先前 `-accel off` ANR/held-touch flood 是已被 KVM run 取代的非计数历史，
   不是 active blocker。
@@ -445,22 +536,37 @@ git diff --check
 - durable process-restart resume 属于 Phase 4：resume token、pending command 和 scene revision 当前仍只在 native process 内存中，进程杀死后不能继续旧 session；后续需 app-private、版本化、原子 checkpoint，但不阻塞当前 Phase 3 source audit/初始 scheduler slice。
 - clean `DisconnectNotice` 已验证 command settlement、ACK write drain、ordered close 以及仅在精确 completion 后清除 resume record；但多数 protocol/auth/application 错误仍通过 transport close reason 而非 typed disconnect payload 返回。
 - client token reader 的 size/mode/symlink 检查仍存在 path-check → open 的 TOCTOU 窗口；Windows private-file ACL 尚未由本地平台证据验证。
-- 服务器仍只有一个 `active_remote_session`，config 继续拒绝 `players.max > 1`；没有 ADR-0002 shared scheduler、第二 avatar、tether/group shift、多人 monster target 或 player-state isolation。
+- 服务器仍只有一个 `active_remote_session`，command cache 也只按 sequence 建索引；config 继续拒绝
+  `players.max > 1`。当前 policy 没有接入 session ownership、command routing、scene/result routing 或真实 world
+  execution。
 - save 仍是 canonical single-avatar generation；没有 multi-player runtime split、RNG engine save、generation fallback 或 portable character。
 - 当前动作只有 wait 和八方向平面 move。所有其他动作必须保持明确未支持，不能进入 server blocking UI。
 - 无嵌入式 TLS；loopback 默认、trusted-LAN 显式例外和外部 authenticated tunnel 政策保持不变。
 
 ## 下一门禁和首个动作
 
-Phase 2 已关闭。Phase 3 的首个具体动作是运行 ADR-0002 source/ownership audit：
+Phase 2 已关闭；Phase 3 的 source/ownership audit 和首个 pure scheduler policy 已有本地 evidence，但没有完成
+production shared barrier。当前切片已运行以下格式/whitespace 门禁：
 
 ```bash
-rg -n "do_turn_remote|do_turn_impl|active_remote_session|multiplayer_players|active_player_guard|all_monsters|monmove" \
-  src/do_turn.cpp src/game.cpp src/game.h src/main.cpp src/multiplayer_* tests/multiplayer_*
+source build-scripts/activate-multiplayer-build-env.sh
+make ASTYLE_BINARY="$HOME/.cache/cdda-tools/astyle-3.1-3build1/root/usr/bin/astyle" astyle-check
+git diff --check
 ```
 
-先核对 simulation turn phases、现有 single-session ownership、active-player getters 与 monster iteration；若调查
-结果和 accepted ADR 冲突，先更新/supersede ADR 与 refactor plan，再设计最小 second-player registry/context/
-scheduler slice。不得仅因进入 Phase 3 就先打开 `players.max > 1`。
+下一代码门禁是**保持单人行为的 phase adapter/extraction**，而不是 live multi-session 或 move。首个要检查的文件
+和命令是：
+
+```bash
+sed -n '533,835p' src/do_turn.cpp
+sed -n '1,140p' tests/multiplayer_turn_phase_test.cpp
+```
+
+先把当前 mixed trace ranges 拆成明确的 world-once 与 scoped-player callbacks，保留现有 moves replenishment 和
+phase-order regression；再用 existing registry/guard 实现 forced/scoped automatic wait 与可计数的真实 world
+callback，覆盖 wait/world callback 失败。随后增加两个 runtime 的 wait-only barrier integration，最后才扩展
+production session directory、move/collision、monster/death、field/scent/NPC、tether/group shift 和 player-state
+isolation。该 shared C++ source 推送后还需要 hosted Windows MSVC、Android 和 Linux 结果；不得仅因 policy tests
+绿色就打开 `players.max > 1`。
 
 不得把本批单客户端 UI smoke 描述为两玩家/shared-barrier、完整 remote avatar replica、portable character 或生产发布完成。

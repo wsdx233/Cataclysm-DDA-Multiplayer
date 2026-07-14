@@ -65,6 +65,9 @@
 - `avatar` 已有默认 move constructor 和 move assignment；Phase 0 对照测试证明其序列化值可完成 move-swap round-trip，同时也证明持久运行时引用不会自动随值迁移。
 - `game::do_regular_action()` 已经是输入解析之后的主要动作分发点。
 - `current_map` 与 `swap_map` 已提供 RAII 切换当前地图的先例。
+- Phase 0 已实现地址稳定的 `multiplayer_player_registry`/`multiplayer_player_runtime`、
+  `multiplayer_active_player_guard` 和额外 human tracker/query/map-shift 支持，并有 identity/sanitizer 正向矩阵。
+  这些是 Phase 3 要接入 production scheduler/session 的既有基础，不应再复制一套 registry/context。
 - `map.h` 已明确备注未来若存在多个 reality bubble，需要拆分 active bubble 与 all bubbles 语义。
 - 角色文件、`master.gsav`、dimension data、地图/overmap 数据已经分文件保存。
 - `worldfactory::make_new_world(name, mods)` 已支持无 UI 创建世界元数据。
@@ -200,7 +203,9 @@ Headless server
 
 ### 6.2 `active_player_guard`
 
-新增一个只允许模拟线程使用的 RAII 上下文：
+Phase 0 已新增只允许模拟线程使用的 `multiplayer_active_player_guard`，并验证稳定 owner、嵌套恢复和 identity
+不变量。以下接口表示其长期职责；Phase 3 的任务是通过 production scheduler/session directory 使用现有 guard，
+而不是另建同类上下文：
 
 ```cpp
 class active_player_guard {
@@ -302,10 +307,31 @@ ownership。普通移动由 registry 在查询边界验证位置快照，`map::s
 
 这最接近当前 `game::do_turn()` 的“玩家先花 moves，随后世界和怪物行动”结构。
 
+Phase 3 的首个代码切片已经把上述顺序实现为纯 `multiplayer_turn_scheduler` policy，但尚未接入生产
+`do_turn_remote()` 或 dedicated server。该 policy 固定以下边界：
+
+- scheduler 不可复制或移动，避免复制 barrier/world claim 状态；`begin_turn()` 复制最多四人的 immutable roster
+  snapshot，中途 join 只能进入下一 turn。
+- `player_id` 是稳定 roster identity；session generation 是每次 barrier 转换校验的可变元数据，resume 只接受
+  精确旧 generation 的 `+1`。
+- typed `accepted_remains_eligible` 和 `accepted_finished` 推进 cursor；`rejected`、`duplicate` 保持 current slot、
+  round 和 ordering 不变。
+- disconnected timeout 只可处理 current slot。`automatic_wait` 与 `remove_from_barrier` 先进入
+  `automatic_wait_pending`，不得直接越过权威规则执行。
+- 所有 snapshot 参与者 terminal 后进入 `world_ready`；claim 返回执行当前 shared-turn world phase 的 permission
+  marker 并转换到 `world_processing`，由 `record_world_completed()` 记录匹配 turn 后才可开始下一 turn。
+
+这是顺序/状态 contract，不是 gameplay 执行证明。`record_automatic_wait_executed()` 无法验证真实 wait 已经运行，生产
+必须用不可绕过的 forced/scoped adapter 在正确的 `multiplayer_active_player_guard` 下先执行规则。world ticket
+同样只约束 claim/record 状态，不能证明真实 bubble/world callback exactly-once；callback 失败后的 retry、abort、
+rollback/恢复策略也尚未实现。完成这些生产适配及下游多人规则门禁前，`players.max` 保持 `1`。
+
 ### 8.2 公平顺序
 
 - 每个 turn 只执行每名玩家一个命令，然后轮到下一名仍有 moves 的玩家。
-- 首位玩家按 turn 轮换，避免 host 或先加入者永久拥有冲突优先权。
+- 首位玩家按稳定 `player_id` 轮换；当前 policy 选择上个已完成 turn 首位的字典序后继并在末尾回绕，避免 host、
+  先加入者或 roster churn 造成永久冲突优先权。
+- current slot 没有命令时必须保持稳定；rejected/duplicate 结果不消耗轮次，accepted 结果才推进。
 - 同时拾取同一物品时，第一个合法命令成功，第二个收到 `state_changed`，并立即获得增量更新。
 - 服务器日志记录 deterministic ordering key，便于复现。
 
@@ -332,7 +358,9 @@ ownership。普通移动由 registry 在查询边界验证位置快照，`map::s
 推荐默认：
 
 - 0 至 30 秒：保留玩家在 barrier 中，等待 session resume。
-- 超过宽限期：将该玩家从 barrier 中移除，角色留在世界中并自动 wait，仍可受伤或死亡。
+- 超过宽限期：只在该玩家成为 current disconnected slot 时应用 policy；先执行一次权威 wait，成功后再将当前
+  snapshot 记录标为 finished 或 removed，由权威 session/roster owner 决定是否进入后续 turn。角色留在世界中并
+  仍可受伤或死亡。
 - 安全区服务器可以配置“安全下线后移除实体”，但必须有明确的安全判定和冷却，不能成为战斗逃生手段。
 - 重连必须携带 session resume token 和最后确认 revision；服务器决定发送 delta 还是 full snapshot。
 
@@ -369,6 +397,20 @@ end_world_turn
   publish revisions
   autosave decision
 ```
+
+现有 `multiplayer_turn_phase_trace` 的 `turn_begin`、`player_begin`、`player_input`、`world`、`player_end` 只是
+profiling/test 观测点，不是上述目标函数的现成所有权边界。Phase 3 source audit 已确认：
+
+- `player_begin` 混合 overmap hordes、weather/NPC/light cache 等 world-once 工作与 body/activity/sound marker 等
+  player-scoped 工作；
+- `player_input` 每次轮询还包含 falling、dead cleanup、explosion 和 sound/visibility 副作用；
+- `world` 只为当前 `u` 写 scent/field，并让 single active avatar 影响 monster/NPC/group-center 语义；
+- `player_end` 同时包含当前 `u.process_turn()` moves replenishment、逐玩家规则和本地 UI/SFX。
+
+因此 Phase 3 下一步必须先提取保持单人执行次序的 phase adapter，再把明确的 player callbacks 放进 registry/guard
+循环；不能按 trace label 机械切块。当前 moves 在 `player_end` 补充，目标模型写作 turn-begin prepare moves；在
+等价测试明确 off-by-one 前保持现有语义。phase adapter 还必须把 authoritative auto-wait 和真实 world callback
+封装为不可绕过的 scoped 操作，并定义 world callback claim 后失败的恢复策略。
 
 迁移时要逐项处理当前只对 `u` 执行的逻辑，至少包括：
 
@@ -810,9 +852,12 @@ cataclysm --server server.json
 }
 ```
 
-Phase 3 的共享 scheduler 完成前，parser 必须拒绝 `players.max > 1`；Phase 5 的 generation save 和人物导入完成前，
-必须拒绝 `keep_generations > 1`、`portable_lease` 和 `copy_in`，不能让配置伪装为已生效。对应阶段完成后再扩大合法范围，
-最终私服推荐值仍是 2 至 4 名玩家、多个 save generations 和 `portable_lease`。
+Phase 3 的纯 scheduler policy 切片不改变配置能力。只有它接入 production session directory、forced/scoped
+auto-wait、真实 phase/world callback，并关闭两玩家 collision、monster/death、field/scent/NPC、tether/group-shift
+和 player-state isolation 门禁后，parser 才能接受 `players.max > 1`；在此之前必须继续拒绝。Phase 5 的 generation
+save 和人物导入完成前，必须拒绝 `keep_generations > 1`、`portable_lease` 和 `copy_in`，不能让配置伪装为已生效。
+对应阶段完成后再扩大合法范围，最终私服推荐值仍是 2 至 4 名玩家、多个 save generations 和
+`portable_lease`。
 
 这是未内嵌 TLS 时的安全默认值。非 loopback 地址只有在管理员显式设置受信 LAN 例外，或将
 `security` 设为 `external_tunnel` 后才可接受。嵌入式 `required` 只有在后续 TLS 三平台门禁完成后才允许；
@@ -1051,7 +1096,9 @@ world_runtime
 - portable character 字段清理、ID 重映射、非法物品树。
 - command validation。
 - revision 与幂等缓存。
-- turn scheduler、公平轮换、超时和 disconnect。
+- turn scheduler 的 immutable roster snapshot、稳定首位轮换/roster churn、四玩家无饥饿、typed
+  rejected/duplicate 不推进、generation resume、current-only timeout、`automatic_wait_pending` 和 world
+  claim/record stale/double-call 拒绝。
 - scene visibility filter，确保隐藏怪物、陷阱和未探索地形不出现在包中。
 - save generation 与 fallback。
 
@@ -1077,6 +1124,9 @@ world_runtime
 构建 in-process loopback harness：
 
 - 一个 server、两个无 UI test clients。
+- 一个单人兼容 phase adapter 通过 existing registry/guard 执行两 runtime wait-only barrier；测试必须对真实
+  automatic wait 和 world callback 计数，覆盖 wait/callback 失败。只调用 policy 的
+  `record_automatic_wait_executed()`/`claim_world()` 不能算 gameplay evidence。
 - 两玩家相邻移动并互相阻挡。
 - 同时拾取同一物品，只成功一次。
 - A 攻击怪物、B 看到结果和声音。
@@ -1251,16 +1301,21 @@ assertion、生产 tests/process smoke 和 transport gates。至此 Phase 2 的 
 canonical build identity 与 Android lifecycle exit criteria 均有记录证据，Phase 2 于 2026-07-14 正式关闭。
 完整 lifecycle polish、remote avatar replica 与更完整 scene layers 仍属于后续 Phase 4，不能因阶段关闭而视为完成。
 
-### Phase 3：第二玩家与共享 Scheduler（5 至 8 周，当前处于调查起点）
+### Phase 3：第二玩家与共享 Scheduler（5 至 8 周，首个纯策略切片进行中）
 
-当前只进入 ADR-0002 所需的 source/ownership audit；尚未实现第二玩家 registry、shared scheduler 或
-`players.max > 1`。第一步必须核对 `do_turn_remote`/`do_turn_impl`、active-player context、monster iteration 与现有
-single-session ownership，并在发现与 accepted ADR 冲突时先更新 ADR/计划再编码。
+ADR-0002 所需的首轮 source/ownership audit 已完成，未发现需要推翻 accepted ADR 的冲突。Phase 0 已经提供
+地址稳定的 player registry/runtime、active-player guard 和额外 human tracker/query/map-shift 基础；Phase 3 的
+任务是生产集成与补齐规则，不是重新创建这些组件。当前 Phase 3 source slice 新增纯
+`multiplayer_turn_scheduler` 和测试，
+覆盖 roster snapshot、公平顺序、typed action result、generation resume、disconnect timeout、auto-wait pending 和
+world claim/record 状态；它尚未接入 `do_turn_remote()`/dedicated server，也不拥有 gameplay callback。
+`players.max` 仍必须为 `1`，本切片不构成 Phase 3 gate 完成。
 
-- 增加 `player_registry`、额外 human player tracker 支持。
-- 实现 `active_player_guard`。
-- 将 `do_turn()` 拆成初版多人阶段。
-- 两玩家 round-robin 使用 moves。
+- 将现有 `player_registry`、human tracker 和 `multiplayer_active_player_guard` 接入 production session directory 与
+  scheduler ownership。
+- 从 `do_turn_impl()` 提取保持单人行为的 phase adapter；trace labels 只作观测，不能直接作为 ownership 边界。
+- 实现不可绕过的 forced/scoped automatic-wait adapter，以及真实 bubble/world callback 的 claim、计数、失败恢复。
+- 先让两个 registry runtime 通过 wait-only barrier，再接入两玩家 round-robin moves。
 - 处理互相阻挡、近战、死亡、field、monster target。
 - 消息、safe mode、stats 基础隔离。
 - 实现 tether 和 group-centered map shift。

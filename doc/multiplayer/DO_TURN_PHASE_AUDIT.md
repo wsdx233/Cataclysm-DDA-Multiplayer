@@ -1,20 +1,23 @@
 # `game::do_turn()` 阶段基线与活动玩家审计
 
-本文记录 Phase 0 对单人 `game::do_turn()` 的阶段观测边界和 world phase 中活动玩家依赖。
-它是迁移清单，不表示当前循环已经支持多人，也不改变 ADR-0002 的共享 turn barrier 决策。
+本文记录 Phase 0 对单人 `game::do_turn()` 的阶段观测边界，以及 Phase 3 对这些范围、现有玩家
+registry/context 和 world ownership 的复核。它是迁移清单，不表示当前循环已经支持多人，也不改变 ADR-0002
+的共享 turn barrier 决策。
 
 ## 阶段观测边界
 
 `multiplayer_turn_phase_trace` 在未安装 observer 时不读取时钟、不分配内存，只执行固定数量的空检查。
-安装线程局部 observer 后，每段结束时报告 `steady_clock` 纳秒时长。当前标记顺序固定为：
+安装线程局部 observer 后，每段结束时报告 `steady_clock` 纳秒时长。**这些 label 只是 profiling/test 的
+观测点，不是可直接交给 scheduler 的所有权边界。** 当前每个范围仍混合 player-scoped、world-once 和本地 UI
+工作；迁移时必须先抽出明确 callback，不能把 label 包围的整段机械地放进逐玩家循环。当前标记顺序固定为：
 
-| 阶段 | 当前代码范围 | 目标归属 |
+| 阶段 | 当前代码范围 | 目标拆分提示（不是 label ownership） |
 | --- | --- | --- |
-| `turn_begin` | calendar、weather 起始、timed events、item wakeups、missions | 每个共享 turn 恰好一次 |
-| `player_begin` | 当前 avatar 的 vehicle/mount/body/activity、附近 NPC sound marker | Phase 3 对每名 barrier 玩家执行 |
-| `player_input` | 本地输入循环或单远程玩家 semantic-command callback、activity continuation | Phase 2 已共享 wait/move executor；Phase 3 改为多玩家 barrier queue |
-| `world` | scent、map falling/vehicle/field/item、explosion、monster/NPC、overmap NPC | 每个共享 turn 恰好一次，不得隐式代表单一玩家 |
-| `player_end` | moves/body/weather/morale、可见性和本地音效收尾 | 规则部分逐玩家；UI/音效部分仅客户端 |
+| `turn_begin` | calendar、weather 起始、timed events、item wakeups、missions | 明确 global 子集每个共享 turn 恰好一次 |
+| `player_begin` | 当前 avatar 的 vehicle/mount/body/activity、附近 NPC sound marker | 先抽离混入的 world work，再让 player-scoped 子集逐玩家执行 |
+| `player_input` | 本地输入循环或单远程玩家 semantic-command callback、activity continuation | 抽出 command/activity callback；falling/cleanup/explosion 等另定 ownership |
+| `world` | scent、map falling/vehicle/field/item、explosion、monster/NPC、overmap NPC | 提取 bubble/world callback，每共享 turn 恰好一次且不得隐式代表单一玩家 |
+| `player_end` | moves/body/weather/morale、可见性和本地音效收尾 | 规则子集逐玩家；共享 weather/cache 与客户端 UI/音效分别抽离 |
 
 正常 `do_turn()` 的测试必须按上述顺序各报告一次。游戏结束的 cleanup 提前返回不进入该序列；
 行动中死亡等提前返回由 RAII trace 报告已经进入的阶段，不伪造尚未运行的阶段。
@@ -35,7 +38,55 @@ remote 路径不执行 renderer recovery、music/SFX、autosave、截图、block
 初始化即可完成 auth、scene、wait、world phase、save 和 signal shutdown。
 
 这仍不是 ADR-0002 的多人 scheduler：当前只有一个 server-owned active avatar，一次完整 world phase 只由该
-玩家的 action 推进。Phase 3 必须以 registry/guard 扩展逐玩家阶段，而不是复制 `do_turn_impl()`。
+玩家的 action 推进。Phase 3 必须以现有 registry/guard 扩展逐玩家阶段，而不是复制 `do_turn_impl()`。
+
+## Phase 3 source/ownership 复核
+
+2026-07-14 的有序源码复核确认了以下事实：
+
+- Phase 0 已经实现地址稳定的 `multiplayer_player_registry`、`multiplayer_player_runtime` 和仅模拟线程使用的
+  `multiplayer_active_player_guard`，tracker/query/map-shift 正向矩阵已有测试。Phase 3 需要把它们接入 production
+  session/scheduler；不应再次“新建”另一套 registry 或 guard。
+- `player_begin` 不只是逐玩家准备。它同时包含 `overmap_buffer.process_mongroups()`/`move_hordes()`、weather
+  更新、随机 NPC、light cache invalidation 等 world-once 工作，以及 vehicle/mount/body/activity/sound marker 等
+  player-scoped 工作。
+- `player_input` 也不是纯 command callback。每次输入轮询前还会运行 falling、dead cleanup、explosion、NPC/player
+  sound marker 和 visibility/UI 更新；把整段轮流执行会重复世界副作用。
+- `world` 当前以单一 `u` 写 scent source、用其位置作为 `scent.update()` 中心，并只调用
+  `m.creature_in_field( u )`。`scent_map` 只有一份 `typescent`，不能在没有明确多 source 语义时简单循环两名玩家。
+- `monmove()`、monster target/attack、NPC/overmap movement、可见消息和 group/map center 仍包含单活动 avatar
+  假设；不能让“最后进入 guard 的玩家”隐式成为 world owner。
+- `player_end` 同时包含 `u.process_turn()`（当前在这里补充下一轮 moves）、逐玩家 body/morale/power/weather effect
+  和本地 renderer/SFX。ADR 的“turn begin 准备 moves”是目标模型；在 phase adapter 证明等价前，不应顺手改变
+  当前 replenishment 次序并引入 off-by-one。
+- production `src/main.cpp` 仍只有一个 `active_remote_session`，command replay cache 也只按 sequence 建索引；
+  `do_turn_remote()` 会让这个 avatar 用尽 moves 后才进入一次 world phase。它不是 round-robin 或多 session owner。
+- `game::walk_move()` 仍直接使用固定 `game::u`，human-human collision、monster/death/field/scent/NPC target、
+  tether/group-centered shift 和 player-scoped message/state 隔离都不是纯调度器能够补齐的能力。
+
+复核没有推翻 ADR-0002，但证明五个 trace range 不能直接作为实现边界。下一步应先提取保持单人行为的 phase
+adapter，再让两个 registry runtime 通过 wait-only 路径进入同一 barrier；在此之前保持 `players.max = 1`。
+
+## Phase 3 纯 scheduler policy 切片
+
+当前 Phase 3 source slice 的 `multiplayer_turn_scheduler` 是 backend-neutral 的纯策略/测试切片，不持有 live
+avatar、socket、command payload 或 world callback。它已经收口以下调度语义：
+
+- 每 turn 复制最多四人的 immutable roster snapshot；中途加入者延后到下一 turn。
+- roster 使用稳定 `player_id` 顺序，并以“上个完成 turn 首位的字典序后继”轮换下一首位，对 roster churn 仍公平。
+- ordering key 包含 shared turn、round、slot 和 `player_id`；current slot 在无命令时保持稳定。
+- typed `accepted_remains_eligible`/`accepted_finished` 才推进；`rejected` 和 `duplicate` 不推进。
+- session generation 是 barrier transition 的校验元数据；resume 需要精确旧 generation 且只允许 `+1`。
+- timeout 只作用于 current disconnected slot。自动 wait 或移出 barrier 都先进入
+  `automatic_wait_pending`，由调用方执行权威 wait 后再调用 `record_automatic_wait_executed()`。
+- 所有参与者 terminal 后才进入 `world_ready`；`claim_world()` 转到 `world_processing` 并返回执行当前 turn world
+  phase 的 permission marker，由 `record_world_completed()` 记录匹配 turn 后才回到 idle。
+
+这些 API 的保证必须严格限定：`record_automatic_wait_executed()` 无法证明真实 wait 已执行，production 必须提供
+不可绕过的 forced/scoped adapter，在正确 runtime owner 的 `multiplayer_active_player_guard` 下先调用规则执行器。
+world ticket 也只证明 scheduler 的 claim/record 状态转换；它不证明真实 bubble/world callback exactly-once，且
+当前没有 callback 失败后的 retry、abort、rollback 或恢复。phase adapter 必须对真实 callback 计数并定义失败策略。
+该 policy 尚未接入 dedicated server，因此不能据此启用 `players.max > 1` 或宣称 Phase 3 gate 完成。
 
 ## Phase 0 基线
 
@@ -93,11 +144,12 @@ rg -n 'get_avatar\(\)|get_player_character\(\)|get_player_view\(\)' src
 
 ## 不变量与后续顺序
 
-1. `turn_begin`、`world` 在一个 canonical turn 中只能各执行一次，不能放进 player guard 循环。
+1. `turn_begin`、bubble/world callback 在一个 canonical turn 中只能各执行一次，不能把当前 trace range 原样放进
+   player guard 循环。
 2. 逐玩家阶段必须通过 registry 的稳定 owner 创建 `multiplayer_active_player_guard`，不能切换固定 `game::u`
-   的对象值。
-3. world phase 不得让“最后一个活动玩家”隐式决定 monster target、NPC anchor、scent 或可见消息。
-4. 先在 Phase 1 隔离 headless/UI 与 command queue，再在 Phase 3 拆 scheduler；Phase 0 不改 gameplay
-   执行次序来伪装完成多人循环。
-5. 每次移动边界时保留 phase-order 测试，并增加“每 turn 调用次数”断言；性能采样不得成为发布构建的
-   无条件时钟开销。
+   的对象值；直接使用 `game::u` 的规则入口必须先适配或拒绝。
+3. 自动 wait 必须在 forced/scoped adapter 内先成功执行再记录；world claim 后必须执行并计数真实 callback，
+   同时定义失败恢复，不能把 policy 状态当作 gameplay 完成证据。
+4. world phase 不得让“最后一个活动玩家”隐式决定 monster target、NPC anchor、scent、group shift 或可见消息。
+5. 每次移动边界时保留 phase-order 测试，并增加“每 turn 真实 callback 调用次数”和失败路径断言；性能采样不得
+   成为发布构建的无条件时钟开销。
