@@ -4,7 +4,7 @@
 - 日期：2026-07-12
 - Phase 3 实施注记：2026-07-15
 - 关联计划：第 8、9、20 节
-- 关联 session ownership：[ADR-0010](0010-authoritative-session-directory.md)（待验证）
+- 关联 session ownership：[ADR-0010](0010-authoritative-session-directory.md)（已接受）
 
 ## 背景
 
@@ -54,38 +54,26 @@ execution 之间的最低顺序固定为：
   latch scheduler execution fault。fault 后所有 transition、新 adapter 和新 turn 都被拒绝，避免重试非幂等副作用；
   world failure 保留 `world_processing` 供诊断。
 
-这些 slices 仍不拥有 production session、socket 或 command payload。特别地：
+Gate 1/2 已把这些 slices 接入 production single-root server：
 
 - Gate 1 source `cbd19b48d652be735a3c83fe841d2d7c831aecba` 增加 pure
   `multiplayer_selected_root_lifecycle`，把 scheduler participant、directory binding/runtime key、departure ticket、
   shared turn/world ticket 和 dormant/fault gate 组成 owner/version-bound effect contract。scheduler 同时增加 exact
-  same-generation replay rebind 与 disconnected committed `+1` repair；两者都只改变当前 immutable barrier snapshot
-  的 generation metadata，不取得长期 session ownership。
-- adapter 已在 in-process tests 中证明真实 forced wait 的 execute-before-record 和 guard 恢复，但目前只接受
-  `active` runtime。断线 orchestration 必须把 transport disconnected、barrier disconnected 和 runtime offline 分开，
-  在 forced wait 完成前保持 registry owner 可激活。
-- production session directory 已成为 canonical generation owner，runtime 由 directory 精确推进，lobby 只保留受控
-  token/replay mirror，并实现 `pending -> plan -> pre-encode -> commit -> transport enqueue -> mirror/event publish`。
-  `ResumeRequest` 携带客户端最后接受的 generation，由 token/runtime
-  分层交叉验证；上一 accepted response 丢失只按相同 revision/sequence fingerprint 重放同一代。首个有效
-  application frame 触发 exact-tuple directory confirmation，只有该 simulation-thread confirmation 接受后才消费
-  authoritative replay permission，并由 server/main 显式 ack lobby mirror。scheduler participant 仍只在
-  turn-local snapshot 中读取 directory 提供的代数。
-- runtime 已有 directory-only exact `expected_old -> new` transition；bootstrap 只允许一次采用 registry 已 active root
-  的有效 generation，后续不能绕过 directory version。
-- 单玩家 server 的 active root runtime 仍不能通过 `game::disconnect_multiplayer_player()` 直接进入 offline。ADR-0010
-  已选择 selected-context/lifecycle decoupling，但 production 还未实现 barrier/world 后的 offline/dormant 和 resume
-  reactivation；所有玩家断线后的 world/save/shutdown 测试仍是门禁。
-- world ticket 与 adapter 目前只包裹测试 lambda；真实 `process_legacy_single_player_bubble_turn()` 仍由
-  `do_turn_impl()` 直接调用。因此尚未证明 actual bubble callback 在 claim 后恰好执行一次。
-- execution fault 当前是进程内 fail-stop，不是 retry、rollback、save/restart 或 typed shutdown recovery protocol；
-  production owner 必须把 fault 提升为不可继续模拟的 session/server 状态。
-- 若 execution fault 可能发生在 `pause()`、player action 或 world callback 等非幂等副作用之后，server 必须停止模拟、
-  记录诊断并拒绝写新的 canonical save；没有 journal/rollback 时保存会固化不确定的部分 turn。只有明确分类为
-  pre-side-effect 的 failure 才可走正常保存路径。
-- 当前 production server 已用 authoritative directory binding 替代单一 `active_remote_session`，但仍只路由固定 root
-  player，command cache 仍只按 sequence 索引，也没有使用 shared scheduler；配置继续拒绝 `players.max > 1`。
-  本注记不代表两玩家 server 或 Phase 3 退出标准已经完成。
+  same-generation replay rebind 与 disconnected committed `+1` repair。
+- Gate 2 source `2e9236c7bf91782ad3f15daa5d8aa0e3929f355a` 新增
+  `multiplayer_single_root_owner`，私有持有 directory、scheduler、lifecycle 和 adapter。transport disconnected、barrier
+  grace、forced wait、terminal、actual world、player-end、exact offline/dormant 和 same-runtime resume 由同一个
+  simulation-thread owner 串联。
+- semantic action/bookkeeping 在目标 guard 内恰好一次；mandatory player-phase completion 处理无 action callback 的
+  sleep/activity/zero-moves 分支。真实 `process_legacy_single_player_bubble_turn()` 只能由 exact world claim 的
+  one-shot thunk 调用；lifecycle completion 等 player-end 返回后才记录。
+- ADR-0011 定义 outer/active-player-input 双层 pump。open-turn resume/resync 只重放 immutable completed scene，scene
+  revision 只在 world + player-end + lifecycle completion 后推进。
+- post-side-effect fault、open-turn stop 或 canonical state 不可证明时进入 typed fatal/no-save；clean completed boundary
+  或 dormant 才允许 canonical save。真实 Linux process 已证明 open-turn SIGTERM 不修改 save 哈希。
+
+这些证据仍只覆盖 single-root production routing。配置继续拒绝 `players.max > 1`；two-runtime owner、公平 command
+routing、monster/death 和其他共享规则矩阵属于 Phase 3 Gate 3，本注记不代表两玩家 server 或 Phase 3 退出标准完成。
 
 ## 替代方案
 
@@ -117,8 +105,9 @@ execution 之间的最低顺序固定为：
   forced pause、stale/missing/inactive runtime、callback/wait/world failure、post-side-effect scheduler-record fault 和
   replacement-adapter 拒绝；当前
   two-runtime wait-only test 的 world callback 是计数 lambda，不是 actual bubble gameplay evidence。
-- production 集成测试必须把真实 legacy bubble callback 放在 claim 后计数，并覆盖 failure 后的 typed fail-stop/
-  shutdown；单测只观察到一次 `claim_world()` 或 lambda 不足以证明 world phase exactly-once。
+- single-root production 集成已把真实 legacy bubble callback 放在 claim 后计数，并覆盖 failure 后的 typed
+  fail-stop/shutdown；后续 two-runtime production integration 必须保留同一门禁。单测只观察到一次
+  `claim_world()` 或 lambda 不足以证明 world phase exactly-once。
 - production owner 测试必须证明 external scheduler/runtime/directory/world effect 成功而 lifecycle record 失败时立即
   latch fault，并区分 graceful ACK 实际 queued、fallback close 和 peer early close；pure lifecycle 的
   applied/duplicate 状态本身不是外部 effect 或 transport enqueue 的证明。

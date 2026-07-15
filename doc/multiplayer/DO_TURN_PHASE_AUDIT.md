@@ -37,8 +37,8 @@ remote 路径不执行 renderer recovery、music/SFX、autosave、截图、block
 证明 wait command 可由 callback 消费且不进入本地 input handler；实际进程 smoke 进一步证明无 curses/SDL
 初始化即可完成 auth、scene、wait、world phase、save 和 signal shutdown。
 
-这仍不是 ADR-0002 的多人 scheduler：当前只有一个 server-owned active avatar，一次完整 world phase 只由该
-玩家的 action 推进。Phase 3 必须以现有 registry/guard 扩展逐玩家阶段，而不是复制 `do_turn_impl()`。
+这是 Phase 1/2 的 legacy callback 说明。Phase 3 production server 已改用下述 owned-turn/scheduler path，但仍只有
+一个 server-owned active avatar；Gate 3 必须以现有 registry/guard 扩展逐玩家阶段，而不是复制 `do_turn_impl()`。
 
 ## Phase 3 source/ownership 复核
 
@@ -59,15 +59,15 @@ remote 路径不执行 renderer recovery、music/SFX、autosave、截图、block
 - `player_end` 同时包含 `u.process_turn()`（当前在这里补充下一轮 moves）、逐玩家 body/morale/power/weather effect
   和本地 renderer/SFX。ADR 的“turn begin 准备 moves”是目标模型；在 phase adapter 证明等价前，不应顺手改变
   当前 replenishment 次序并引入 off-by-one。
-- production `src/main.cpp` 已用 authoritative directory binding 替换 `active_remote_session`，但仍只路由固定 root
-  player，command replay cache 也只按 sequence 建索引；`do_turn_remote()` 会让这个 avatar 用尽 moves 后才进入一次
-  world phase。它不是 round-robin 或多-player scheduler owner。
+- production `src/main.cpp` 仍只路由固定 root player，但已由 `multiplayer_single_root_owner` 编排 directory、scheduler、
+  lifecycle 和 adapter；command replay/cache 与 completed-scene revision 仍属于该单 root session。它不是
+  round-robin multi-player owner。
 - `game::walk_move()` 仍直接使用固定 `game::u`，human-human collision、monster/death/field/scent/NPC target、
   tether/group-centered shift 和 player-scoped message/state 隔离都不是纯调度器能够补齐的能力。
 
-复核没有推翻 ADR-0002，但证明五个 trace range 不能直接作为实现边界。当前 source 已先提取保持单人行为的
-action/world seams 并增加 test-only phase adapter；production session/scheduler routing 尚未完成，在此之前保持
-`players.max = 1`。
+复核没有推翻 ADR-0002，但证明五个 trace range 不能直接作为实现边界。Gate 2 已把保持单人行为的 owned action/
+world seams 和 phase adapter 接入 production single-root routing；五个 label 仍不能机械变成逐玩家 ownership。
+two-runtime owner 与上述规则缺口未关闭前保持 `players.max = 1`。
 
 ## Phase 3 纯 scheduler policy 切片
 
@@ -84,21 +84,23 @@ avatar、socket、command payload 或 world callback。它已经收口以下调�
 - 所有参与者 terminal 后才进入 `world_ready`；`claim_world()` 转到 `world_processing` 并返回执行当前 turn world
   phase 的 permission marker，由 `record_world_completed()` 记录匹配 turn 后才回到 idle。
 
-这些 API 的保证必须严格限定：纯 `record_automatic_wait_executed()` 无法证明真实 wait 已执行；下面的 source adapter
-已经在 test-created runtime 上固定 execute-before-record，但尚未成为 production 唯一入口。world ticket 也只证明
-scheduler 的 claim/record 状态转换；它不证明真实 bubble/world callback exactly-once。policy/adapter 都尚未接入
-dedicated server，因此不能据此启用 `players.max > 1` 或宣称 Phase 3 gate 完成。
+这些 API 的保证必须严格限定：纯 `record_automatic_wait_executed()` 无法证明真实 wait 已执行，world ticket 单独也
+不能证明 actual bubble callback exactly-once。Gate 2 的 single-root owner 已把 adapter execute-before-record 和
+one-shot actual world thunk 组合为 production 唯一入口；这仍不能据此启用 `players.max > 1` 或宣称 Phase 3 完成。
 
-## Phase 3 phase adapter 与单人 seams
+## Phase 3 phase adapter、owned turn 与单人 seams
 
 第二个 source slice 已增加 `multiplayer_turn_phase_adapter`、显式 wait execution mode 和两个保持单人顺序的窄入口：
 
 - `game::record_turn_player_action( avatar & )` 负责 accepted action 的 `moves_since_last_save`/`action_taken()`；legacy
-  `execute_turn_player_action()` 继续调用它。adapter 在目标 player guard 尚未退出时执行该 bookkeeping，避免 beta
-  action 错误更新 root/alpha avatar。
-- `game::process_legacy_single_player_bubble_turn( avatar &, map & )` 命名了原有 world block，但
-  `do_turn_impl()` 仍直接调用它，随后才运行原有 `u.process_turn()`。这只是 extraction seam，不是 scheduler world
-  claim 集成。
+  `execute_turn_player_action()` 继续调用它。owned remote path 则由 adapter 在目标 guard 尚未退出时执行该
+  bookkeeping，并绕过 legacy 外层记录，避免重复或错误更新 root/alpha avatar。
+- `game::do_turn_remote_owned()` 使用 typed hooks/result/completion token。mandatory player-phase-complete hook 在
+  sleep/activity/zero-moves 跳过 action callback 时仍把 scheduler terminalize；公开字段不能伪造或重放 player-end
+  completion proof。
+- `game::process_legacy_single_player_bubble_turn( avatar &, map & )` 命名原有 world block；owned path 只能通过
+  `multiplayer_owned_world_thunk` 在 exact scheduler world claim 中调用一次。ordinary single-player path 继续保持
+  legacy direct order。
 - player/wait entry 验证模拟线程、exact scheduler slot/state、player ID、session generation、runtime ownership/
   lifecycle、构造时 root context、guard engaged 和退出恢复；forced wait 绕过 safe-mode permission，但仍执行真实
   `Character::pause()`，成功后才 record scheduler transition。
@@ -110,16 +112,15 @@ dedicated server，因此不能据此启用 `players.max > 1` 或宣称 Phase 3 
 
 Linux in-process tests 已覆盖 root-context precondition/正常恢复、active-avatar safe-mode permission、
 stale/missing/inactive runtime、真实 forced pause before record、两种 disconnect policy 都先 wait、callback/exception
-fail-stop、post-side-effect scheduler-record failure、world lambda one-shot，以及两个 registry runtime 的 wait-only
-barrier。单远程 first-turn 回归还验证
+fail-stop、post-side-effect scheduler-record failure、actual world thunk one-shot、zero-action terminal transition、
+player-end proof，以及两个 registry runtime 的 wait-only barrier。单远程回归保留
 `turn_begin -> player_begin -> action -> player_input -> world -> player_end` 顺序和 player-end moves replenishment。
 
-边界仍必须准确描述：`rg` 只在 adapter 单测中找到其调用，production `main.cpp`/`do_turn_remote()` 没有 scheduler
-owner；实际 legacy bubble 没有处于 `claim_world()` 后；world 测试只是 lambda；进程级 save/shutdown recovery、统一
-session/runtime generation 和离线 runtime 激活策略都未实现。下一步先建立 authoritative session/runtime directory，
-把 lobby auth/resume 改成 pending request -> simulation commit -> complete response，并解决单玩家 active root 无法
-offline 的 lifecycle gate；再接入单玩家 production routing 和 actual claimed bubble，最后才扩展 production
-two-runtime barrier。
+Gate 2 source `2e9236c7bf91782ad3f15daa5d8aa0e3929f355a` 已把 adapter、actual claimed bubble、exact directory generation、
+offline/dormant reactivation 和 process-level save/shutdown recovery 接入 production single-root server。真实 Linux
+headless 和 curses PTY 覆盖 auth/resume/duplicate/fresh command，open-turn SIGTERM 证明 fatal/no-save 且 save 哈希不变。
+下一步是独立的 multi-runtime owner 与规则矩阵；不能通过把 single-root owner 的 `maximum_players == 1` 检查删除来
+跳过这些门禁。
 
 ## Phase 0 基线
 

@@ -63,87 +63,43 @@ See the plan sections on authority, threading, state scope, scheduling, action/U
 
 ## Current Phase
 
-Phase 0 closed with recorded evidence on 2026-07-12, and Phase 2 closed on 2026-07-14. The project is now in
-**Phase 3: second-player/shared-scheduler implementation**. Current source includes the pure
-`multiplayer_turn_scheduler`, a source `multiplayer_turn_phase_adapter` currently called only by tests, explicit
-authoritative-wait mode, target action bookkeeping inside the active-player guard, persistent scheduler fail-stop,
-and named legacy single-player world/action seams. Linux release and sanitizer tests cover exact
-slot/generation/ownership/root-context validation,
-the active-avatar safe-mode permission gate, real forced pause, callback/world failure, replacement-adapter rejection
-and an in-process
-two-runtime wait-only barrier.
+Phase 0 closed on 2026-07-12 and Phase 2 closed on 2026-07-14. The project is now in **Phase 3,
+Gate 3: two-runtime owner and shared-rule matrix**. Gate 1 source
+`cbd19b48d652be735a3c83fe841d2d7c831aecba` closed the selected-root lifecycle contract; Gate 2 source
+`2e9236c7bf91782ad3f15daa5d8aa0e3929f355a` closed the production single-root lifecycle and caused ADR-0010/0011 to
+be accepted.
 
-These are not production two-player routing. The single-player production server now owns an authoritative
-simulation-thread session directory and two-stage auth/resume path; protocol minor `1` carries the client's last
-accepted generation, exact lost-response replay is retired only after an exact-tuple application confirmation reaches
-the simulation-thread directory, and stale tuples cannot replace a newer binding. Phase 3 Gate 1 is closed by source
-`cbd19b48d652be735a3c83fe841d2d7c831aecba`: the pure `multiplayer_selected_root_lifecycle` contract keeps transport,
-barrier, runtime and dormant states independent; directory/runtime APIs provide exact offline/reactivation,
-graceful-release-pending and commit-owned unpublished cleanup; scheduler APIs provide same-generation replay and
-disconnected `+1` repair. This is contract/API evidence only. The adapter is still called only by tests;
-`do_turn_impl()` still calls the actual legacy bubble directly rather than through `claim_world()`; no production owner
-yet composes the lifecycle effects; and fail-stop has no production save/shutdown recovery owner. `players.max` must
-remain `1`.
-Phase 1/2 hosted platform and Android lifecycle evidence remains valid as recorded in the build baseline and refactor
-plan; do not rerun or restate it as evidence for unrelated Phase 3 shared-code changes. The five `do_turn()` trace
-labels remain observation points, not safe ownership boundaries, and the isolated `tools/` transport spike is not
-production-source portability evidence.
+The production server now uses `multiplayer_single_root_owner` as the simulation-thread owner of the authoritative
+session directory, scheduler, lifecycle and phase adapter. Semantic command and forced wait execution go through the
+adapter; the actual legacy bubble runs only behind an exact world claim; lifecycle completion waits for player-end;
+root-dormant stops new turns and same-runtime resume reactivates it. Admission publish and graceful transport results
+are typed. Open turns or uncertain post-side-effect faults fail-stop without writing a new canonical save. ADR-0011's
+outer/active-player-input pumps allow initial/dormant auth and open-barrier resume while replaying only immutable
+completed-scene payloads.
 
-The last hosted-green selector source `804101995c175057856529be24439b0d7e87a49a` has a terminal-green Linux production
-gate and a one-time terminal-green CI-contract package matrix recorded in the build baseline. That closes the
-workflow/selector milestone only; routine backend-neutral Phase 3 work remains Linux-first.
+This is still single-root production routing, not two-player support. `players.max` must remain `1`. The five
+`do_turn()` trace labels remain observation points rather than ownership boundaries. Production game-over/death still
+maps to fatal/no-save until the Gate 3 death policy is closed.
 
-Current Gate 1 source `cbd19b48d652be735a3c83fe841d2d7c831aecba` has local Linux release/full-multiplayer
-and lifecycle ASan/UBSan/LSan evidence plus terminal-green Linux production run `29392575820`; its Windows/Android
-portable-spike jobs were precisely skipped. The most recent protocol public-boundary baseline remains run
-`29385561653` for source `eb990c4ad9975915336f3acd65431b47d123e842`; it selected only Windows/Android actual-source
-package fallback and skipped Linux package. That closes the one-time Tier 2 minor-`1` boundary, not the Phase 3 exit or
-a requirement for future internal `.cpp` changes.
-
-Completed Phase 0 gates:
-
-- Local branch: `multiplayer/main`; baseline tag: `multiplayer-upstream-baseline-d84b90d`; fork remote:
-  `https://github.com/wsdx233/Cataclysm-DDA-Multiplayer.git`.
-- Hosted baseline run `29205262759` produced verified Linux curses, Android arm64 and Windows x64 MSVC artifacts.
-  The Windows executable reports exact `+tiles, +sound`; the Android APK is arm64-only and requests `INTERNET`.
-- Hosted transport run `29205262750` passed standalone Asio/TCP framing and shutdown contracts on GCC 13,
-  Clang 18 and MSVC, plus the Android NDK arm64 compile gate. ADR-0003 is accepted with no embedded TLS:
-  plaintext defaults to loopback, trusted-LAN use is explicit, and WAN requires an external authenticated tunnel.
-- The stable-avatar bridge, runtime registry, player snapshots, movement/map-shift, mount, vehicle, grab and remote
-  control matrix pass 274 release and sanitizer assertions. Full avatar move-swap retains three expected identity
-  failures. ADR-0005 is accepted.
-- `game::do_turn()` has five observable phase boundaries and a source audit for world-phase active-player getters;
-  see `doc/multiplayer/DO_TURN_PHASE_AUDIT.md` for exact evidence.
+Gate 2 has local Linux full-multiplayer, focused ASan/UBSan/LSan, headless process, native curses PTY and open-turn
+save-hash evidence. Its diff does not change wire/schema/version, platform conditionals, shared build lists, pinned
+toolchains or Windows/Android-owned code, so Windows/Android were intentionally not run. The latest compatible
+public-boundary evidence remains run `29385561653` for protocol-minor-1 source
+`eb990c4ad9975915336f3acd65431b47d123e842`; it is not current Gate 2 platform evidence. Routine Phase 3 work remains
+Linux-first under the validation policy below.
 
 The active work, in order, is:
 
-1. Keep `players.max = 1` while implementing the closed Gate 1 contract in the production single-root owner. Wire the
-   scheduler/adapter into the command loop, put the actual `process_legacy_single_player_bubble_turn()` call behind the
-   world claim, stop new turns while root-dormant and resume the same runtime. Map a latched execution fault to typed
-   fatal shutdown; if a non-idempotent side effect may already have happened, stop without writing a new canonical
-   save. Only failures proven to precede gameplay side effects may use normal save. Close this slice with the
-   risk-selected Linux full/sanitizer/process gates, including the headless-server/native-client PTY regression.
-   Replace or bypass legacy `execute_turn_player_action()` bookkeeping when the adapter owns an action; wrapping the
-   adapter inside the current `do_turn_remote()` bool callback would record the action twice. Move the transport/event/
-   admission pump outside that action callback so an initially unbound or dormant server can authenticate/resume
-   without first entering `turn_begin`/`player_begin`; dormant must remain in the pump without starting a turn. The new
-   owned-turn seam also needs a mandatory pre-world/player-phase-complete hook because sleep, activities or zero moves
-   can skip the action callback entirely; use an explicit scheduler terminal transition, not a fabricated command
-   result. Scheduler world completion occurs inside the world hook, but lifecycle turn-boundary completion must wait
-   until player-end finishes and the owned turn returns. Scene publish, save and the next turn stay after that record.
-   Shutdown/save must consult the lifecycle safe-boundary disposition; an open turn is not a normal-save point.
-2. Before recording graceful completion, distinguish an ACK actually queued by transport from fallback close;
-   `multiplayer_dedicated_server::complete_graceful_disconnect()` currently treats the lobby action as queue success.
-   If any external directory/scheduler/runtime/transport effect succeeds but the matching lifecycle record is neither
-   applied nor duplicate, immediately latch the lifecycle fault and enter typed fatal shutdown. Refuse a new canonical
-   save only when a non-idempotent gameplay/world side effect may have happened or canonical state is otherwise not
-   provable; a failure proven to precede such side effects may use the normal save path. Keep each
-   directory plan, root admission recipe and enqueue result in one private owner transaction; the recipe is not a
-   directory commit receipt.
-3. Promote the already-green in-process two-runtime wait-only case into that production owner, then close movement,
-   collision, monster/death, field/scent/NPC, tether/group-shift and player-state isolation gates before enabling a
-   second client. Do not pull portable characters, multiple save generations or Phase 4 durable restart resume into
-   these entry slices.
+1. Keep `players.max = 1`. Design a distinct multi-runtime owner contract around the existing scheduler/adapter and
+   promote the already-green in-process two-runtime wait-only barrier into owner-level integration tests. Do not widen
+   `multiplayer_single_root_owner::create()` beyond exactly one player.
+2. Close rule slices in this order: round-robin wait/move and player-state isolation; human collision; monster target/
+   attack and death/game-over; field/scent/NPC; tether and group shift. Preserve one shared bubble and single simulation
+   thread. Each slice uses Linux incremental/focused tests; only coherent authority/lifecycle slices add full
+   `[multiplayer]`, sanitizer or process smoke.
+3. After owner/rule gates are green, expose two connections only behind an integration/process-test switch and run a
+   Linux two-client smoke/soak. Do not publish `players.max > 1` until that evidence exists. Portable characters,
+   durable restart resume, multiple save generations and Phase 4 replica/rendering remain out of scope.
 
 The Linux curses artifact is still the non-SDL packaging baseline, but the same binary now has an explicitly selected
 `--server` runtime path. Do not ship it as a production dedicated-server package until dedicated-server packaging

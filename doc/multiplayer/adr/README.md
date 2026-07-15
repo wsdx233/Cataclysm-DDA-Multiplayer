@@ -22,7 +22,8 @@
 | [0007](0007-server-canonical-generation-saves.md) | 服务器 canonical generation 存档 | 已接受 |
 | [0008](0008-portable-character-policy.md) | Portable Character 与人物所有权策略 | 已接受 |
 | [0009](0009-single-reality-bubble-v1.md) | v1 单 reality bubble 与距离约束 | 已接受 |
-| [0010](0010-authoritative-session-directory.md) | 权威 session directory、两阶段 admission 与 generation ownership | 待验证 |
+| [0010](0010-authoritative-session-directory.md) | 权威 session directory、两阶段 admission 与 generation ownership | 已接受 |
+| [0011](0011-owned-turn-event-pump-boundary.md) | Owned turn outer/active-player-input 双层事件泵边界 | 已接受 |
 
 ## ADR 维护规则
 

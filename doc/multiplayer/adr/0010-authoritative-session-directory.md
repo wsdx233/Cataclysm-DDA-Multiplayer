@@ -1,7 +1,8 @@
 # ADR-0010：权威 Session Directory 与两阶段 Admission
 
-- 状态：待验证
+- 状态：已接受
 - 日期：2026-07-14
+- 接受日期：2026-07-15
 - 关联计划：第 6.2、7.4、8.5、20.6 节与 Phase 3
 
 ## 背景
@@ -128,17 +129,46 @@ production owner：
   real directory/runtime/scheduler 组合覆盖普通 disconnect 到 dormant/resume、terminal graceful release 和 unpublished
   grace `+1` repair。
 
-这批 API 是调用方见证型顺序契约，不是跨组件事务证明。Gate 2 必须把“外部 effect 已成功，但对应 `record_*`
-不是 applied/duplicate”统一升级为 `latch_fault()` 和 typed fatal shutdown；不得重试可能已发生的非幂等 side effect。
+在 Gate 1 完成时，这批 API 仍是调用方见证型顺序契约，不是跨组件事务证明；当时 Gate 2 尚需把“外部 effect 已成功，
+但对应 `record_*` 不是 applied/duplicate”统一升级为 `latch_fault()` 和 typed fatal shutdown，不得重试可能已发生的
+非幂等 side effect。
 只有非幂等 gameplay/world side effect 可能已发生，或 canonical state 已无法证明时才进入 no-save；明确发生在这些
 副作用前的失败仍可走正常 save。
-此外，当前 `multiplayer_dedicated_server::complete_graceful_disconnect()` 只观察 lobby 是否产生
-`send_and_disconnect` action，而 transport enqueue/fallback 结果被忽略。Gate 2 在记录 ACK queued 前必须显式区分
-queued、queue rejection/fallback close 和 peer early close。
+此外，Gate 1 当时的 `multiplayer_dedicated_server::complete_graceful_disconnect()` 只观察 lobby 是否产生
+`send_and_disconnect` action，而 transport enqueue/fallback 结果被忽略；Gate 2 因此需要在记录 ACK queued 前显式
+区分 queued、queue rejection/fallback close 和 peer early close。
 
-Production shutdown/save 同样受 lifecycle safe boundary 约束。当前 remote action wait 若因 SIGINT 返回空结果，可能
-已经执行 turn-begin/player-begin 但尚未执行 world；Gate 2 不能把这种 open partial turn 当作普通保存点。只有 clean
-connected boundary 或 dormant safe point 可 normal-save；open turn 或 canonical state 不可证明时进入 fatal/no-save。
+Gate 1 结束时 production shutdown/save 尚未受 lifecycle safe boundary 约束；remote action wait 若因 SIGINT 返回空
+结果，可能已经执行 turn-begin/player-begin 但尚未执行 world。Gate 2 因此不能把这种 open partial turn 当作普通
+保存点：只有 clean connected boundary 或 dormant safe point 可 normal-save；open turn 或 canonical state 不可证明时
+进入 fatal/no-save。
+
+### Phase 3 Gate 2 实施证据（2026-07-15）
+
+source `2e9236c7bf91782ad3f15daa5d8aa0e3929f355a` 已把上述 contract 接入 production single-root server：
+
+- `multiplayer_single_root_owner` 是 directory、scheduler、selected-root lifecycle 和 phase adapter 的唯一
+  simulation-thread owner。admission plan、directory commit、exact publish receipt、unpublished cleanup、scheduler/
+  runtime effect 与 lifecycle record 留在同一私有 transaction；mismatched receipt 或 external-effect/record 分叉会
+  立即 latch fatal fault。
+- `game::do_turn_remote_owned()` 把 semantic action/bookkeeping、mandatory player-phase completion、actual legacy
+  world thunk 和 player-end proof 分离。actual `process_legacy_single_player_bubble_turn()` 只能在 exact world claim
+  中执行一次；scheduler world completion 在 world hook 内，lifecycle turn completion 等 player-end 返回后才记录。
+- initial unbound、dormant 和 between-turn admission 位于 outer pump；open player-input barrier 仅使用 ADR-0011 的
+  bounded active-turn pump。disconnect/grace forced wait、terminal barrier、world、exact runtime offline、dormant 和
+  same-runtime resume 已由同一个 production owner 串联。
+- graceful completion 现在区分 ACK 实际 queued、fallback close、stale request 和 fatal error；wrapper 在任何已决定
+  terminal close 的 connection 上拒绝同批或已排队 command，避免 close 后继续执行 gameplay。
+- final/interval save 查询 owner 的 safe-boundary disposition。真实进程在 authenticated open turn、尚无 command 时
+  收到 SIGTERM，退出码为 `1`，记录 `save_refused(disposition=2)` 与 typed `runtime_failed`，没有
+  `save_completed`，save 目录退出前后 SHA-256 完全相同。
+
+Linux Gate 2 候选执行完整 `[multiplayer]`（125 cases；123 passed + 2 个既有 expected-failure identity 对照；
+7,174 assertions 中 7,171 passed + 3 expected failures）、final-source owner/server/lobby ASan/UBSan/LSan
+（27 cases / 3,923 assertions）、headless auth/resume/open-barrier cached-scene/duplicate/fresh-command process smoke，
+以及真实 curses client wait/disconnect/resume/move/quit PTY。该 diff 未修改 wire schema/version、platform conditional、
+shared build list、pinned toolchain 或 Windows/Android-owned code；按计划第 20.6 节保持 Tier 1，未运行 Windows/
+Android，且不把旧平台 run 描述为当前 source 证据。
 
 ## 替代方案
 
@@ -179,8 +209,8 @@ connected boundary 或 dormant safe point 可 normal-save；open turn 或 canoni
   fallback；客户端清 token 后不得被遗留 record 锁在 `server_full`。
 - disconnect 测试证明 forced wait 发生在 runtime offline 前且恰好一次；root-context 方案覆盖所有玩家断线后的
   world/save/fatal-shutdown 行为。
-- Linux focused tests、完整 `[multiplayer]` 和生命周期 sanitizer 通过；接入 production 后增加 Linux headless
-  server/native client PTY。保持 wire schema不变时不要求 Windows/Android；若修改 schema/public ABI，按 Tier 2
+- Linux focused tests、完整 `[multiplayer]`、生命周期 sanitizer、Linux headless server 和 native client PTY 通过。
+  保持 wire schema 不变时不要求 Windows/Android；若修改 schema/public ABI，按 Tier 2
   补实际编译 changed production source 的 MSVC/NDK evidence。
 
 Gate 1 source 的 Linux evidence：root lifecycle + directory + scheduler 为 36 cases / 1,257 assertions；完整
@@ -191,9 +221,7 @@ C++ API。按第 20.6 节 Tier 1 未重复跨平台 package/runtime。
 
 ## 接受门禁
 
-在以下条件完成前保持“待验证”且 `players.max = 1`：
-
-- Gate 1 selected-context/lifecycle decoupling contract/API 已完成；production owner 仍须实际执行 dormant/root 恢复；
-- 两阶段 lobby admission、directory exact generation API 和 disconnect 状态表测试绿色；
-- 单玩家 production scheduler/adapter/actual world claim 与 Linux PTY regression 绿色；
-- execution-fault no-save 路径有 process-level evidence。
+Gate 1/2 已完成 selected-context/lifecycle decoupling、两阶段 admission、exact generation、production
+scheduler/adapter/actual world claim、dormant/root resume、typed graceful result、Linux PTY 和 process-level
+execution-fault no-save 证据，因此本 ADR 于 2026-07-15 接受。`players.max = 1` 继续保留，但这是 Phase 3 Gate 3
+two-runtime owner 与规则矩阵的门禁，不再是本 ADR 的待验证状态。
