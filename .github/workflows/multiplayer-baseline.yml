@@ -4,15 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Platform package target; keep all for Tier 3 milestones
+        description: Package target; use all only for an explicit all-platform milestone
         required: true
-        default: all
+        default: linux
         type: choice
         options:
-          - all
           - linux
           - windows
           - android
+          - all
   # Keep both event path lists and jobs.changes in sync when adding or
   # renaming a platform-owned or cross-platform public-boundary path.
   push:
@@ -135,7 +135,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           EVENT_NAME: ${{ github.event_name }}
-          MANUAL_TARGET: ${{ inputs.target || 'all' }}
+          MANUAL_TARGET: ${{ inputs.target || 'linux' }}
         run: |
           set -euo pipefail
 
