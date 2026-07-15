@@ -65,6 +65,128 @@ enum safe_mode_type : int {
     SAFE_MODE_STOP = 2, // New monsters spotted, no movement allowed
 };
 
+enum class multiplayer_owned_turn_status : std::uint8_t {
+    completed,
+    game_over,
+    aborted
+};
+
+enum class multiplayer_owned_turn_progress : std::uint8_t {
+    not_started,
+    turn_started,
+    player_phase_completed,
+    world_started,
+    world_completed,
+    turn_completed
+};
+
+enum class multiplayer_owned_turn_abort_stage : std::uint8_t {
+    none,
+    invalid_hooks,
+    player_phase,
+    player_action,
+    player_phase_completion,
+    world,
+    player_end
+};
+
+class multiplayer_single_root_owner;
+
+class multiplayer_owned_turn_token
+{
+    public:
+        multiplayer_owned_turn_token() = default;
+
+    private:
+        friend class multiplayer_single_root_owner;
+        friend struct multiplayer_owned_turn_result;
+
+        multiplayer_owned_turn_token( const void *owner, const std::uint64_t shared_turn,
+                                      const std::uint64_t invocation ) :
+            owner_( owner ), shared_turn_( shared_turn ), invocation_( invocation ) {}
+
+        const void *owner_ = nullptr;
+        std::uint64_t shared_turn_ = 0;
+        std::uint64_t invocation_ = 0;
+};
+
+struct multiplayer_owned_turn_result {
+        multiplayer_owned_turn_status status = multiplayer_owned_turn_status::aborted;
+        multiplayer_owned_turn_progress progress = multiplayer_owned_turn_progress::not_started;
+        multiplayer_owned_turn_abort_stage abort_stage =
+            multiplayer_owned_turn_abort_stage::invalid_hooks;
+
+        /** True when this invocation either did not open a turn or finished player-end. */
+        bool preserves_normal_save_boundary() const noexcept {
+            return progress == multiplayer_owned_turn_progress::not_started ||
+                   player_end_completed_;
+        }
+
+        /** Conservative signal for fatal/no-save policy after an aborted invocation. */
+        bool gameplay_side_effects_may_have_occurred() const noexcept {
+            return progress != multiplayer_owned_turn_progress::not_started;
+        }
+
+        /** Unforgeable proof that the owned invocation returned through player-end. */
+        bool player_end_completed() const noexcept {
+            return player_end_completed_;
+        }
+
+    private:
+        friend class game;
+        friend class multiplayer_single_root_owner;
+
+        bool matches_owner_turn( const void *owner, const std::uint64_t shared_turn,
+                                 const std::uint64_t invocation ) const {
+            return completion_token_.owner_ == owner &&
+                   completion_token_.shared_turn_ == shared_turn &&
+                   completion_token_.invocation_ == invocation;
+        }
+
+        bool player_end_completed_ = false;
+        multiplayer_owned_turn_token completion_token_;
+};
+
+/**
+ * Synchronous, exactly-once permission to run the legacy authoritative world block.
+ * The owned-turn seam rejects a hook that omits this call or attempts it twice.
+ */
+class multiplayer_owned_world_thunk
+{
+    public:
+        multiplayer_owned_world_thunk( const multiplayer_owned_world_thunk & ) = delete;
+        multiplayer_owned_world_thunk &operator=( const multiplayer_owned_world_thunk & ) = delete;
+        multiplayer_owned_world_thunk( multiplayer_owned_world_thunk && ) = delete;
+        multiplayer_owned_world_thunk &operator=( multiplayer_owned_world_thunk && ) = delete;
+
+        bool operator()();
+
+    private:
+        friend class game;
+
+        explicit multiplayer_owned_world_thunk( std::function<void()> callback );
+
+        std::function<void()> callback_;
+        bool attempted_ = false;
+        bool completed_ = false;
+        bool repeated_ = false;
+};
+
+struct multiplayer_owned_remote_turn_hooks {
+        /** Executes one player action and performs all scheduler/action bookkeeping externally. */
+        std::function<bool()> execute_player_action;
+        /** Terminalizes the player phase, including paths on which no action callback ran. */
+        std::function<bool()> complete_player_phase;
+        /** Claims/records world ownership around the supplied exactly-once world thunk. */
+        std::function<bool( multiplayer_owned_world_thunk & )> execute_world;
+
+    private:
+        friend class game;
+        friend class multiplayer_single_root_owner;
+
+        multiplayer_owned_turn_token completion_token_;
+};
+
 class JsonObject;
 class JsonValue;
 class achievements_tracker;
@@ -238,6 +360,12 @@ class game
         bool do_turn();
         /** Runs one world turn with semantic remote actions instead of local input. */
         bool do_turn_remote( const std::function<std::optional<bool>()> &action_handler );
+        /**
+         * Runs an owner-orchestrated remote turn with external action bookkeeping,
+         * a mandatory player-phase terminal hook, and an exactly-once world hook.
+         */
+        multiplayer_owned_turn_result do_turn_remote_owned(
+            const multiplayer_owned_remote_turn_hooks &hooks );
 
         /** Loads static data that does not depend on mods or similar. */
         void load_static_data();
@@ -299,7 +427,9 @@ class game
             bool local_ui );
         int process_legacy_single_player_bubble_turn( avatar &legacy_anchor, map &here );
         bool do_turn_impl( const std::function<std::optional<bool>()> &remote_action_handler,
-                           bool local_ui );
+                           bool local_ui,
+                           const multiplayer_owned_remote_turn_hooks *owned_hooks,
+                           multiplayer_owned_turn_result *owned_result );
         void unserialize_impl( const JsonObject &data );
     public:
 

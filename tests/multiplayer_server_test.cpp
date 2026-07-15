@@ -242,6 +242,17 @@ completed_server_admission resume_server_client(
 
 } // namespace
 
+struct multiplayer_server_test_support {
+    static multiplayer_graceful_disconnect_result execute_graceful_disconnect_action(
+        multiplayer_dedicated_server &server,
+        multiplayer_server_lobby_action action,
+        const multiplayer_connection_id expected_connection,
+        std::string &error ) {
+        return server.execute_graceful_disconnect_action( std::move( action ),
+                expected_connection, error );
+    }
+};
+
 TEST_CASE( "multiplayer_server_logs_are_single_line_json_and_escape_untrusted_text",
            "[multiplayer][dedicated_server]" )
 {
@@ -561,10 +572,10 @@ TEST_CASE( "multiplayer_dedicated_server_runs_transport_handshake_auth_and_ping"
     REQUIRE( multiplayer_build_scene_snapshot_payload( snapshot, server_message.payload, error ) );
     REQUIRE( server.send( ordered_events.front().connection, server_message, error ) );
 
-    bool disconnect_completed = false;
-    REQUIRE( server.complete_graceful_disconnect( ordered_events.back(), disconnect_completed,
-             error ) );
-    REQUIRE( disconnect_completed );
+    REQUIRE( server.complete_graceful_disconnect( ordered_events.back(), error ) ==
+             multiplayer_graceful_disconnect_result::acknowledgement_queued );
+    CHECK( error.empty() );
+    CHECK( server.connection_is_closing( ordered_events.back().connection ) );
 
     REQUIRE( pump_until_readable( server, client, error ) );
     response = read_protocol_frame( client );
@@ -603,17 +614,341 @@ TEST_CASE( "multiplayer_dedicated_server_runs_transport_handshake_auth_and_ping"
     REQUIRE( disconnected_event );
     CHECK( disconnected_event->type == multiplayer_server_lobby_event_type::disconnected );
     CHECK( disconnected_event->connection == ordered_events.back().connection );
+    CHECK_FALSE( server.connection_is_closing( disconnected_event->connection ) );
 
-    disconnect_completed = true;
-    REQUIRE( server.complete_graceful_disconnect( ordered_events.back(), disconnect_completed,
-             error ) );
-    CHECK_FALSE( disconnect_completed );
+    CHECK( server.complete_graceful_disconnect( ordered_events.back(), error ) ==
+           multiplayer_graceful_disconnect_result::stale_request );
+    CHECK( error.empty() );
 
     server.stop();
     CHECK_FALSE( server.running() );
+    CHECK( server.complete_graceful_disconnect( ordered_events.back(), error ) ==
+           multiplayer_graceful_disconnect_result::server_or_transport_fatal );
+    CHECK( error == "dedicated server is not running" );
 }
 
-TEST_CASE( "multiplayer_dedicated_server_does_not_confirm_a_malformed_resumed_ping",
+TEST_CASE( "multiplayer_dedicated_server_treats_missing_graceful_response_as_no_ack_fallback",
+           "[multiplayer][dedicated_server]" )
+{
+    const std::string unique = "cdda-multiplayer-graceful-fallback-" + std::to_string(
+                                   std::chrono::steady_clock::now().time_since_epoch().count() );
+    const std::filesystem::path directory = std::filesystem::temp_directory_path() / unique;
+    REQUIRE( std::filesystem::create_directory( directory ) );
+    on_out_of_scope cleanup( [&directory]() {
+        std::error_code ignored;
+        std::filesystem::remove_all( directory, ignored );
+    } );
+    const std::filesystem::path config_path = directory / "server.json";
+    std::string error;
+    REQUIRE( initialize_multiplayer_server_files( config_path, error ) );
+    multiplayer_server_config_result loaded = load_multiplayer_server_config( config_path );
+    REQUIRE( loaded );
+    multiplayer_server_config config = std::move( *loaded.config );
+    const std::uint16_t port = unused_loopback_port();
+    config.network.listen = "127.0.0.1:" + std::to_string( port );
+
+    const std::string build_id = "graceful-fallback-test";
+    const std::string content_manifest =
+        "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    multiplayer_server_player_identity identity;
+    identity.player_id = "12345678-1234-4234-9234-123456789abc";
+    identity.character_id = "42";
+    multiplayer_dedicated_server server( config, config_path, build_id, content_manifest,
+                                         identity );
+    REQUIRE( server.start( error ) );
+
+    std::string bearer_token;
+    REQUIRE( load_multiplayer_server_bearer_token( config_path, config, bearer_token, error ) );
+    asio::io_context client_io;
+    asio::ip::tcp::socket client( client_io );
+    client.connect( asio::ip::tcp::endpoint( asio::ip::address_v4::loopback(), port ) );
+    negotiate_server_client( server, client, build_id, content_manifest, error );
+    const completed_server_admission authentication = authenticate_server_client(
+                server, client, bearer_token, 1, error );
+
+    multiplayer_protocol_envelope request;
+    request.message_type = multiplayer_protocol_message_type::disconnect_notice;
+    request.session = authentication.response.session;
+    request.sequence = 2;
+    REQUIRE( multiplayer_build_disconnect_notice_payload(
+    { multiplayer_protocol_rejection::none, "leave without response" },
+    request.payload, error ) );
+    send_protocol_frame( client, request );
+    const std::optional<multiplayer_server_lobby_event> graceful_request =
+        wait_for_server_event( server, error );
+    REQUIRE( graceful_request );
+    REQUIRE( graceful_request->type ==
+             multiplayer_server_lobby_event_type::graceful_disconnect_requested );
+
+    multiplayer_server_lobby_action fallback;
+    fallback.type = multiplayer_server_lobby_action_type::disconnect;
+    fallback.connection = graceful_request->connection;
+    fallback.reason = "graceful disconnect response failed";
+    CHECK( multiplayer_server_test_support::execute_graceful_disconnect_action(
+               server, std::move( fallback ), graceful_request->connection, error ) ==
+           multiplayer_graceful_disconnect_result::fallback_close_response_unavailable );
+    CHECK( error.empty() );
+    CHECK( server.running() );
+    CHECK( server.connection_is_closing( graceful_request->connection ) );
+
+    const std::optional<multiplayer_server_lobby_event> disconnected =
+        wait_for_server_event( server, error );
+    REQUIRE( disconnected );
+    CHECK( disconnected->type == multiplayer_server_lobby_event_type::disconnected );
+    CHECK( disconnected->connection == graceful_request->connection );
+    CHECK_FALSE( server.connection_is_closing( disconnected->connection ) );
+    CHECK( server.running() );
+
+    server.stop();
+}
+
+TEST_CASE( "multiplayer_dedicated_server_tracks_public_and_admission_closing_decisions",
+           "[multiplayer][dedicated_server]" )
+{
+    const std::string unique = "cdda-multiplayer-closing-decisions-" + std::to_string(
+                                   std::chrono::steady_clock::now().time_since_epoch().count() );
+    const std::filesystem::path directory = std::filesystem::temp_directory_path() / unique;
+    REQUIRE( std::filesystem::create_directory( directory ) );
+    on_out_of_scope cleanup( [&directory]() {
+        std::error_code ignored;
+        std::filesystem::remove_all( directory, ignored );
+    } );
+    const std::filesystem::path config_path = directory / "server.json";
+    std::string error;
+    REQUIRE( initialize_multiplayer_server_files( config_path, error ) );
+    multiplayer_server_config_result loaded = load_multiplayer_server_config( config_path );
+    REQUIRE( loaded );
+    multiplayer_server_config config = std::move( *loaded.config );
+    const std::uint16_t port = unused_loopback_port();
+    config.network.listen = "127.0.0.1:" + std::to_string( port );
+
+    const std::string build_id = "closing-decision-test";
+    const std::string content_manifest =
+        "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    multiplayer_server_player_identity identity;
+    identity.player_id = "12345678-1234-4234-9234-123456789abc";
+    identity.character_id = "42";
+    multiplayer_dedicated_server server( config, config_path, build_id, content_manifest,
+                                         identity );
+    REQUIRE( server.start( error ) );
+
+    std::string bearer_token;
+    REQUIRE( load_multiplayer_server_bearer_token( config_path, config, bearer_token, error ) );
+    asio::io_context client_io;
+    asio::ip::tcp::socket client( client_io );
+    client.connect( asio::ip::tcp::endpoint( asio::ip::address_v4::loopback(), port ) );
+    negotiate_server_client( server, client, build_id, content_manifest, error );
+
+    SECTION( "the public disconnect path marks before transport delivery" ) {
+        const completed_server_admission authentication = authenticate_server_client(
+                    server, client, bearer_token, 1, error );
+        const multiplayer_connection_id connection = authentication.committed.connection;
+        CHECK_FALSE( server.connection_is_closing( connection ) );
+
+        server.disconnect( connection, "simulation owner rejected the connection" );
+        CHECK( server.connection_is_closing( connection ) );
+
+        const std::optional<multiplayer_server_lobby_event> disconnected =
+            wait_for_server_event( server, error );
+        REQUIRE( disconnected );
+        CHECK( disconnected->type == multiplayer_server_lobby_event_type::disconnected );
+        CHECK( disconnected->connection == connection );
+        CHECK_FALSE( server.connection_is_closing( connection ) );
+    }
+
+    SECTION( "a rejected prepared admission is closing before response delivery" ) {
+        multiplayer_authenticate_request authentication;
+        authentication.display_name = "Rejected Tester";
+        authentication.bearer_token = bearer_token;
+        multiplayer_protocol_envelope request;
+        request.message_type = multiplayer_protocol_message_type::authenticate;
+        request.sequence = 1;
+        REQUIRE( multiplayer_build_authenticate_payload( authentication, request.payload,
+                 error ) );
+        send_protocol_frame( client, request );
+
+        const std::optional<multiplayer_server_lobby_event> pending =
+            wait_for_server_event( server, error );
+        REQUIRE( pending );
+        REQUIRE( pending->type == multiplayer_server_lobby_event_type::authentication_pending );
+        CHECK_FALSE( server.connection_is_closing( pending->connection ) );
+
+        multiplayer_server_lobby_admission_decision decision;
+        decision.rejection = multiplayer_protocol_rejection::permission_denied;
+        decision.message = "test admission rejected";
+        multiplayer_server_lobby_prepared_admission prepared;
+        REQUIRE( server.prepare_admission( *pending, decision, prepared, error ) );
+        bool published = false;
+        REQUIRE( server.publish_prepared_admission( std::move( prepared ), published, error ) );
+        REQUIRE( published );
+        CHECK( server.connection_is_closing( pending->connection ) );
+
+        REQUIRE( pump_until_readable( server, client, error ) );
+        const multiplayer_protocol_envelope response = read_protocol_frame( client );
+        multiplayer_authentication_result rejected;
+        REQUIRE( multiplayer_parse_authentication_result_payload( response, rejected, error ) );
+        CHECK_FALSE( rejected.accepted );
+        CHECK( rejected.rejection == multiplayer_protocol_rejection::permission_denied );
+
+        std::array<std::uint8_t, 1> end = {};
+        asio::error_code close_error;
+        client.read_some( asio::buffer( end ), close_error );
+        CHECK( close_error == asio::error::eof );
+        const auto terminal_deadline = std::chrono::steady_clock::now() +
+                                       std::chrono::seconds( 5 );
+        do {
+            REQUIRE( server.poll_once( std::chrono::steady_clock::now(), error ) );
+            if( server.connection_is_closing( pending->connection ) ) {
+                std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+            }
+        } while( server.connection_is_closing( pending->connection ) &&
+                 std::chrono::steady_clock::now() < terminal_deadline );
+        CHECK_FALSE( server.connection_is_closing( pending->connection ) );
+    }
+
+    server.disconnect( 999999, "test stale connection" );
+    CHECK( server.connection_is_closing( 999999 ) );
+    server.stop();
+    CHECK_FALSE( server.connection_is_closing( 999999 ) );
+}
+
+TEST_CASE( "multiplayer_dedicated_server_marks_a_closing_batch_before_delivering_its_command",
+           "[multiplayer][dedicated_server]" )
+{
+    const std::string unique = "cdda-multiplayer-closing-batch-" + std::to_string(
+                                   std::chrono::steady_clock::now().time_since_epoch().count() );
+    const std::filesystem::path directory = std::filesystem::temp_directory_path() / unique;
+    REQUIRE( std::filesystem::create_directory( directory ) );
+    on_out_of_scope cleanup( [&directory]() {
+        std::error_code ignored;
+        std::filesystem::remove_all( directory, ignored );
+    } );
+    const std::filesystem::path config_path = directory / "server.json";
+    std::string error;
+    REQUIRE( initialize_multiplayer_server_files( config_path, error ) );
+    multiplayer_server_config_result loaded = load_multiplayer_server_config( config_path );
+    REQUIRE( loaded );
+    multiplayer_server_config config = std::move( *loaded.config );
+    const std::uint16_t port = unused_loopback_port();
+    config.network.listen = "127.0.0.1:" + std::to_string( port );
+
+    const std::string build_id = "closing-batch-test";
+    const std::string content_manifest =
+        "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    multiplayer_server_player_identity identity;
+    identity.player_id = "12345678-1234-4234-9234-123456789abc";
+    identity.character_id = "42";
+    multiplayer_dedicated_server server( config, config_path, build_id, content_manifest,
+                                         identity );
+    REQUIRE( server.start( error ) );
+
+    std::string bearer_token;
+    REQUIRE( load_multiplayer_server_bearer_token( config_path, config, bearer_token, error ) );
+    asio::io_context client_io;
+    asio::ip::tcp::socket client( client_io );
+    const asio::ip::tcp::endpoint endpoint( asio::ip::address_v4::loopback(), port );
+    client.connect( endpoint );
+    negotiate_server_client( server, client, build_id, content_manifest, error );
+    const completed_server_admission authentication = authenticate_server_client(
+                server, client, bearer_token, 1, error );
+
+    multiplayer_protocol_envelope initial_ping;
+    initial_ping.message_type = multiplayer_protocol_message_type::ping;
+    initial_ping.session = authentication.response.session;
+    initial_ping.sequence = 2;
+    REQUIRE( multiplayer_build_ping_payload( { 2, 2 }, initial_ping.payload, error ) );
+    send_protocol_frame( client, initial_ping );
+    REQUIRE( pump_until_readable( server, client, error ) );
+    multiplayer_protocol_heartbeat initial_pong;
+    REQUIRE( multiplayer_parse_pong_payload( read_protocol_frame( client ), initial_pong,
+             error ) );
+    CHECK_FALSE( server.poll_event() );
+
+    asio::error_code close_error;
+    client.close( close_error );
+    REQUIRE_FALSE( close_error );
+    const std::optional<multiplayer_server_lobby_event> first_disconnect =
+        wait_for_server_event( server, error );
+    REQUIRE( first_disconnect );
+    REQUIRE( first_disconnect->type == multiplayer_server_lobby_event_type::disconnected );
+
+    multiplayer_resume_request resume;
+    resume.resume_token = authentication.resume_token;
+    resume.last_client_sequence = 2;
+    resume.session_generation = authentication.session_generation;
+    client = asio::ip::tcp::socket( client_io );
+    client.connect( endpoint );
+    negotiate_server_client( server, client, build_id, content_manifest, error );
+    const completed_server_admission resumed = resume_server_client(
+                server, client, resume, 2, error );
+    const multiplayer_connection_id connection = resumed.committed.connection;
+
+    multiplayer_player_command command;
+    command.client_sequence = 3;
+    command.base_revision = 0;
+    command.kind = multiplayer_command_kind::wait;
+    multiplayer_protocol_envelope command_envelope;
+    command_envelope.message_type = multiplayer_protocol_message_type::player_command;
+    command_envelope.session = resumed.response.session;
+    command_envelope.sequence = command.client_sequence;
+    REQUIRE( multiplayer_build_player_command_payload( command, command_envelope.payload, error ) );
+
+    multiplayer_protocol_envelope malformed_ping;
+    malformed_ping.message_type = multiplayer_protocol_message_type::ping;
+    malformed_ping.session = resumed.response.session;
+    malformed_ping.sequence = 4;
+    REQUIRE( multiplayer_build_ping_payload( { 4, 4 }, malformed_ping.payload, error ) );
+
+    multiplayer_transport_payload wire_batch;
+    for( const multiplayer_protocol_envelope *envelope : {
+             &command_envelope, &malformed_ping
+         } ) {
+        multiplayer_transport_payload protocol_bytes;
+        multiplayer_transport_payload frame;
+        REQUIRE( multiplayer_encode_protocol_envelope( *envelope, protocol_bytes, error ) );
+        if( envelope == &malformed_ping ) {
+            REQUIRE( protocol_bytes.size() > multiplayer_protocol_envelope_size + 4 );
+            std::fill_n( protocol_bytes.begin() + multiplayer_protocol_envelope_size, 4, 0xff );
+        }
+        REQUIRE( multiplayer_encode_transport_frame( protocol_bytes, frame, error ) );
+        wire_batch.insert( wire_batch.end(), frame.begin(), frame.end() );
+    }
+    asio::write( client, asio::buffer( wire_batch ) );
+
+    // Keep the earlier command queued while the wrapper drains both ordered frames.  The later
+    // malformed control must mark the connection before the simulation thread is allowed to
+    // inspect that command event.
+    const auto closing_deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds( 5 );
+    do {
+        REQUIRE( server.poll_once( std::chrono::steady_clock::now(), error ) );
+        if( !server.connection_is_closing( connection ) ) {
+            std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+        }
+    } while( !server.connection_is_closing( connection ) &&
+             std::chrono::steady_clock::now() < closing_deadline );
+    REQUIRE( server.connection_is_closing( connection ) );
+
+    const std::optional<multiplayer_server_lobby_event> queued_command = server.poll_event();
+    REQUIRE( queued_command );
+    REQUIRE( queued_command->type == multiplayer_server_lobby_event_type::application_message );
+    CHECK( queued_command->message.message_type ==
+           multiplayer_protocol_message_type::player_command );
+    CHECK( queued_command->message.sequence == command.client_sequence );
+    CHECK( queued_command->confirms_resume_generation );
+    CHECK( server.connection_is_closing( connection ) );
+
+    const std::optional<multiplayer_server_lobby_event> terminal =
+        wait_for_server_event( server, error );
+    REQUIRE( terminal );
+    CHECK( terminal->type == multiplayer_server_lobby_event_type::disconnected );
+    CHECK( terminal->connection == connection );
+    CHECK_FALSE( server.connection_is_closing( connection ) );
+
+    server.stop();
+}
+
+TEST_CASE( "multiplayer_dedicated_server_does_not_confirm_malformed_resumed_control",
            "[multiplayer][dedicated_server]" )
 {
     const std::string unique = "cdda-multiplayer-confirmation-" + std::to_string(
@@ -684,18 +1019,34 @@ TEST_CASE( "multiplayer_dedicated_server_does_not_confirm_a_malformed_resumed_pi
     const completed_server_admission resumed = resume_server_client(
                 server, client, resume, 2, error );
 
-    multiplayer_protocol_envelope malformed;
-    malformed.message_type = multiplayer_protocol_message_type::ping;
-    malformed.session = resumed.response.session;
-    malformed.sequence = 3;
-    REQUIRE( multiplayer_build_ping_payload( { 3, 3 }, malformed.payload, error ) );
-    multiplayer_transport_payload malformed_protocol;
-    REQUIRE( multiplayer_encode_protocol_envelope( malformed, malformed_protocol, error ) );
-    REQUIRE( malformed_protocol.size() > multiplayer_protocol_envelope_size + 4 );
-    std::fill_n( malformed_protocol.begin() + multiplayer_protocol_envelope_size, 4, 0xff );
-    multiplayer_transport_payload malformed_frame;
-    REQUIRE( multiplayer_encode_transport_frame( malformed_protocol, malformed_frame, error ) );
-    asio::write( client, asio::buffer( malformed_frame ) );
+    std::uint64_t confirmation_sequence = 4;
+    SECTION( "a malformed ping is rejected by the dedicated wrapper" ) {
+        multiplayer_protocol_envelope malformed;
+        malformed.message_type = multiplayer_protocol_message_type::ping;
+        malformed.session = resumed.response.session;
+        malformed.sequence = 3;
+        REQUIRE( multiplayer_build_ping_payload( { 3, 3 }, malformed.payload, error ) );
+        multiplayer_transport_payload malformed_protocol;
+        REQUIRE( multiplayer_encode_protocol_envelope( malformed, malformed_protocol, error ) );
+        REQUIRE( malformed_protocol.size() > multiplayer_protocol_envelope_size + 4 );
+        std::fill_n( malformed_protocol.begin() + multiplayer_protocol_envelope_size, 4, 0xff );
+        multiplayer_transport_payload malformed_frame;
+        REQUIRE( multiplayer_encode_transport_frame( malformed_protocol, malformed_frame, error ) );
+        asio::write( client, asio::buffer( malformed_frame ) );
+    }
+    SECTION( "a malformed resync is rejected before lobby confirmation" ) {
+        confirmation_sequence = 3;
+        multiplayer_protocol_envelope malformed;
+        malformed.message_type = multiplayer_protocol_message_type::resync_request;
+        malformed.session = resumed.response.session;
+        malformed.sequence = 3;
+        REQUIRE( multiplayer_build_resync_request_payload( { 0, "x" }, malformed.payload,
+                 error ) );
+        const auto reason = std::find( malformed.payload.begin(), malformed.payload.end(), 'x' );
+        REQUIRE( reason != malformed.payload.end() );
+        *reason = 0x01;
+        send_protocol_frame( client, malformed );
+    }
     disconnected = wait_for_server_event( server, error );
     REQUIRE( disconnected );
     CHECK( disconnected->type == multiplayer_server_lobby_event_type::disconnected );
@@ -712,8 +1063,9 @@ TEST_CASE( "multiplayer_dedicated_server_does_not_confirm_a_malformed_resumed_pi
     ping = {};
     ping.message_type = multiplayer_protocol_message_type::ping;
     ping.session = replayed.response.session;
-    ping.sequence = 4;
-    REQUIRE( multiplayer_build_ping_payload( { 4, 4 }, ping.payload, error ) );
+    ping.sequence = confirmation_sequence;
+    REQUIRE( multiplayer_build_ping_payload(
+    { confirmation_sequence, confirmation_sequence }, ping.payload, error ) );
     send_protocol_frame( client, ping );
     REQUIRE( pump_until_readable( server, client, error ) );
     pong = read_protocol_frame( client );

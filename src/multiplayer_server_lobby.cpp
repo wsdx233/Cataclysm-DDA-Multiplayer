@@ -210,6 +210,14 @@ std::vector<multiplayer_server_lobby_action> multiplayer_server_lobby::handle_fr
                                                 "invalid semantic player command" ) };
                 }
             }
+            if( envelope.message_type == multiplayer_protocol_message_type::resync_request ) {
+                multiplayer_resync_request request;
+                if( !multiplayer_parse_resync_request_payload( envelope, request, error ) ) {
+                    state.stage = connection_stage::closing;
+                    return { disconnect_action( connection,
+                                                "invalid semantic resync request" ) };
+                }
+            }
             if( envelope.message_type != multiplayer_protocol_message_type::disconnect_notice &&
                 !application_event_capacity_available() ) {
                 state.stage = connection_stage::closing;

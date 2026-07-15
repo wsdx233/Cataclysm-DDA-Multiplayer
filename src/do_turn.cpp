@@ -520,14 +520,65 @@ void game::handle_progress_ui()
     }
 }
 
+multiplayer_owned_world_thunk::multiplayer_owned_world_thunk(
+    std::function<void()> callback ) :
+    callback_( std::move( callback ) )
+{
+}
+
+bool multiplayer_owned_world_thunk::operator()()
+{
+    if( attempted_ ) {
+        repeated_ = true;
+        return false;
+    }
+    attempted_ = true;
+    callback_();
+    completed_ = true;
+    return true;
+}
+
 bool game::do_turn()
 {
-    return do_turn_impl( {}, true );
+    return do_turn_impl( {}, true, nullptr, nullptr );
 }
 
 bool game::do_turn_remote( const std::function<std::optional<bool>()> &action_handler )
 {
-    return do_turn_impl( action_handler, false );
+    return do_turn_impl( action_handler, false, nullptr, nullptr );
+}
+
+multiplayer_owned_turn_result game::do_turn_remote_owned(
+    const multiplayer_owned_remote_turn_hooks &hooks )
+{
+    multiplayer_owned_turn_result result;
+    if( !hooks.execute_player_action || !hooks.complete_player_phase ||
+        !hooks.execute_world ) {
+        return result;
+    }
+
+    result.completion_token_ = hooks.completion_token_;
+    result.abort_stage = multiplayer_owned_turn_abort_stage::none;
+    try {
+        do_turn_impl( {}, false, &hooks, &result );
+    } catch( ... ) {
+        result.status = multiplayer_owned_turn_status::aborted;
+        switch( result.progress ) {
+            case multiplayer_owned_turn_progress::not_started:
+            case multiplayer_owned_turn_progress::turn_started:
+                result.abort_stage = multiplayer_owned_turn_abort_stage::player_phase;
+                break;
+            case multiplayer_owned_turn_progress::player_phase_completed:
+            case multiplayer_owned_turn_progress::world_started:
+                result.abort_stage = multiplayer_owned_turn_abort_stage::world;
+                break;
+            case multiplayer_owned_turn_progress::world_completed:
+            case multiplayer_owned_turn_progress::turn_completed:
+                result.abort_stage = multiplayer_owned_turn_abort_stage::player_end;
+                break;
+        }
+    }
+    return result;
 }
 
 void game::record_turn_player_action( avatar &player )
@@ -588,13 +639,23 @@ int game::process_legacy_single_player_bubble_turn( avatar &legacy_anchor, map &
 }
 
 bool game::do_turn_impl( const std::function<std::optional<bool>()> &remote_action_handler,
-                         const bool local_ui )
+                         const bool local_ui,
+                         const multiplayer_owned_remote_turn_hooks *const owned_hooks,
+                         multiplayer_owned_turn_result *const owned_result )
 {
+    const bool owned_remote = owned_hooks != nullptr && owned_result != nullptr;
     if( is_game_over() ) {
+        if( owned_remote ) {
+            owned_result->status = multiplayer_owned_turn_status::game_over;
+            owned_result->abort_stage = multiplayer_owned_turn_abort_stage::none;
+        }
         return local_ui ? turn_handler::cleanup_at_end() : true;
     }
 
     multiplayer_turn_phase_trace phase_trace( multiplayer_turn_phase::turn_begin );
+    if( owned_remote ) {
+        owned_result->progress = multiplayer_owned_turn_progress::turn_started;
+    }
 
     if( local_ui ) {
         drain_renderer_recovery();
@@ -706,6 +767,7 @@ bool game::do_turn_impl( const std::function<std::optional<bool>()> &remote_acti
     }
 
     phase_trace.enter( multiplayer_turn_phase::player_input );
+    bool owned_game_over = false;
     // avatar processes human input through handle_action()
     if( !u.has_effect( effect_sleep ) || uquit == QUIT_WATCH ) {
         if( u.get_moves() > 0 || uquit == QUIT_WATCH ) {
@@ -735,13 +797,32 @@ bool game::do_turn_impl( const std::function<std::optional<bool>()> &remote_acti
                     queue_screenshot = false;
                 }
 
-                const std::optional<bool> action_result =
-                    execute_turn_player_action( remote_action_handler, local_ui );
-                if( !action_result ) {
-                    return true;
+                if( owned_remote ) {
+                    bool action_succeeded = false;
+                    try {
+                        action_succeeded = owned_hooks->execute_player_action();
+                    } catch( ... ) {
+                        action_succeeded = false;
+                    }
+                    if( !action_succeeded ) {
+                        owned_result->status = multiplayer_owned_turn_status::aborted;
+                        owned_result->abort_stage =
+                            multiplayer_owned_turn_abort_stage::player_action;
+                        return true;
+                    }
+                } else {
+                    const std::optional<bool> action_result =
+                        execute_turn_player_action( remote_action_handler, local_ui );
+                    if( !action_result ) {
+                        return true;
+                    }
                 }
 
                 if( is_game_over() ) {
+                    if( owned_remote ) {
+                        owned_game_over = true;
+                        break;
+                    }
                     return local_ui ? turn_handler::cleanup_at_end() : true;
                 }
 
@@ -792,8 +873,49 @@ bool game::do_turn_impl( const std::function<std::optional<bool>()> &remote_acti
         calc_driving_offset( veh );
     }
 
+    if( owned_remote ) {
+        bool player_phase_completed = false;
+        try {
+            player_phase_completed = owned_hooks->complete_player_phase();
+        } catch( ... ) {
+            player_phase_completed = false;
+        }
+        if( !player_phase_completed ) {
+            owned_result->status = multiplayer_owned_turn_status::aborted;
+            owned_result->abort_stage =
+                multiplayer_owned_turn_abort_stage::player_phase_completion;
+            return true;
+        }
+        owned_result->progress = multiplayer_owned_turn_progress::player_phase_completed;
+        if( owned_game_over || is_game_over() ) {
+            owned_result->status = multiplayer_owned_turn_status::game_over;
+            owned_result->abort_stage = multiplayer_owned_turn_abort_stage::none;
+            return true;
+        }
+    }
+
     phase_trace.enter( multiplayer_turn_phase::world );
-    const int levz = process_legacy_single_player_bubble_turn( u, m );
+    int levz = 0;
+    if( owned_remote ) {
+        multiplayer_owned_world_thunk world_thunk( [&]() {
+            owned_result->progress = multiplayer_owned_turn_progress::world_started;
+            levz = process_legacy_single_player_bubble_turn( u, m );
+            owned_result->progress = multiplayer_owned_turn_progress::world_completed;
+        } );
+        bool world_succeeded = false;
+        try {
+            world_succeeded = owned_hooks->execute_world( world_thunk );
+        } catch( ... ) {
+            world_succeeded = false;
+        }
+        if( !world_succeeded || !world_thunk.completed_ || world_thunk.repeated_ ) {
+            owned_result->status = multiplayer_owned_turn_status::aborted;
+            owned_result->abort_stage = multiplayer_owned_turn_abort_stage::world;
+            return true;
+        }
+    } else {
+        levz = process_legacy_single_player_bubble_turn( u, m );
+    }
 
     phase_trace.enter( multiplayer_turn_phase::player_end );
     // replenish avatar moves
@@ -854,5 +976,11 @@ bool game::do_turn_impl( const std::function<std::optional<bool>()> &remote_acti
 #endif
 
     debug_menu::debug_capture::tick_if_active();
+    if( owned_remote ) {
+        owned_result->status = multiplayer_owned_turn_status::completed;
+        owned_result->progress = multiplayer_owned_turn_progress::turn_completed;
+        owned_result->abort_stage = multiplayer_owned_turn_abort_stage::none;
+        owned_result->player_end_completed_ = true;
+    }
     return false;
 }

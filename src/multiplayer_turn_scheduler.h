@@ -128,6 +128,14 @@ class multiplayer_turn_scheduler
             const multiplayer_turn_participant_key &participant,
             multiplayer_turn_action_disposition disposition );
 
+        /**
+         * Terminalizes the exact current awaiting slot after its player phase
+         * completed without executing a semantic command.  Stale generations,
+         * non-current slots, non-awaiting states, duplicates, and faults reject.
+         */
+        bool record_player_phase_completed(
+            const multiplayer_turn_participant_key &participant );
+
         /** Barrier-local state; authoritative session ownership remains external. */
         bool mark_barrier_disconnected(
             const multiplayer_turn_participant_key &participant );

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -646,6 +647,59 @@ TEST_CASE( "multiplayer_server_lobby_resume_pending_and_committed_replay_are_sin
         CHECK( rejected.rejection == multiplayer_protocol_rejection::session_expired );
         CHECK( rejected.message.find( "stale" ) != std::string::npos );
         CHECK_FALSE( lobby.poll_event() );
+    }
+
+    SECTION( "a malformed resync does not consume the committed resume replay" ) {
+        multiplayer_server_lobby lobby( lobby_settings() );
+        complete_hello( lobby, 1, now );
+        const completed_authentication authentication = authenticate_successfully( lobby, 1, now );
+        confirm_fresh_authentication( lobby, authentication, 1, now );
+        lobby.handle_transport_event( closed_event( 1 ), now );
+        REQUIRE( lobby.poll_event() );
+
+        multiplayer_resume_request request;
+        request.resume_token = authentication.result.resume_token;
+        request.last_server_revision = 12;
+        request.last_client_sequence = 7;
+        request.session_generation = authentication.result.session_generation;
+        complete_hello( lobby, 2, now );
+        const completed_resume resumed = resume_successfully( lobby, 2, request, now, 2 );
+
+        multiplayer_protocol_envelope malformed;
+        malformed.message_type = multiplayer_protocol_message_type::resync_request;
+        malformed.session = resumed.response.session;
+        malformed.sequence = 8;
+        std::string error;
+        REQUIRE( multiplayer_build_resync_request_payload( { 12, "x" }, malformed.payload,
+                 error ) );
+        const auto reason = std::find( malformed.payload.begin(), malformed.payload.end(), 'x' );
+        REQUIRE( reason != malformed.payload.end() );
+        *reason = 0x01;
+
+        const std::vector<multiplayer_server_lobby_action> actions =
+            lobby.handle_transport_event( frame_event( 2, malformed ), now );
+        REQUIRE( actions.size() == 1 );
+        CHECK( actions.front().type == multiplayer_server_lobby_action_type::disconnect );
+        CHECK( actions.front().reason.find( "resync" ) != std::string::npos );
+        CHECK_FALSE( lobby.poll_event() );
+
+        lobby.handle_transport_event( closed_event( 2 ), now );
+        const std::optional<multiplayer_server_lobby_event> disconnected = lobby.poll_event();
+        REQUIRE( disconnected );
+        CHECK( disconnected->type == multiplayer_server_lobby_event_type::disconnected );
+        CHECK_FALSE( lobby.poll_event() );
+
+        complete_hello( lobby, 3, now );
+        const completed_resume replayed = resume_successfully( lobby, 3, request, now, 2 );
+        CHECK( replayed.result.session_generation == resumed.result.session_generation );
+
+        CHECK( lobby.handle_transport_event( frame_event(
+                3, player_command_envelope( replayed.response.session, 8 ) ), now ).empty() );
+        const std::optional<multiplayer_server_lobby_event> confirmation = lobby.poll_event();
+        REQUIRE( confirmation );
+        CHECK( confirmation->type ==
+               multiplayer_server_lobby_event_type::application_message );
+        CHECK( confirmation->confirms_resume_generation );
     }
 
     SECTION( "a downstream queue rejection retains the resume replay until acknowledgement" ) {

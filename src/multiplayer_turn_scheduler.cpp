@@ -152,6 +152,20 @@ bool multiplayer_turn_scheduler::record_action_result(
     return false;
 }
 
+bool multiplayer_turn_scheduler::record_player_phase_completed(
+    const multiplayer_turn_participant_key &participant )
+{
+    const std::optional<multiplayer_turn_slot> slot = current_slot();
+    if( !slot || slot->participant != participant ||
+        slot->state != multiplayer_turn_participant_state::awaiting_command ) {
+        return false;
+    }
+
+    participants_[cursor_].state = multiplayer_turn_participant_state::finished;
+    advance_from_current();
+    return true;
+}
+
 bool multiplayer_turn_scheduler::mark_barrier_disconnected(
     const multiplayer_turn_participant_key &participant )
 {

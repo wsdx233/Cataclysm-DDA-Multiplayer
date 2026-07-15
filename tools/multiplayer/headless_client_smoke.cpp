@@ -171,7 +171,9 @@ int main( int argc, char **argv )
         const multiplayer_session_id first_session = response.session;
         require( first_session != multiplayer_session_id {}, "authentication returned an empty session" );
 
-        const multiplayer_scene_snapshot initial_scene = read_scene( client );
+        multiplayer_protocol_envelope initial_scene_envelope;
+        const multiplayer_scene_snapshot initial_scene = read_scene(
+                    client, &initial_scene_envelope );
         require( initial_scene.server_revision > 0 && !initial_scene.tiles.empty(),
                  "authenticated client did not receive a usable full scene" );
         require( initial_scene.player.player_id == authenticated.player_id &&
@@ -188,36 +190,100 @@ int main( int argc, char **argv )
         require( multiplayer_build_resync_request_payload(
                      resync_request, request.payload, error ), error );
         send_envelope( client, request );
-        const multiplayer_scene_snapshot resynchronized_scene = read_scene( client );
+        multiplayer_protocol_envelope resynchronized_scene_envelope;
+        const multiplayer_scene_snapshot resynchronized_scene = read_scene(
+                    client, &resynchronized_scene_envelope );
         require( resynchronized_scene.server_revision == initial_scene.server_revision,
                  "resync request did not return the current full snapshot" );
+        require( resynchronized_scene_envelope.payload == initial_scene_envelope.payload,
+                 "initial resync changed the last completed scene payload" );
+        client.close( ignored );
+
+        multiplayer_resume_request resume;
+        resume.resume_token = authenticated.resume_token;
+        resume.last_server_revision = resynchronized_scene.server_revision;
+        resume.last_client_sequence = 2;
+        resume.session_generation = authenticated.session_generation;
+
+        tcp::socket barrier_resumed_client( io );
+        barrier_resumed_client.connect( endpoint );
+        const multiplayer_server_hello barrier_resumed_hello = exchange_hello(
+                    barrier_resumed_client, discovered.build_id, discovered.content_manifest,
+                    discovered.savegame_version );
+        require( barrier_resumed_hello.accepted,
+                 "open-barrier resume connection handshake was rejected" );
+        request = {};
+        request.message_type = multiplayer_protocol_message_type::resume_request;
+        request.sequence = 1;
+        require( multiplayer_build_resume_request_payload( resume, request.payload, error ), error );
+        send_envelope( barrier_resumed_client, request );
+        response = read_envelope( barrier_resumed_client );
+        multiplayer_resume_result resume_result;
+        require( multiplayer_parse_resume_result_payload( response, resume_result, error ), error );
+        require( resume_result.accepted && resume_result.full_snapshot_required,
+                 "open-barrier session resume was rejected: " + resume_result.message );
+        require( resume_result.session_generation == authenticated.session_generation + 1,
+                 "open-barrier resume did not advance generation exactly once" );
+        const std::uint64_t barrier_resumed_generation = resume_result.session_generation;
+        const multiplayer_session_id barrier_resumed_session = response.session;
+        require( barrier_resumed_session != first_session &&
+                 barrier_resumed_session != multiplayer_session_id {},
+                 "open-barrier resume did not rotate the authenticated session id" );
+        multiplayer_protocol_envelope barrier_resumed_scene_envelope;
+        const multiplayer_scene_snapshot barrier_resumed_scene = read_scene(
+                    barrier_resumed_client, &barrier_resumed_scene_envelope );
+        require( barrier_resumed_scene.server_revision ==
+                 resynchronized_scene.server_revision,
+                 "open-barrier resume did not retain the last completed revision" );
+        require( barrier_resumed_scene_envelope.payload ==
+                 resynchronized_scene_envelope.payload,
+                 "open-barrier resume exposed a partial live scene" );
+
+        resync_request.client_revision = barrier_resumed_scene.server_revision;
+        resync_request.reason = "process smoke open-barrier cached snapshot request";
+        request = {};
+        request.message_type = multiplayer_protocol_message_type::resync_request;
+        request.session = barrier_resumed_session;
+        request.sequence = 3;
+        require( multiplayer_build_resync_request_payload(
+                     resync_request, request.payload, error ), error );
+        send_envelope( barrier_resumed_client, request );
+        multiplayer_protocol_envelope barrier_resynchronized_scene_envelope;
+        const multiplayer_scene_snapshot barrier_resynchronized_scene = read_scene(
+                    barrier_resumed_client, &barrier_resynchronized_scene_envelope );
+        require( barrier_resynchronized_scene.server_revision ==
+                 barrier_resumed_scene.server_revision,
+                 "open-barrier resync changed the completed scene revision" );
+        require( barrier_resynchronized_scene_envelope.payload ==
+                 resynchronized_scene_envelope.payload,
+                 "open-barrier resync exposed a partial live scene" );
 
         multiplayer_player_command command;
-        command.client_sequence = 3;
-        command.base_revision = resynchronized_scene.server_revision;
+        command.client_sequence = 4;
+        command.base_revision = barrier_resynchronized_scene.server_revision;
         command.kind = multiplayer_command_kind::wait;
         request = {};
         request.message_type = multiplayer_protocol_message_type::player_command;
-        request.session = first_session;
+        request.session = barrier_resumed_session;
         request.sequence = command.client_sequence;
         require( multiplayer_build_player_command_payload( command, request.payload, error ), error );
         const multiplayer_transport_payload original_command_payload = request.payload;
-        send_envelope( client, request );
+        send_envelope( barrier_resumed_client, request );
 
-        response = read_envelope( client );
+        response = read_envelope( barrier_resumed_client );
         multiplayer_command_result command_result;
         require( multiplayer_parse_command_result_payload( response, command_result, error ), error );
         require( command_result.status == multiplayer_command_status::accepted,
                  "authoritative wait command was rejected: " + command_result.message );
         require( command_result.client_sequence == command.client_sequence &&
-                 command_result.server_revision > initial_scene.server_revision,
+                 command_result.server_revision == barrier_resynchronized_scene.server_revision,
                  "command result revision/sequence correlation is invalid" );
-        const multiplayer_scene_snapshot action_scene = read_scene( client );
-        const multiplayer_scene_snapshot world_scene = read_scene( client );
-        require( action_scene.server_revision == command_result.server_revision &&
-                 world_scene.server_revision > action_scene.server_revision,
-                 "server did not publish action and post-world revisions in order" );
-        client.close( ignored );
+        require( command_result.moves_spent > 0,
+                 "authoritative wait command did not spend player moves" );
+        const multiplayer_scene_snapshot completed_scene = read_scene( barrier_resumed_client );
+        require( completed_scene.server_revision > command_result.server_revision,
+                 "server did not publish one completed owned-turn scene" );
+        barrier_resumed_client.close( ignored );
 
         tcp::socket resumed_client( io );
         resumed_client.connect( endpoint );
@@ -225,29 +291,28 @@ int main( int argc, char **argv )
                     resumed_client, discovered.build_id, discovered.content_manifest,
                     discovered.savegame_version );
         require( resumed_hello.accepted, "resume connection handshake was rejected" );
-        multiplayer_resume_request resume;
-        resume.resume_token = authenticated.resume_token;
-        resume.last_server_revision = initial_scene.server_revision;
-        resume.last_client_sequence = 2;
-        resume.session_generation = authenticated.session_generation;
+        resume.last_server_revision = barrier_resynchronized_scene.server_revision;
+        resume.last_client_sequence = 3;
+        resume.session_generation = barrier_resumed_generation;
         request = {};
         request.message_type = multiplayer_protocol_message_type::resume_request;
         request.sequence = 1;
         require( multiplayer_build_resume_request_payload( resume, request.payload, error ), error );
         send_envelope( resumed_client, request );
         response = read_envelope( resumed_client );
-        multiplayer_resume_result resume_result;
+        resume_result = {};
         require( multiplayer_parse_resume_result_payload( response, resume_result, error ), error );
         require( resume_result.accepted && resume_result.full_snapshot_required,
                  "session resume was rejected: " + resume_result.message );
-        require( resume_result.session_generation == authenticated.session_generation + 1,
+        require( resume_result.session_generation == barrier_resumed_generation + 1,
                  "session resume did not advance generation exactly once" );
         const std::uint64_t resumed_generation = resume_result.session_generation;
         const multiplayer_session_id resumed_session = response.session;
-        require( resumed_session != first_session && resumed_session != multiplayer_session_id {},
+        require( resumed_session != barrier_resumed_session &&
+                 resumed_session != multiplayer_session_id {},
                  "resume did not rotate the authenticated session id" );
         const multiplayer_scene_snapshot resumed_scene = read_scene( resumed_client );
-        require( resumed_scene.server_revision == world_scene.server_revision,
+        require( resumed_scene.server_revision == completed_scene.server_revision,
                  "resume full snapshot is not at the current authoritative revision" );
 
         request = {};
@@ -263,9 +328,30 @@ int main( int argc, char **argv )
                  duplicate.client_sequence == command.client_sequence &&
                  duplicate.server_revision == command_result.server_revision,
                  "reconnect replay was not answered from the idempotency cache" );
-        const multiplayer_scene_snapshot replay_scene = read_scene( resumed_client );
-        require( replay_scene.server_revision == resumed_scene.server_revision,
-                 "duplicate replay unexpectedly mutated the authoritative revision" );
+
+        multiplayer_player_command follow_up_command;
+        follow_up_command.client_sequence = command.client_sequence + 1;
+        follow_up_command.base_revision = resumed_scene.server_revision;
+        follow_up_command.kind = multiplayer_command_kind::wait;
+        request = {};
+        request.message_type = multiplayer_protocol_message_type::player_command;
+        request.session = resumed_session;
+        request.sequence = follow_up_command.client_sequence;
+        require( multiplayer_build_player_command_payload(
+                     follow_up_command, request.payload, error ), error );
+        send_envelope( resumed_client, request );
+        response = read_envelope( resumed_client );
+        multiplayer_command_result follow_up_result;
+        require( multiplayer_parse_command_result_payload(
+                     response, follow_up_result, error ), error );
+        require( follow_up_result.status == multiplayer_command_status::accepted &&
+                 follow_up_result.client_sequence == follow_up_command.client_sequence &&
+                 follow_up_result.server_revision == resumed_scene.server_revision &&
+                 follow_up_result.moves_spent > 0,
+                 "fresh command after duplicate replay did not finish the resumed player phase" );
+        const multiplayer_scene_snapshot replay_completed_scene = read_scene( resumed_client );
+        require( replay_completed_scene.server_revision > resumed_scene.server_revision,
+                 "resumed owned turn did not publish one new completed scene" );
         resumed_client.close( ignored );
 
         tcp::socket conflict_client( io );
@@ -283,9 +369,11 @@ int main( int argc, char **argv )
         require( multiplayer_parse_resume_result_payload( response, resume_result, error ), error );
         require( resume_result.accepted &&
                  resume_result.session_generation == resumed_generation + 1,
-                 "second resume was rejected or did not advance generation exactly once" );
+                 "third resume was rejected or did not advance generation exactly once" );
         const multiplayer_session_id conflict_session = response.session;
         const multiplayer_scene_snapshot conflict_scene = read_scene( conflict_client );
+        require( conflict_scene.server_revision == replay_completed_scene.server_revision,
+                 "third resume did not replay the latest completed scene" );
         command.base_revision = conflict_scene.server_revision;
         request = {};
         request.message_type = multiplayer_protocol_message_type::player_command;
@@ -304,8 +392,13 @@ int main( int argc, char **argv )
         conflict_client.close( ignored );
 
         std::cout << "headless multiplayer smoke passed: handshake rejection/acceptance, auth, "
-                  << "full scene/resync, wait command, world revision, resume, duplicate replay, "
-                  << "sequence-conflict disconnect\n";
+                  << "full scene/resync, open-barrier cached resume/resync, "
+                  << "completed-turn scene, duplicate replay, "
+                  << "same-turn follow-up, "
+                  << "sequence-conflict disconnect; revisions "
+                  << initial_scene.server_revision << " -> "
+                  << completed_scene.server_revision << " -> "
+                  << replay_completed_scene.server_revision << '\n';
         return 0;
     } catch( const std::exception &error ) {
         std::cerr << "headless multiplayer smoke failed: " << error.what() << '\n';

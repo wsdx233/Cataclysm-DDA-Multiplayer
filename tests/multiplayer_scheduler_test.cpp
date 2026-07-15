@@ -169,6 +169,75 @@ TEST_CASE( "multiplayer_turn_scheduler_round_robin_records_typed_results",
     CHECK( scheduler.current_slot()->participant == beta );
 }
 
+TEST_CASE( "multiplayer_turn_scheduler_terminalizes_a_completed_player_phase_without_a_command",
+           "[multiplayer][scheduler]" )
+{
+    multiplayer_turn_scheduler scheduler;
+    const multiplayer_turn_participant_key alpha = participant( 1 );
+    const multiplayer_turn_participant_key beta = participant( 2 );
+    const multiplayer_turn_participant_key gamma = participant( 3 );
+
+    CHECK_FALSE( scheduler.record_player_phase_completed( alpha ) );
+    REQUIRE( scheduler.begin_turn( 1, { gamma, alpha, beta } ) );
+    REQUIRE( scheduler.current_slot() );
+    CHECK( scheduler.current_slot()->participant == alpha );
+
+    CHECK_FALSE( scheduler.record_player_phase_completed( beta ) );
+    CHECK_FALSE( scheduler.record_player_phase_completed(
+    { alpha.player_id, 2 } ) );
+    REQUIRE( scheduler.record_player_phase_completed( alpha ) );
+    CHECK( scheduler.participant_state( alpha.player_id ) ==
+           multiplayer_turn_participant_state::finished );
+    REQUIRE( scheduler.current_slot() );
+    CHECK( scheduler.current_slot()->participant == beta );
+    CHECK( scheduler.current_slot()->ordering.round == 0 );
+    CHECK_FALSE( scheduler.record_player_phase_completed( alpha ) );
+
+    REQUIRE( scheduler.mark_barrier_disconnected( beta ) );
+    CHECK_FALSE( scheduler.record_player_phase_completed( beta ) );
+    REQUIRE( scheduler.resume_barrier_participant( beta, 2 ) );
+    const multiplayer_turn_participant_key resumed_beta = { beta.player_id, 2 };
+    CHECK_FALSE( scheduler.record_player_phase_completed( beta ) );
+    REQUIRE( scheduler.record_player_phase_completed( resumed_beta ) );
+    REQUIRE( scheduler.current_slot() );
+    CHECK( scheduler.current_slot()->participant == gamma );
+    CHECK( scheduler.current_slot()->ordering.round == 0 );
+
+    REQUIRE( scheduler.record_action_result(
+                 gamma, multiplayer_turn_action_disposition::accepted_remains_eligible ) );
+    REQUIRE( scheduler.current_slot() );
+    CHECK( scheduler.current_slot()->participant == gamma );
+    CHECK( scheduler.current_slot()->ordering.round == 1 );
+    REQUIRE( scheduler.record_player_phase_completed( gamma ) );
+    CHECK( scheduler.stage() == multiplayer_turn_scheduler_stage::world_ready );
+    CHECK_FALSE( scheduler.current_slot() );
+    CHECK_FALSE( scheduler.record_player_phase_completed( gamma ) );
+
+    const std::optional<multiplayer_world_ticket> ticket = scheduler.claim_world();
+    REQUIRE( ticket );
+    CHECK_FALSE( scheduler.record_player_phase_completed( gamma ) );
+    REQUIRE( scheduler.record_world_completed( *ticket ) );
+    CHECK_FALSE( scheduler.record_player_phase_completed( gamma ) );
+}
+
+TEST_CASE( "multiplayer_turn_scheduler_player_phase_completion_requires_awaiting_state",
+           "[multiplayer][scheduler]" )
+{
+    multiplayer_turn_scheduler scheduler;
+    const multiplayer_turn_participant_key alpha = participant( 1 );
+    REQUIRE( scheduler.begin_turn( 1, { alpha } ) );
+    REQUIRE( scheduler.mark_barrier_disconnected( alpha ) );
+
+    CHECK_FALSE( scheduler.record_player_phase_completed( alpha ) );
+    REQUIRE( scheduler.apply_disconnect_timeout(
+                 alpha, multiplayer_disconnect_timeout_policy::automatic_wait ) );
+    CHECK( scheduler.participant_state( alpha.player_id ) ==
+           multiplayer_turn_participant_state::automatic_wait_pending );
+    CHECK_FALSE( scheduler.record_player_phase_completed( alpha ) );
+    REQUIRE( scheduler.record_automatic_wait_executed( alpha ) );
+    CHECK( scheduler.stage() == multiplayer_turn_scheduler_stage::world_ready );
+}
+
 TEST_CASE( "multiplayer_turn_scheduler_disconnect_resume_and_timeout_are_barrier_local",
            "[multiplayer][scheduler]" )
 {
@@ -481,6 +550,7 @@ TEST_CASE( "multiplayer_turn_scheduler_execution_fault_permanently_blocks_transi
     CHECK_FALSE( scheduler.record_action_result(
                      current,
                      multiplayer_turn_action_disposition::accepted_finished ) );
+    CHECK_FALSE( scheduler.record_player_phase_completed( current ) );
     CHECK_FALSE( scheduler.mark_barrier_disconnected( current ) );
     CHECK_FALSE( scheduler.resume_barrier_participant( current, 2 ) );
     CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( current ) );

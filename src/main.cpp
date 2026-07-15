@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -72,10 +73,10 @@
 #include "multiplayer_player_runtime.h"
 #include "multiplayer_runtime_mode.h"
 #include "multiplayer_scene.h"
-#include "multiplayer_session_directory.h"
 #include "multiplayer_server.h"
 #include "multiplayer_server_config.h"
 #include "multiplayer_server_log.h"
+#include "multiplayer_single_root_owner.h"
 #include "options.h"
 #include "ordered_static_globals.h"
 #include "output.h"
@@ -974,9 +975,11 @@ int run_dedicated_server( const multiplayer_server_config &config,
     }
     multiplayer_dedicated_server server( config, config_path, multiplayer_build_id, {}, identity );
     std::string error;
-    multiplayer_session_directory session_directory( g->multiplayer_players(),
-            static_cast<std::size_t>( config.players.maximum ) );
-    if( !session_directory.valid( error ) ) {
+    std::unique_ptr<multiplayer_single_root_owner> root_owner =
+        multiplayer_single_root_owner::create(
+            *g, static_cast<std::size_t>( config.players.maximum ),
+            std::chrono::seconds( config.players.disconnect_grace_seconds ), error );
+    if( !root_owner ) {
         std::cerr << multiplayer_server_log_json(
                       multiplayer_server_log_severity::error, "startup_failed",
         { { "message", error }, { "world_id", config.world.name } } ) << '\n';
@@ -1003,6 +1006,8 @@ int run_dedicated_server( const multiplayer_server_config &config,
     };
     std::uint64_t server_revision = 1;
     std::map<std::uint64_t, cached_remote_command> command_cache;
+    std::optional<multiplayer_transport_payload> cached_completed_scene_payload;
+    std::uint64_t cached_completed_scene_revision = 0;
     bool runtime_failed = false;
     bool game_over = false;
     std::uint64_t turns_since_save = 0;
@@ -1028,7 +1033,7 @@ int run_dedicated_server( const multiplayer_server_config &config,
 
     const auto send_scene = [&]() -> bool {
         const std::optional<multiplayer_session_binding> active_session =
-        session_directory.session_for_player( identity.player_id );
+        root_owner->session_for_player( identity.player_id );
         if( !active_session )
         {
             return true;
@@ -1047,11 +1052,32 @@ int run_dedicated_server( const multiplayer_server_config &config,
         {
             return false;
         }
+        cached_completed_scene_payload = envelope.payload;
+        cached_completed_scene_revision = snapshot.server_revision;
+        return server.send( active_session->connection, envelope, error );
+    };
+    const auto send_cached_completed_scene = [&]() -> bool {
+        const std::optional<multiplayer_session_binding> active_session =
+        root_owner->session_for_player( identity.player_id );
+        if( !active_session )
+        {
+            return true;
+        }
+        if( !cached_completed_scene_payload || cached_completed_scene_revision == 0 )
+        {
+            error = "no completed authoritative scene is available for replay";
+            return false;
+        }
+        multiplayer_protocol_envelope envelope;
+        envelope.message_type = multiplayer_protocol_message_type::scene_snapshot;
+        envelope.session = active_session->session;
+        envelope.sequence = cached_completed_scene_revision;
+        envelope.payload = *cached_completed_scene_payload;
         return server.send( active_session->connection, envelope, error );
     };
     const auto send_command_result = [&]( const multiplayer_command_result & result ) -> bool {
         const std::optional<multiplayer_session_binding> active_session =
-        session_directory.session_for_player( identity.player_id );
+        root_owner->session_for_player( identity.player_id );
         if( !active_session )
         {
             error = "no admitted multiplayer session is available for a command result";
@@ -1091,366 +1117,728 @@ int run_dedicated_server( const multiplayer_server_config &config,
             event.session_generation
         };
     };
+    struct pending_graceful_release {
+        multiplayer_server_lobby_event request;
+        bool transport_completion_attempted = false;
+    };
+    constexpr std::size_t maximum_pending_player_commands = 64;
+    std::optional<multiplayer_server_lobby_event> deferred_admission;
+    std::deque<multiplayer_server_lobby_event> pending_player_commands;
+    std::optional<pending_graceful_release> pending_graceful;
+    std::optional<multiplayer_session_binding> closing_selected_binding;
+    bool connection_ready_for_turn = false;
+    bool player_phase_ready = false;
+    bool save_failed = false;
+
+    const auto latch_runtime_failure = [&]( const std::string & fallback,
+    const bool canonical_state_uncertain ) {
+        if( error.empty() ) {
+            error = fallback;
+        }
+        root_owner->latch_fault( canonical_state_uncertain );
+        runtime_failed = true;
+    };
+    const auto publish_scene_if_safe = [&]() {
+        if( root_owner->save_disposition() !=
+            multiplayer_single_root_save_disposition::allowed ) {
+            return send_cached_completed_scene();
+        }
+        if( !send_scene() ) {
+            return false;
+        }
+        return true;
+    };
     const auto confirm_session_from_event = [&](
     const multiplayer_server_lobby_event & event ) {
-        const multiplayer_session_directory_status status =
-            session_directory.record_session_confirmed( binding_from_event( event ) );
-        if( status != multiplayer_session_directory_status::success ) {
+        const multiplayer_session_binding binding = binding_from_event( event );
+        if( !root_owner->matches_connected( binding ) ) {
             server.disconnect( event.connection,
                                "session confirmation tuple is stale" );
             return false;
         }
+        const multiplayer_session_directory_status status =
+            root_owner->record_session_confirmed( binding );
+        if( status != multiplayer_session_directory_status::success ) {
+            latch_runtime_failure(
+                "authoritative session confirmation diverged from the root lifecycle", false );
+            return false;
+        }
         if( !server.record_session_confirmed( event, error ) ) {
-            runtime_failed = true;
+            latch_runtime_failure(
+                "session confirmation reached the directory but not the lobby mirror", false );
             server.disconnect( event.connection,
                                "session confirmation mirror is stale" );
             return false;
         }
         return true;
     };
-    while( dedicated_server_shutdown_requested == 0 && !runtime_failed && !game_over ) {
-        bool turn_had_action = false;
-        const bool stopped = g->do_turn_remote( [&]() -> std::optional<bool> {
-            while( dedicated_server_shutdown_requested == 0 )
-            {
-                if( !server.poll_once( multiplayer_dedicated_server::clock::now(), error ) ) {
-                    runtime_failed = true;
-                    return std::nullopt;
+
+    const auto same_event_binding = [&]( const multiplayer_server_lobby_event & event,
+    const multiplayer_session_binding & binding ) {
+        return binding_from_event( event ) == binding;
+    };
+    const auto drop_queued_connection = [&]( const multiplayer_session_binding & binding ) {
+        pending_player_commands.erase(
+            std::remove_if( pending_player_commands.begin(), pending_player_commands.end(),
+        [&]( const multiplayer_server_lobby_event & queued ) {
+            return same_event_binding( queued, binding );
+        } ), pending_player_commands.end() );
+        if( deferred_admission && deferred_admission->connection == binding.connection ) {
+            deferred_admission.reset();
+        }
+    };
+    const auto record_selected_closing = [&]( const multiplayer_session_binding & binding ) {
+        if( root_owner->matches_connected( binding ) ) {
+            closing_selected_binding = binding;
+            connection_ready_for_turn = false;
+            drop_queued_connection( binding );
+        }
+    };
+    const auto close_connection = [&]( const multiplayer_session_binding & binding,
+    std::string reason ) {
+        server.disconnect( binding.connection, std::move( reason ) );
+        record_selected_closing( binding );
+    };
+
+    const auto record_departure_progress = [&](
+    const multiplayer_single_root_owner_result & owner_result ) {
+        if( owner_result.status == multiplayer_single_root_owner_status::faulted ||
+            root_owner->is_faulted() ) {
+            latch_runtime_failure( "selected root lifecycle entered fail-stop", false );
+            return false;
+        }
+        if( owner_result.next_effect == multiplayer_root_lifecycle_effect::claim_world ) {
+            player_phase_ready = true;
+        }
+        return true;
+    };
+
+    std::function<bool( const multiplayer_server_lobby_event & )> process_admission;
+    process_admission = [&]( const multiplayer_server_lobby_event & event ) {
+        if( !server.admission_is_pending( event ) ) {
+            return true;
+        }
+        multiplayer_session_admission_request request;
+        request.kind = event.type ==
+                       multiplayer_server_lobby_event_type::authentication_pending ?
+                       multiplayer_session_admission_kind::authentication :
+                       multiplayer_session_admission_kind::resume;
+        request.admission_id = event.admission_id;
+        request.connection = event.connection;
+        request.session = event.session;
+        request.player_id = event.player_id;
+        request.character_id = event.character_id;
+        request.expected_session_generation = event.expected_session_generation;
+        request.last_server_revision = event.last_server_revision;
+        request.last_client_sequence = event.last_client_sequence;
+
+        const multiplayer_single_root_admission_plan plan =
+            root_owner->plan_admission( request );
+        if( plan.status() == multiplayer_single_root_owner_status::deferred ) {
+            deferred_admission = event;
+            return true;
+        }
+        if( plan.status() == multiplayer_single_root_owner_status::faulted ||
+            ( !plan && plan.directory_plan() ) ) {
+            latch_runtime_failure(
+                "authoritative admission recipe diverged from the selected root lifecycle", false );
+            return false;
+        }
+
+        const multiplayer_session_admission_plan &directory_plan = plan.directory_plan();
+        multiplayer_server_lobby_admission_decision decision;
+        decision.accepted = static_cast<bool>( plan );
+        decision.message = directory_plan.message;
+        if( plan ) {
+            decision.player_id = directory_plan.request.player_id;
+            decision.character_id = directory_plan.request.character_id;
+            decision.session_generation = directory_plan.committed_session_generation;
+            decision.rejection = multiplayer_protocol_rejection::none;
+        } else {
+            decision.rejection = multiplayer_session_admission_rejection(
+                                     request.kind, directory_plan.status );
+        }
+
+        multiplayer_server_lobby_prepared_admission prepared;
+        if( !server.prepare_admission( event, decision, prepared, error ) ) {
+            latch_runtime_failure( "unable to prepare authoritative admission response", false );
+            return false;
+        }
+        if( !plan ) {
+            bool published = false;
+            if( !server.publish_prepared_admission( std::move( prepared ), published, error ) ) {
+                latch_runtime_failure( "unable to publish admission rejection", false );
+                return false;
+            }
+            return true;
+        }
+
+        const multiplayer_single_root_owner_result admitted = root_owner->execute_admission(
+                    plan,
+                    [&]( const std::uint64_t admission_id,
+        const multiplayer_session_binding & binding ) {
+            const bool prepared_matches =
+                prepared.request.admission_id == admission_id &&
+                prepared.request.connection == binding.connection &&
+                prepared.request.session == binding.session &&
+                prepared.decision.player_id == binding.player_id &&
+                prepared.decision.character_id == binding.character_id &&
+                prepared.decision.session_generation == binding.session_generation;
+            if( !prepared_matches ) {
+                error = "prepared admission does not match the owner transaction";
+                return multiplayer_single_root_admission_publish_receipt {};
+            }
+            bool published = false;
+            if( !server.publish_prepared_admission( std::move( prepared ), published, error ) ) {
+                return multiplayer_single_root_admission_publish_receipt {};
+            }
+            return multiplayer_single_root_admission_publish_receipt {
+                published ? multiplayer_single_root_admission_publish_outcome::published :
+                multiplayer_single_root_admission_publish_outcome::not_published,
+                admission_id, binding
+            };
+        } );
+        if( !admitted ) {
+            if( !root_owner->is_faulted() ) {
+                root_owner->latch_fault( false );
+            }
+            latch_runtime_failure( "authoritative admission transaction failed", false );
+            return false;
+        }
+        return true;
+    };
+
+    const auto attempt_graceful_completion = [&]() {
+        if( !pending_graceful ||
+            pending_graceful->transport_completion_attempted ) {
+            return true;
+        }
+        const std::optional<multiplayer_single_root_graceful_completion> completion =
+            root_owner->pending_graceful_completion();
+        if( !completion ) {
+            return true;
+        }
+        if( completion->binding != binding_from_event( pending_graceful->request ) ||
+            completion->request_sequence != pending_graceful->request.message.sequence ) {
+            latch_runtime_failure(
+                "graceful completion no longer matches its owner transaction", false );
+            return false;
+        }
+
+        pending_graceful->transport_completion_attempted = true;
+        const multiplayer_graceful_disconnect_result transport_result =
+            server.complete_graceful_disconnect( pending_graceful->request, error );
+        switch( transport_result ) {
+            case multiplayer_graceful_disconnect_result::acknowledgement_queued: {
+                const multiplayer_single_root_owner_result recorded =
+                    root_owner->record_graceful_completion_queued( *completion );
+                if( !recorded ) {
+                    latch_runtime_failure(
+                        "queued graceful acknowledgement was not recorded", false );
+                    return false;
                 }
-                while( std::optional<multiplayer_server_lobby_event> event = server.poll_event() ) {
-                    multiplayer_server_log_fields fields = {
-                        { "player_id", event->player_id },
-                        { "character_id", event->character_id },
-                        { "session_generation", std::to_string( event->session_generation ) }
-                    };
-                    if( event->type ==
-                        multiplayer_server_lobby_event_type::authentication_pending ||
-                        event->type == multiplayer_server_lobby_event_type::resume_pending ) {
-                        if( !server.admission_is_pending( *event ) ) {
-                            continue;
-                        }
-                        multiplayer_session_admission_request request;
-                        request.kind = event->type ==
-                                       multiplayer_server_lobby_event_type::authentication_pending ?
-                                       multiplayer_session_admission_kind::authentication :
-                                       multiplayer_session_admission_kind::resume;
-                        request.admission_id = event->admission_id;
-                        request.connection = event->connection;
-                        request.session = event->session;
-                        request.player_id = event->player_id;
-                        request.character_id = event->character_id;
-                        request.expected_session_generation =
-                            event->expected_session_generation;
-                        request.last_server_revision = event->last_server_revision;
-                        request.last_client_sequence = event->last_client_sequence;
-                        const multiplayer_session_admission_plan plan =
-                            session_directory.plan_admission( request );
+                return true;
+            }
+            case multiplayer_graceful_disconnect_result::fallback_close_queue_full:
+            case multiplayer_graceful_disconnect_result::fallback_close_frame_too_large:
+            case multiplayer_graceful_disconnect_result::fallback_close_response_unavailable:
+                return true;
+            case multiplayer_graceful_disconnect_result::stale_request:
+                latch_runtime_failure(
+                    "graceful transport completion became stale after owner release", false );
+                return false;
+            case multiplayer_graceful_disconnect_result::server_or_transport_fatal:
+                latch_runtime_failure(
+                    "transport failed while completing graceful release", false );
+                return false;
+        }
+        latch_runtime_failure( "unknown graceful transport completion result", false );
+        return false;
+    };
 
-                        multiplayer_server_lobby_admission_decision decision;
-                        decision.accepted = static_cast<bool>( plan );
-                        decision.message = plan.message;
-                        if( plan ) {
-                            decision.player_id = plan.request.player_id;
-                            decision.character_id = plan.request.character_id;
-                            decision.session_generation = plan.committed_session_generation;
-                            decision.rejection = multiplayer_protocol_rejection::none;
-                        } else {
-                            decision.rejection = multiplayer_session_admission_rejection(
-                                                     request.kind, plan.status );
-                        }
+    const auto progress_departure = [&]() {
+        const multiplayer_selected_root_lifecycle_snapshot state = root_owner->snapshot();
+        if( state.departure_kind == multiplayer_root_departure_kind::none ||
+            state.barrier != multiplayer_root_barrier_state::disconnected_grace ) {
+            return true;
+        }
+        const multiplayer_single_root_owner_result progressed =
+            root_owner->progress_departure( multiplayer_single_root_owner::clock::now() );
+        if( progressed.status == multiplayer_single_root_owner_status::not_ready ||
+            progressed.status == multiplayer_single_root_owner_status::duplicate ) {
+            return true;
+        }
+        if( progressed.status != multiplayer_single_root_owner_status::applied ) {
+            latch_runtime_failure( "unable to progress selected root departure", false );
+            return false;
+        }
+        return record_departure_progress( progressed );
+    };
 
-                        multiplayer_server_lobby_prepared_admission prepared;
-                        if( !server.prepare_admission( *event, decision, prepared, error ) ) {
-                            runtime_failed = true;
-                            return std::nullopt;
-                        }
-                        if( plan && !session_directory.commit_admission( plan ) ) {
-                            error = "authoritative multiplayer session admission commit failed";
-                            runtime_failed = true;
-                            return std::nullopt;
-                        }
-                        bool published = false;
-                        if( !server.publish_prepared_admission( std::move( prepared ), published,
-                                                                error ) ) {
-                            runtime_failed = true;
-                            return std::nullopt;
-                        }
-                        if( plan && !published ) {
-                            const multiplayer_session_binding failed_binding = {
-                                plan.request.connection, plan.request.session,
-                                plan.request.player_id, plan.request.character_id,
-                                plan.committed_session_generation
-                            };
-                            if( session_directory.record_admission_unpublished( failed_binding ) !=
-                                multiplayer_session_directory_status::success ) {
-                                error = "failed to release an unpublishable multiplayer admission";
-                                runtime_failed = true;
-                                return std::nullopt;
-                            }
-                        }
-                        continue;
+    const auto pump_transport_and_control = [&]() {
+        if( deferred_admission ) {
+            const multiplayer_server_lobby_event retry = *deferred_admission;
+            deferred_admission.reset();
+            if( !process_admission( retry ) ) {
+                return false;
+            }
+        }
+        if( !server.poll_once( multiplayer_dedicated_server::clock::now(), error ) ) {
+            latch_runtime_failure( "dedicated transport/event pump failed", false );
+            return false;
+        }
+        while( std::optional<multiplayer_server_lobby_event> event = server.poll_event() ) {
+            multiplayer_server_log_fields fields = {
+                { "player_id", event->player_id },
+                { "character_id", event->character_id },
+                { "session_generation", std::to_string( event->session_generation ) }
+            };
+            if( event->type != multiplayer_server_lobby_event_type::disconnected &&
+                closing_selected_binding &&
+                *closing_selected_binding == binding_from_event( *event ) ) {
+                continue;
+            }
+            if( event->type == multiplayer_server_lobby_event_type::authentication_pending ||
+                event->type == multiplayer_server_lobby_event_type::resume_pending ) {
+                if( !process_admission( *event ) ) {
+                    return false;
+                }
+                continue;
+            }
+            if( event->type == multiplayer_server_lobby_event_type::authenticated ||
+                event->type == multiplayer_server_lobby_event_type::resumed ) {
+                const multiplayer_session_binding binding = binding_from_event( *event );
+                if( !root_owner->matches_connected( binding ) ) {
+                    latch_runtime_failure(
+                        "published admission does not match the authoritative root", false );
+                    return false;
+                }
+                if( event->type == multiplayer_server_lobby_event_type::authenticated ) {
+                    command_cache.clear();
+                    pending_player_commands.clear();
+                }
+                if( server.connection_is_closing( event->connection ) ) {
+                    connection_ready_for_turn = false;
+                    continue;
+                }
+                connection_ready_for_turn = true;
+                std::cout << multiplayer_server_log_json(
+                              multiplayer_server_log_severity::info,
+                              event->type == multiplayer_server_lobby_event_type::authenticated ?
+                              "player_authenticated" : "player_resumed", fields ) << '\n';
+                if( !publish_scene_if_safe() ) {
+                    latch_runtime_failure( "unable to publish initial player scene", false );
+                    return false;
+                }
+                continue;
+            }
+            if( event->type == multiplayer_server_lobby_event_type::session_confirmed ) {
+                if( !confirm_session_from_event( *event ) && runtime_failed ) {
+                    return false;
+                }
+                if( server.connection_is_closing( event->connection ) ) {
+                    record_selected_closing( binding_from_event( *event ) );
+                }
+                continue;
+            }
+            if( event->type ==
+                multiplayer_server_lobby_event_type::graceful_disconnect_requested ) {
+                const multiplayer_session_binding binding = binding_from_event( *event );
+                if( !root_owner->matches_connected( binding ) ) {
+                    server.disconnect( event->connection,
+                                       "graceful disconnect session is stale" );
+                    continue;
+                }
+                if( event->confirms_resume_generation &&
+                    !confirm_session_from_event( *event ) ) {
+                    if( runtime_failed ) {
+                        return false;
                     }
-                    if( event->type == multiplayer_server_lobby_event_type::authenticated ||
-                        event->type == multiplayer_server_lobby_event_type::resumed ) {
-                        if( !session_directory.matches_connected( binding_from_event( *event ) ) ) {
-                            server.disconnect( event->connection,
-                                               "authenticated session does not match the authoritative directory" );
-                            continue;
-                        }
-                        if( event->type == multiplayer_server_lobby_event_type::authenticated ) {
-                            // A fresh authentication starts a new command sequence epoch.  A
-                            // resume keeps the cache so an uncertain last command can be replayed.
-                            command_cache.clear();
-                        }
-                        std::cout << multiplayer_server_log_json(
-                                      multiplayer_server_log_severity::info,
-                                      event->type == multiplayer_server_lobby_event_type::authenticated ?
-                                      "player_authenticated" : "player_resumed", fields ) << '\n';
-                        if( !send_scene() ) {
-                            runtime_failed = true;
-                            return std::nullopt;
-                        }
-                        continue;
-                    }
-                    if( event->type ==
-                        multiplayer_server_lobby_event_type::session_confirmed ) {
-                        if( !confirm_session_from_event( *event ) && runtime_failed ) {
-                            return std::nullopt;
-                        }
-                        continue;
-                    }
-                    if( event->type ==
-                        multiplayer_server_lobby_event_type::graceful_disconnect_requested ) {
-                        if( !session_directory.matches_connected( binding_from_event( *event ) ) ) {
-                            server.disconnect( event->connection,
-                                               "graceful disconnect session is stale" );
-                            continue;
-                        }
-                        bool completed = false;
-                        if( !server.complete_graceful_disconnect( *event, completed, error ) ) {
-                            runtime_failed = true;
-                            return std::nullopt;
-                        }
-                        if( !completed ) {
-                            server.disconnect( event->connection,
-                                               "graceful disconnect request is stale" );
-                            continue;
-                        }
-                        if( event->confirms_resume_generation &&
-                            !confirm_session_from_event( *event ) ) {
-                            if( runtime_failed ) {
-                                return std::nullopt;
-                            }
-                            continue;
-                        }
-                        continue;
-                    }
-                    if( event->type == multiplayer_server_lobby_event_type::disconnected ) {
-                        const multiplayer_session_directory_status disconnect_status =
-                            session_directory.record_disconnected( binding_from_event( *event ) );
-                        fields.emplace_back( "directory_status", std::to_string(
-                                                 static_cast<int>( disconnect_status ) ) );
-                        std::cout << multiplayer_server_log_json(
-                                      disconnect_status == multiplayer_session_directory_status::success ?
-                                      multiplayer_server_log_severity::info :
-                                      multiplayer_server_log_severity::warning,
-                                      disconnect_status == multiplayer_session_directory_status::success ?
-                                      "player_disconnected" : "stale_player_disconnect", fields ) << '\n';
-                        continue;
-                    }
-                    if( event->type != multiplayer_server_lobby_event_type::application_message ) {
-                        server.disconnect( event->connection,
-                                           "unexpected multiplayer lobby event type" );
-                        continue;
-                    }
-                    if( !session_directory.matches_connected( binding_from_event( *event ) ) ) {
-                        server.disconnect( event->connection,
-                                           "application message session is stale" );
-                        continue;
-                    }
-                    if( event->player_id != identity.player_id ||
-                        event->character_id != identity.character_id ) {
-                        server.disconnect( event->connection,
-                                           "application identity is not the server avatar" );
-                        continue;
-                    }
-                    if( event->message.message_type ==
-                        multiplayer_protocol_message_type::resync_request ) {
-                        multiplayer_resync_request request;
-                        if( !multiplayer_parse_resync_request_payload(
-                                event->message, request, error ) ||
-                            request.client_revision > server_revision ) {
-                            server.disconnect( event->connection, "invalid resync request" );
-                            continue;
-                        }
-                        std::cout << multiplayer_server_log_json(
-                                      multiplayer_server_log_severity::info,
-                        "resync_requested", {
-                            { "player_id", event->player_id },
-                            {
-                                "client_revision", std::to_string(
-                                    request.client_revision )
-                            },
-                            { "server_revision", std::to_string( server_revision ) }
-                        } ) << '\n';
-                        if( !send_scene() ) {
-                            runtime_failed = true;
-                            return std::nullopt;
-                        }
-                        if( event->confirms_resume_generation &&
-                            !confirm_session_from_event( *event ) ) {
-                            if( runtime_failed ) {
-                                return std::nullopt;
-                            }
-                            continue;
-                        }
-                        continue;
-                    }
-                    if( event->message.message_type !=
-                        multiplayer_protocol_message_type::player_command ) {
-                        fields.emplace_back( "message_type", std::to_string(
-                                                 static_cast<int>( event->message.message_type ) ) );
-                        fields.emplace_back( "sequence", std::to_string( event->message.sequence ) );
-                        std::cout << multiplayer_server_log_json(
-                                      multiplayer_server_log_severity::warning,
-                                      "unsupported_application_message", fields ) << '\n';
-                        continue;
-                    }
+                    continue;
+                }
+                if( server.connection_is_closing( event->connection ) ) {
+                    record_selected_closing( binding );
+                    continue;
+                }
+                const multiplayer_single_root_owner_result departed =
+                    root_owner->record_graceful_departure(
+                        binding, event->message.sequence,
+                        multiplayer_single_root_owner::clock::now() );
+                if( departed.status == multiplayer_single_root_owner_status::stale ||
+                    departed.status == multiplayer_single_root_owner_status::invalid ) {
+                    close_connection( binding,
+                                      "graceful disconnect request is stale" );
+                    continue;
+                }
+                if( departed.status == multiplayer_single_root_owner_status::faulted ) {
+                    latch_runtime_failure(
+                        "authoritative graceful departure entered fail-stop", false );
+                    return false;
+                }
+                if( pending_graceful &&
+                    binding_from_event( pending_graceful->request ) != binding ) {
+                    latch_runtime_failure(
+                        "multiple graceful releases crossed the single-root owner", false );
+                    return false;
+                }
+                if( !pending_graceful ) {
+                    pending_graceful = pending_graceful_release { *event, false };
+                }
+                connection_ready_for_turn = false;
+                if( !record_departure_progress( departed ) ) {
+                    return false;
+                }
+                continue;
+            }
+            if( event->type == multiplayer_server_lobby_event_type::disconnected ) {
+                const multiplayer_session_binding binding = binding_from_event( *event );
+                const bool disconnected_current_session =
+                    root_owner->matches_connected( binding );
+                const multiplayer_single_root_owner_result disconnected =
+                    root_owner->record_transport_disconnected(
+                        binding, multiplayer_single_root_owner::clock::now() );
+                fields.emplace_back( "owner_status", std::to_string(
+                                         static_cast<int>( disconnected.status ) ) );
+                std::cout << multiplayer_server_log_json(
+                              disconnected.status == multiplayer_single_root_owner_status::applied ||
+                              disconnected.status == multiplayer_single_root_owner_status::duplicate ?
+                              multiplayer_server_log_severity::info :
+                              multiplayer_server_log_severity::warning,
+                              disconnected.status == multiplayer_single_root_owner_status::applied ||
+                              disconnected.status == multiplayer_single_root_owner_status::duplicate ?
+                              "player_disconnected" : "stale_player_disconnect", fields ) << '\n';
+                if( disconnected.status == multiplayer_single_root_owner_status::faulted ) {
+                    latch_runtime_failure(
+                        "transport close diverged from the selected root lifecycle", false );
+                    return false;
+                }
+                if( disconnected_current_session ) {
+                    connection_ready_for_turn = false;
+                }
+                drop_queued_connection( binding );
+                if( closing_selected_binding &&
+                    *closing_selected_binding == binding ) {
+                    closing_selected_binding.reset();
+                }
+                if( pending_graceful &&
+                    binding_from_event( pending_graceful->request ) == binding ) {
+                    pending_graceful.reset();
+                }
+                if( !record_departure_progress( disconnected ) ) {
+                    return false;
+                }
+                continue;
+            }
+            if( event->type != multiplayer_server_lobby_event_type::application_message ) {
+                close_connection( binding_from_event( *event ),
+                                  "unexpected multiplayer lobby event type" );
+                continue;
+            }
 
-                    const std::chrono::steady_clock::time_point command_started =
-                        std::chrono::steady_clock::now();
-                    multiplayer_player_command command;
-                    if( !multiplayer_parse_player_command_payload( event->message, command, error ) ) {
-                        server.disconnect( event->connection, "invalid semantic player command" );
-                        continue;
-                    }
-                    const auto duplicate = command_cache.find( command.client_sequence );
-                    if( duplicate != command_cache.end() ) {
-                        if( duplicate->second.payload != event->message.payload ) {
-                            std::cout << multiplayer_server_log_json(
-                                          multiplayer_server_log_severity::warning,
-                            "command_sequence_conflict", {
-                                { "player_id", event->player_id },
-                                {
-                                    "client_sequence", std::to_string(
-                                        command.client_sequence )
-                                }
-                            } ) << '\n';
-                            server.disconnect( event->connection,
-                                               "client sequence reused for a different command" );
-                            continue;
-                        }
-                        multiplayer_command_result cached = duplicate->second.result;
-                        if( cached.status == multiplayer_command_status::accepted ) {
-                            cached.status = multiplayer_command_status::duplicate;
-                        }
-                        const std::int64_t duration_us =
-                            std::chrono::duration_cast<std::chrono::microseconds>(
-                                std::chrono::steady_clock::now() - command_started ).count();
-                        log_command_result( command, cached, duration_us );
-                        if( !send_command_result( cached ) || !send_scene() ) {
-                            runtime_failed = true;
-                            return std::nullopt;
-                        }
-                        if( event->confirms_resume_generation &&
-                            !confirm_session_from_event( *event ) ) {
-                            if( runtime_failed ) {
-                                return std::nullopt;
-                            }
-                            continue;
-                        }
-                        continue;
-                    }
+            const multiplayer_session_binding binding = binding_from_event( *event );
+            if( !root_owner->matches_connected( binding ) ) {
+                server.disconnect( event->connection,
+                                   "application message session is stale" );
+                continue;
+            }
+            if( event->player_id != identity.player_id ||
+                event->character_id != identity.character_id ) {
+                close_connection( binding,
+                                  "application identity is not the server avatar" );
+                continue;
+            }
+            std::optional<multiplayer_resync_request> resync_request;
+            if( event->message.message_type ==
+                multiplayer_protocol_message_type::resync_request ) {
+                multiplayer_resync_request request;
+                if( !multiplayer_parse_resync_request_payload(
+                        event->message, request, error ) ||
+                    request.client_revision > server_revision ) {
+                    close_connection( binding, "invalid resync request" );
+                    continue;
+                }
+                resync_request = request;
+            } else if( event->message.message_type !=
+                       multiplayer_protocol_message_type::player_command ) {
+                close_connection( binding,
+                                  "unsupported application message type" );
+                continue;
+            }
+            if( event->confirms_resume_generation &&
+                !confirm_session_from_event( *event ) ) {
+                if( runtime_failed ) {
+                    return false;
+                }
+                continue;
+            }
+            if( server.connection_is_closing( event->connection ) ) {
+                record_selected_closing( binding );
+                continue;
+            }
+            if( resync_request ) {
+                std::cout << multiplayer_server_log_json(
+                              multiplayer_server_log_severity::info,
+                "resync_requested", {
+                    { "player_id", event->player_id },
+                    { "client_revision", std::to_string( resync_request->client_revision ) },
+                    { "server_revision", std::to_string( server_revision ) }
+                } ) << '\n';
+                if( !publish_scene_if_safe() ) {
+                    latch_runtime_failure( "unable to publish resynchronized scene", false );
+                    return false;
+                }
+                continue;
+            }
+            if( pending_player_commands.size() >= maximum_pending_player_commands ) {
+                close_connection( binding,
+                                  "pending semantic command queue is full" );
+                continue;
+            }
+            pending_player_commands.emplace_back( std::move( *event ) );
+        }
+        if( const std::optional<multiplayer_session_binding> active_session =
+                root_owner->session_for_player( identity.player_id );
+            active_session && server.connection_is_closing( active_session->connection ) ) {
+            record_selected_closing( *active_session );
+        }
+        if( !progress_departure() || !attempt_graceful_completion() ) {
+            return false;
+        }
+        return !runtime_failed;
+    };
 
-                    multiplayer_command_result result;
-                    result.client_sequence = command.client_sequence;
-                    result.server_revision = server_revision;
-                    bool action_taken = false;
-                    if( command.base_revision != server_revision ) {
-                        result.status = multiplayer_command_status::rejected;
-                        result.rejection = multiplayer_protocol_rejection::stale_revision;
-                        result.message = "command base revision is stale";
-                    } else {
-                        const multiplayer_command_execution execution =
-                            multiplayer_execute_basic_command( *g, g->active_avatar(), command );
-                        result.status = execution.status;
-                        result.rejection = execution.rejection;
-                        result.moves_spent = execution.moves_spent;
-                        result.message = execution.message;
-                        action_taken = execution.action_taken;
-                        if( action_taken ) {
-                            if( server_revision == std::numeric_limits<std::uint64_t>::max() ) {
-                                error = "server scene revision exhausted";
-                                runtime_failed = true;
-                                return std::nullopt;
-                            }
-                            ++server_revision;
-                            result.server_revision = server_revision;
-                            turn_had_action = true;
-                        }
-                    }
-                    command_cache.emplace( command.client_sequence,
-                                           cached_remote_command{ event->message.payload, result } );
-                    while( command_cache.size() > multiplayer_server_command_replay_window ) {
-                        command_cache.erase( command_cache.begin() );
-                    }
-                    const std::int64_t duration_us =
-                        std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now() - command_started ).count();
-                    log_command_result( command, result, duration_us );
-                    if( !send_command_result( result ) || !send_scene() ) {
-                        runtime_failed = true;
-                        return std::nullopt;
-                    }
-                    if( event->confirms_resume_generation &&
-                        !confirm_session_from_event( *event ) ) {
-                        if( runtime_failed ) {
-                            return std::nullopt;
-                        }
-                        continue;
-                    }
-                    if( action_taken ) {
-                        return true;
-                    }
+    const auto execute_queued_command = [&]() -> std::optional<bool> {
+        if( pending_player_commands.empty() )
+        {
+            return false;
+        }
+        multiplayer_server_lobby_event event =
+        std::move( pending_player_commands.front() );
+        pending_player_commands.pop_front();
+        const multiplayer_session_binding binding = binding_from_event( event );
+        if( server.connection_is_closing( binding.connection ) )
+        {
+            record_selected_closing( binding );
+            return false;
+        }
+        if( !root_owner->matches_connected( binding ) ||
+            ( closing_selected_binding && *closing_selected_binding == binding ) )
+        {
+            return false;
+        }
+
+        const std::chrono::steady_clock::time_point command_started =
+        std::chrono::steady_clock::now();
+        multiplayer_player_command command;
+        if( !multiplayer_parse_player_command_payload( event.message, command, error ) )
+        {
+            close_connection( binding, "invalid semantic player command" );
+            return false;
+        }
+        const auto duplicate = command_cache.find( command.client_sequence );
+        if( duplicate != command_cache.end() &&
+            duplicate->second.payload != event.message.payload )
+        {
+            std::cout << multiplayer_server_log_json(
+                          multiplayer_server_log_severity::warning,
+            "command_sequence_conflict", {
+                { "player_id", event.player_id },
+                { "client_sequence", std::to_string( command.client_sequence ) }
+            } ) << '\n';
+            close_connection( binding,
+                              "client sequence reused for a different command" );
+            return false;
+        }
+
+        multiplayer_command_result staged_result;
+        multiplayer_turn_action_disposition staged_disposition =
+            multiplayer_turn_action_disposition::rejected;
+        bool staged_action_taken = false;
+        bool insert_cache = false;
+        const multiplayer_turn_phase_adapter_status execution_status =
+            root_owner->execute_current_player(
+                [&]( multiplayer_player_runtime &, avatar & player )
+        -> std::optional<multiplayer_turn_action_disposition> {
+            if( duplicate != command_cache.end() )
+            {
+                staged_result = duplicate->second.result;
+                if( staged_result.status == multiplayer_command_status::accepted ) {
+                    staged_result.status = multiplayer_command_status::duplicate;
+                }
+                staged_disposition = multiplayer_turn_action_disposition::duplicate;
+                return staged_disposition;
+            }
+
+            staged_result.client_sequence = command.client_sequence;
+            staged_result.server_revision = server_revision;
+            if( command.base_revision != server_revision )
+            {
+                staged_result.status = multiplayer_command_status::rejected;
+                staged_result.rejection = multiplayer_protocol_rejection::stale_revision;
+                staged_result.message = "command base revision is stale";
+            } else
+            {
+                const multiplayer_command_execution execution =
+                    multiplayer_execute_basic_command( *g, player, command );
+                staged_result.status = execution.status;
+                staged_result.rejection = execution.rejection;
+                staged_result.moves_spent = execution.moves_spent;
+                staged_result.message = execution.message;
+                staged_action_taken = execution.action_taken;
+                if( staged_action_taken ) {
+                    staged_disposition = player.get_moves() > 0 ?
+                                         multiplayer_turn_action_disposition::accepted_remains_eligible :
+                                         multiplayer_turn_action_disposition::accepted_finished;
+                }
+            }
+            insert_cache = true;
+            return staged_disposition;
+        } );
+        if( execution_status != multiplayer_turn_phase_adapter_status::completed )
+        {
+            if( !root_owner->is_faulted() ) {
+                root_owner->latch_fault( staged_action_taken );
+            }
+            latch_runtime_failure( "semantic command execution entered fail-stop",
+                                   staged_action_taken );
+            return std::nullopt;
+        }
+        if( insert_cache )
+        {
+            command_cache.emplace(
+                command.client_sequence,
+                cached_remote_command { event.message.payload, staged_result } );
+            while( command_cache.size() > multiplayer_server_command_replay_window ) {
+                command_cache.erase( command_cache.begin() );
+            }
+        }
+        const std::int64_t duration_us =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - command_started ).count();
+        log_command_result( command, staged_result, duration_us );
+        if( !send_command_result( staged_result ) )
+        {
+            latch_runtime_failure(
+                "transport rejected a result after semantic command execution", true );
+            return std::nullopt;
+        }
+        return true;
+    };
+
+    while( dedicated_server_shutdown_requested == 0 && !runtime_failed && !game_over ) {
+        player_phase_ready = false;
+        if( !pump_transport_and_control() ) {
+            break;
+        }
+        if( root_owner->is_faulted() ) {
+            latch_runtime_failure( "selected root owner is faulted", false );
+            break;
+        }
+        if( dedicated_server_shutdown_requested != 0 ) {
+            break;
+        }
+        if( !connection_ready_for_turn || !root_owner->can_begin_turn() ) {
+            std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+            continue;
+        }
+        const multiplayer_single_root_owner_result begun = root_owner->begin_turn();
+        if( !begun ) {
+            if( begun.status == multiplayer_single_root_owner_status::not_ready ) {
+                continue;
+            }
+            latch_runtime_failure( "unable to begin authoritative owned turn", false );
+            break;
+        }
+
+        multiplayer_owned_remote_turn_hooks hooks;
+        hooks.execute_player_action = [&]() {
+            while( dedicated_server_shutdown_requested == 0 && !runtime_failed ) {
+                if( !pump_transport_and_control() ) {
+                    return false;
+                }
+                if( player_phase_ready ) {
+                    return true;
+                }
+                const std::optional<bool> executed = execute_queued_command();
+                if( !executed ) {
+                    return false;
+                }
+                if( *executed ) {
+                    return true;
                 }
                 std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
             }
-            return std::nullopt;
-        } );
+            return false;
+        };
+        hooks.complete_player_phase = [&]() {
+            return static_cast<bool>( root_owner->complete_player_phase() );
+        };
+        hooks.execute_world = [&]( multiplayer_owned_world_thunk & world_thunk ) {
+            return root_owner->execute_world(
+            [&]( const multiplayer_world_ticket & ) {
+                return world_thunk();
+            } ) == multiplayer_turn_phase_adapter_status::completed;
+        };
 
-        if( runtime_failed || dedicated_server_shutdown_requested != 0 ) {
+        const multiplayer_owned_turn_result turn_result =
+            root_owner->execute_owned_turn( std::move( hooks ) );
+        const multiplayer_single_root_owner_result completed =
+            root_owner->complete_turn_after_player_end( turn_result );
+        if( !completed ) {
+            if( turn_result.status == multiplayer_owned_turn_status::game_over ) {
+                game_over = true;
+            }
+            latch_runtime_failure(
+                "owned turn did not reach an exact player-end lifecycle boundary",
+                turn_result.gameplay_side_effects_may_have_occurred() );
             break;
         }
-        if( stopped ) {
-            // The callback only requests a stop for signal/runtime failure, both handled above.
-            // A remaining stop therefore comes from the authoritative avatar reaching game over.
-            game_over = true;
+        if( turn_result.status != multiplayer_owned_turn_status::completed ) {
+            latch_runtime_failure( "owned turn returned a non-completed result", true );
             break;
         }
-        if( turn_had_action ) {
-            ++turns_since_save;
-            if( server_revision == std::numeric_limits<std::uint64_t>::max() ) {
-                error = "server scene revision exhausted";
-                runtime_failed = true;
-                break;
-            }
-            ++server_revision;
-            if( !send_scene() ) {
-                runtime_failed = true;
-                break;
-            }
-            if( config.save.interval_turns > 0 &&
-                turns_since_save >= static_cast<std::uint64_t>( config.save.interval_turns ) &&
-                !save_world( "interval" ) ) {
-                runtime_failed = true;
-                break;
-            }
+        if( !attempt_graceful_completion() ) {
+            break;
+        }
+        ++turns_since_save;
+        if( server_revision == std::numeric_limits<std::uint64_t>::max() ) {
+            latch_runtime_failure( "server scene revision exhausted after world completion", false );
+            break;
+        }
+        ++server_revision;
+        if( !send_scene() ) {
+            latch_runtime_failure( "unable to publish completed world scene", false );
+            break;
+        }
+        if( config.save.interval_turns > 0 &&
+            turns_since_save >= static_cast<std::uint64_t>( config.save.interval_turns ) &&
+            !save_world( "interval" ) ) {
+            save_failed = true;
+            latch_runtime_failure( "interval canonical save failed", false );
+            break;
         }
     }
     server.stop();
-    if( !runtime_failed && ( game_over || dedicated_server_shutdown_requested != 0 ) &&
-        !save_world( game_over ? "game_over" : "shutdown" ) ) {
-        runtime_failed = true;
+    const bool terminal_save_requested = runtime_failed || game_over ||
+                                         dedicated_server_shutdown_requested != 0;
+    if( terminal_save_requested && !save_failed ) {
+        const multiplayer_single_root_save_disposition disposition =
+            root_owner->save_disposition();
+        if( disposition == multiplayer_single_root_save_disposition::allowed ) {
+            const std::string reason = runtime_failed ? "fatal_shutdown" :
+                                       game_over ? "game_over" : "shutdown";
+            if( !save_world( reason ) ) {
+                save_failed = true;
+                runtime_failed = true;
+            }
+        } else {
+            std::cerr << multiplayer_server_log_json(
+            multiplayer_server_log_severity::error, "save_refused", {
+                { "world_id", config.world.name },
+                { "disposition", std::to_string( static_cast<int>( disposition ) ) },
+                { "message", "canonical save boundary is not provable" }
+            } ) << '\n';
+        }
     }
     if( runtime_failed ) {
         std::cerr << multiplayer_server_log_json(

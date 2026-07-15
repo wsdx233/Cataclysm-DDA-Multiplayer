@@ -9,9 +9,10 @@ These tools validate the fork's multiplayer boundaries; they are not end-user cl
 
 - incompatible hello rejection and compatible hello acceptance;
 - bearer-token authentication, the initial full visible scene, and explicit resync;
-- one server-authoritative semantic `wait` command;
-- action and post-world scene revisions;
-- disconnect/resume with exact generation advancement, followed by idempotent command replay;
+- server-authoritative semantic `wait` commands whose results reference the latest completed scene;
+- one new completed-scene revision only after owned world/player-end/lifecycle completion;
+- disconnect/resume with exact generation advancement, followed by idempotent replay and a fresh
+  command that completes the resumed player-input phase;
 - disconnect on reuse of a cached sequence with different command bytes.
 
 It deliberately discovers the running server's compatibility values from a rejected probe hello. That behavior is for an integration smoke only and is not a model for a production graphical client.

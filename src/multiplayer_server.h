@@ -4,10 +4,12 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 
 #include "multiplayer_content_manifest.h"
@@ -22,6 +24,15 @@ bool multiplayer_server_content_manifest( const multiplayer_server_config &confi
 struct multiplayer_server_player_identity {
     std::string player_id;
     std::string character_id;
+};
+
+enum class multiplayer_graceful_disconnect_result : std::uint8_t {
+    stale_request,
+    acknowledgement_queued,
+    fallback_close_queue_full,
+    fallback_close_frame_too_large,
+    fallback_close_response_unavailable,
+    server_or_transport_fatal
 };
 
 class multiplayer_dedicated_server
@@ -48,8 +59,12 @@ class multiplayer_dedicated_server
         std::optional<multiplayer_server_lobby_event> poll_event();
         bool send( multiplayer_connection_id connection,
                    const multiplayer_protocol_envelope &envelope, std::string &error );
-        bool complete_graceful_disconnect( const multiplayer_server_lobby_event &request,
-                                           bool &completed, std::string &error );
+        // acknowledgement_queued only confirms that the ordered ACK-and-close command entered
+        // the transport queue.  The caller must still wait for the exact terminal disconnected
+        // lobby event before considering the connection released.  Every fallback_close result
+        // means that no ACK was queued and only the terminal close should be recorded.
+        multiplayer_graceful_disconnect_result complete_graceful_disconnect(
+            const multiplayer_server_lobby_event &request, std::string &error );
         bool admission_is_pending( const multiplayer_server_lobby_event &request ) const;
         bool prepare_admission( const multiplayer_server_lobby_event &request,
                                 const multiplayer_server_lobby_admission_decision &decision,
@@ -60,10 +75,17 @@ class multiplayer_dedicated_server
         bool record_session_confirmed( const multiplayer_server_lobby_event &event,
                                        std::string &error );
         void disconnect( multiplayer_connection_id connection, std::string reason );
+        bool connection_is_closing( multiplayer_connection_id connection ) const;
 
     private:
+        friend struct multiplayer_server_test_support;
+
         bool execute_actions( std::vector<multiplayer_server_lobby_action> actions,
                               std::string &error );
+        multiplayer_graceful_disconnect_result execute_graceful_disconnect_action(
+            multiplayer_server_lobby_action action,
+            multiplayer_connection_id expected_connection,
+            std::string &error );
         bool process_lobby_event( multiplayer_server_lobby_event event,
                                   clock::time_point now, std::string &error );
 
@@ -75,6 +97,7 @@ class multiplayer_dedicated_server
         multiplayer_server_transport transport_;
         std::unique_ptr<multiplayer_server_lobby> lobby_;
         std::deque<multiplayer_server_lobby_event> events_;
+        std::set<multiplayer_connection_id> closing_connections_;
         bool running_ = false;
 };
 

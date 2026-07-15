@@ -77,6 +77,7 @@ bool multiplayer_dedicated_server::start( std::string &error )
         error = "dedicated server is already running";
         return false;
     }
+    closing_connections_.clear();
     if( const std::optional<std::string> validation_error =
             validate_multiplayer_server_config( config_ ) ) {
         error = *validation_error;
@@ -142,12 +143,20 @@ bool multiplayer_dedicated_server::poll_once( const clock::time_point now, std::
         error = "dedicated server is not running";
         return false;
     }
+    std::set<multiplayer_connection_id> terminal_connections;
     while( std::optional<multiplayer_transport_event> transport_event = transport_.poll_event() ) {
         if( transport_event->type == multiplayer_transport_event_type::transport_error &&
             transport_event->connection == 0 ) {
             error = transport_event->detail;
             stop();
             return false;
+        }
+        if( transport_event->connection != 0 &&
+            ( transport_event->type == multiplayer_transport_event_type::disconnected ||
+              transport_event->type == multiplayer_transport_event_type::protocol_error ||
+              transport_event->type == multiplayer_transport_event_type::transport_error ) ) {
+            closing_connections_.insert( transport_event->connection );
+            terminal_connections.insert( transport_event->connection );
         }
         if( !execute_actions( lobby_->handle_transport_event( *transport_event, now ), error ) ) {
             return false;
@@ -161,6 +170,19 @@ bool multiplayer_dedicated_server::poll_once( const clock::time_point now, std::
             return false;
         }
     }
+    for( const multiplayer_connection_id connection : terminal_connections ) {
+        bool disconnected_event_is_queued = false;
+        for( const multiplayer_server_lobby_event &event : events_ ) {
+            if( event.connection == connection &&
+                event.type == multiplayer_server_lobby_event_type::disconnected ) {
+                disconnected_event_is_queued = true;
+                break;
+            }
+        }
+        if( !disconnected_event_is_queued ) {
+            closing_connections_.erase( connection );
+        }
+    }
     error.clear();
     return true;
 }
@@ -170,10 +192,12 @@ bool multiplayer_dedicated_server::execute_actions(
 {
     for( multiplayer_server_lobby_action &action : actions ) {
         if( action.type == multiplayer_server_lobby_action_type::disconnect ) {
+            closing_connections_.insert( action.connection );
             transport_.disconnect( action.connection, std::move( action.reason ) );
             continue;
         }
         if( action.type == multiplayer_server_lobby_action_type::send_and_disconnect ) {
+            closing_connections_.insert( action.connection );
             transport_.send_and_disconnect( action.connection, std::move( action.payload ),
                                             std::move( action.reason ) );
             continue;
@@ -181,6 +205,7 @@ bool multiplayer_dedicated_server::execute_actions(
         const multiplayer_transport_send_result result = transport_.send(
                     action.connection, std::move( action.payload ) );
         if( result != multiplayer_transport_send_result::queued ) {
+            closing_connections_.insert( action.connection );
             transport_.disconnect( action.connection, "server outbound queue rejected a message" );
         }
     }
@@ -202,6 +227,7 @@ bool multiplayer_dedicated_server::process_lobby_event(
         event.message.message_type == multiplayer_protocol_message_type::ping ) {
         multiplayer_protocol_heartbeat ping;
         if( !multiplayer_parse_ping_payload( event.message, ping, error ) ) {
+            closing_connections_.insert( event.connection );
             transport_.disconnect( event.connection, "invalid ping payload" );
             return true;
         }
@@ -223,6 +249,7 @@ bool multiplayer_dedicated_server::process_lobby_event(
         }
         if( event.confirms_resume_generation ) {
             if( events_.size() >= maximum_server_events ) {
+                closing_connections_.insert( event.connection );
                 transport_.disconnect( event.connection,
                                        "server simulation event queue is full" );
                 return true;
@@ -234,11 +261,13 @@ bool multiplayer_dedicated_server::process_lobby_event(
         }
         if( transport_.send( event.connection, std::move( encoded ) ) !=
             multiplayer_transport_send_result::queued ) {
+            closing_connections_.insert( event.connection );
             transport_.disconnect( event.connection, "server outbound queue rejected pong" );
         }
         return true;
     }
     if( events_.size() >= maximum_server_events ) {
+        closing_connections_.insert( event.connection );
         transport_.disconnect( event.connection, "server simulation event queue is full" );
         return true;
     }
@@ -253,6 +282,7 @@ void multiplayer_dedicated_server::stop()
         transport_.stop();
     }
     lobby_.reset();
+    closing_connections_.clear();
 }
 
 bool multiplayer_dedicated_server::running() const
@@ -285,25 +315,85 @@ bool multiplayer_dedicated_server::send( const multiplayer_connection_id connect
     return true;
 }
 
-bool multiplayer_dedicated_server::complete_graceful_disconnect(
-    const multiplayer_server_lobby_event &request, bool &completed, std::string &error )
+multiplayer_graceful_disconnect_result
+multiplayer_dedicated_server::complete_graceful_disconnect(
+    const multiplayer_server_lobby_event &request, std::string &error )
 {
-    completed = false;
     if( !running_ || !lobby_ ) {
         error = "dedicated server is not running";
-        return false;
+        return multiplayer_graceful_disconnect_result::server_or_transport_fatal;
     }
     std::vector<multiplayer_server_lobby_action> actions =
         lobby_->complete_graceful_disconnect( request );
-    completed = actions.size() == 1 &&
-                actions.front().type ==
-                multiplayer_server_lobby_action_type::send_and_disconnect;
-    if( !execute_actions( std::move( actions ), error ) ) {
-        completed = false;
-        return false;
+    if( actions.empty() ) {
+        error.clear();
+        return multiplayer_graceful_disconnect_result::stale_request;
     }
-    error.clear();
-    return true;
+    if( actions.size() != 1 ) {
+        error = "dedicated server graceful disconnect action is invalid";
+        stop();
+        return multiplayer_graceful_disconnect_result::server_or_transport_fatal;
+    }
+    return execute_graceful_disconnect_action( std::move( actions.front() ),
+            request.connection, error );
+}
+
+multiplayer_graceful_disconnect_result
+multiplayer_dedicated_server::execute_graceful_disconnect_action(
+    multiplayer_server_lobby_action action,
+    const multiplayer_connection_id expected_connection,
+    std::string &error )
+{
+    if( action.connection != expected_connection ) {
+        error = "dedicated server graceful disconnect action is invalid";
+        stop();
+        return multiplayer_graceful_disconnect_result::server_or_transport_fatal;
+    }
+
+    if( action.type == multiplayer_server_lobby_action_type::disconnect ) {
+        closing_connections_.insert( action.connection );
+        if( transport_.disconnect( action.connection, std::move( action.reason ) ) ||
+            transport_.running() ) {
+            error.clear();
+            return multiplayer_graceful_disconnect_result::fallback_close_response_unavailable;
+        }
+    } else if( action.type == multiplayer_server_lobby_action_type::send_and_disconnect ) {
+        closing_connections_.insert( action.connection );
+        const multiplayer_transport_send_result send_result = transport_.send_and_disconnect(
+                    action.connection, std::move( action.payload ), std::move( action.reason ) );
+        error.clear();
+        switch( send_result ) {
+            case multiplayer_transport_send_result::queued:
+                return multiplayer_graceful_disconnect_result::acknowledgement_queued;
+            case multiplayer_transport_send_result::queue_full:
+                // send_and_disconnect() requests a direct terminal close when its bounded command
+                // queue rejects the ordered ACK-and-close command.
+                return multiplayer_graceful_disconnect_result::fallback_close_queue_full;
+            case multiplayer_transport_send_result::frame_too_large:
+                // No ACK can be ordered for an oversized frame.  Request a terminal close through
+                // the same bounded/fallback disconnect path and wait for its terminal event.
+                closing_connections_.insert( expected_connection );
+                if( transport_.disconnect( expected_connection,
+                                           "graceful disconnect acknowledgement exceeds the frame limit" ) ||
+                    transport_.running() ) {
+                    return multiplayer_graceful_disconnect_result::fallback_close_frame_too_large;
+                }
+                break;
+            case multiplayer_transport_send_result::stopped:
+                break;
+        }
+    } else {
+        error = "dedicated server graceful disconnect action is invalid";
+        stop();
+        return multiplayer_graceful_disconnect_result::server_or_transport_fatal;
+    }
+
+    error = transport_.failure_detail();
+    if( error.empty() ) {
+        error = "dedicated server transport stopped during graceful disconnect";
+    }
+    running_ = false;
+    return multiplayer_graceful_disconnect_result::server_or_transport_fatal;
 }
 
 bool multiplayer_dedicated_server::admission_is_pending(
@@ -347,12 +437,17 @@ bool multiplayer_dedicated_server::publish_prepared_admission(
         error = "dedicated server admission response is invalid";
         return false;
     }
-    const multiplayer_transport_send_result send_result = prepared.decision.accepted ?
-            transport_.send( response.connection, std::move( response.payload ) ) :
-            transport_.send_and_disconnect( response.connection, std::move( response.payload ),
-                                            std::move( response.reason ) );
+    multiplayer_transport_send_result send_result;
+    if( prepared.decision.accepted ) {
+        send_result = transport_.send( response.connection, std::move( response.payload ) );
+    } else {
+        closing_connections_.insert( response.connection );
+        send_result = transport_.send_and_disconnect( response.connection,
+                      std::move( response.payload ), std::move( response.reason ) );
+    }
     if( send_result != multiplayer_transport_send_result::queued ) {
         if( prepared.decision.accepted ) {
+            closing_connections_.insert( response.connection );
             transport_.disconnect( response.connection,
                                    "server outbound queue rejected admission response" );
         }
@@ -387,7 +482,14 @@ bool multiplayer_dedicated_server::record_session_confirmed(
 void multiplayer_dedicated_server::disconnect( const multiplayer_connection_id connection,
         std::string reason )
 {
+    closing_connections_.insert( connection );
     transport_.disconnect( connection, std::move( reason ) );
+}
+
+bool multiplayer_dedicated_server::connection_is_closing(
+    const multiplayer_connection_id connection ) const
+{
+    return closing_connections_.count( connection ) != 0;
 }
 
 std::optional<multiplayer_server_lobby_event> multiplayer_dedicated_server::poll_event()
@@ -397,5 +499,8 @@ std::optional<multiplayer_server_lobby_event> multiplayer_dedicated_server::poll
     }
     multiplayer_server_lobby_event event = std::move( events_.front() );
     events_.pop_front();
+    if( event.type == multiplayer_server_lobby_event_type::disconnected ) {
+        closing_connections_.erase( event.connection );
+    }
     return event;
 }
