@@ -73,15 +73,19 @@ the active-avatar safe-mode permission gate, real forced pause, callback/world f
 and an in-process
 two-runtime wait-only barrier.
 
-These are not production two-player routing. `main.cpp` still owns one `active_remote_session`; the adapter is only
-called by tests; `do_turn_impl()` still calls the actual legacy bubble directly rather than through `claim_world()`;
-session/lobby/runtime generation is not unified; and fail-stop has no production save/shutdown recovery owner.
-`players.max` must remain `1`. Phase 1/2 hosted platform and Android lifecycle evidence remains valid as recorded in
-`STATUS.md`; do not rerun or restate it as evidence for unrelated Phase 3 shared-code changes. The five `do_turn()`
-trace labels remain observation points, not safe ownership boundaries, and the isolated `tools/` transport spike is
-not production-source portability evidence.
+These are not production two-player routing. The single-player production server now owns an authoritative
+simulation-thread session directory and two-stage auth/resume path; protocol minor `1` carries the client's last
+accepted generation, exact lost-response replay is retired only after an exact-tuple application confirmation reaches
+the simulation-thread directory, and stale tuples cannot replace a newer binding. The adapter is still called only by
+tests; `do_turn_impl()` still calls the actual legacy bubble directly rather than through `claim_world()`; barrier
+disconnect is not yet connected to runtime offline/dormant; and fail-stop has no production save/shutdown recovery
+owner. `players.max` must remain `1`.
+Phase 1/2 hosted platform and Android lifecycle evidence remains valid as recorded in `STATUS.md`; do not rerun or
+restate it as evidence for unrelated Phase 3 shared-code changes. The five `do_turn()` trace labels remain observation
+points, not safe ownership boundaries, and the isolated `tools/` transport spike is not production-source portability
+evidence.
 
-Current source `804101995c175057856529be24439b0d7e87a49a` has a terminal-green Linux production gate and a
+The last hosted-green selector source `804101995c175057856529be24439b0d7e87a49a` has a terminal-green Linux production gate and a
 one-time terminal-green CI-contract package matrix recorded in `STATUS.md` and the build baseline. That closes the
 workflow/selector milestone only; routine backend-neutral Phase 3 work remains Linux-first.
 
@@ -102,15 +106,17 @@ Completed Phase 0 gates:
 
 The active work, in order, is:
 
-1. Build one authoritative production session/runtime directory around `active_remote_session`, lobby and registry:
-   change auth/resume to pending request -> simulation-thread commit -> lobby completion, add an exact expected-old
-   generation transition, and separate transport disconnected/barrier disconnected/runtime offline. The current
-   resume token record supplies the old generation; do not change the wire schema just for this step. Start with
-   `src/main.cpp`, `src/multiplayer_server_lobby.*` and `src/multiplayer_player_runtime.*`.
-   Follow pending ADR-0010 and do not mark it accepted until its root-context and process gates pass.
-2. Resolve the single-player active-root lifecycle gate before disconnect integration: choose and document either a
-   neutral server root context or a clean separation between selected context and runtime online/offline state. Keep
-   the stable runtime activatable through any required forced wait, then transition it offline.
+1. Push the authoritative session-directory source and record the smallest hosted MSVC/NDK gates that actually compile
+   protocol minor `1` production source; the Linux release/full multiplayer/sanitizer, real headless/native-client
+   process smokes, generated-schema check and AStyle gate are already green in `STATUS.md`. This is a one-time public
+   wire boundary, not a new rule that every backend-neutral Phase 3 commit needs a full platform matrix. Until
+   lightweight production-source targets exist, the baseline workflow's Windows/Android package jobs are the available
+   actual-source fallback; only their relevant compile result is evidence for this Tier 2 boundary, not a new package/
+   runtime acceptance requirement.
+2. Implement the selected active-root lifecycle design: keep the stable selected root activatable through required
+   forced wait and world completion, then transition it offline/dormant without running new turns; resume reactivates
+   the same runtime before command execution. Connect transport disconnected, barrier disconnected and runtime offline
+   as separate states; do not mark ADR-0010 accepted until these gates pass.
 3. Keep `players.max = 1` while wiring the scheduler/adapter into the production command loop and putting the actual
    `process_legacy_single_player_bubble_turn()` call behind the world claim. Map a latched execution fault to typed
    fatal shutdown; if a non-idempotent side effect may already have happened, stop without writing a new canonical
@@ -145,7 +151,8 @@ backend-neutral `src/multiplayer_*` changes do not trigger the package baseline.
 Android-owned paths select Android, shared graphical/platform adapters select their affected targets, and shared
 artifact/toolchain paths select their required matrix. `Makefile` is Linux-only; root CMake/version generation uses a
 targeted Linux configure; public protocol/schema/transport/crypto boundaries temporarily use actual-source
-Windows/Android packages.
+Windows/Android packages. That package execution is a temporary CI implementation detail for Tier 2 portability, not
+an instruction to require package or lifecycle acceptance when only the public compile boundary changed.
 An unresolvable automatic base/diff fails and requires an explicit manual
 target instead of silently running every package. The transport workflow defaults manual and routine automatic runs
 to Linux; its Windows/Android jobs compile only the isolated transport spike and run automatically only for that spike
@@ -303,8 +310,10 @@ Use the three verification tiers defined in the refactor plan and build baseline
    production source. Shared internal C++ alone does not require both packages. A compile-only or cross-compile smoke
    proves only that boundary and never substitutes for package/lifecycle evidence when those are the acceptance target.
 3. **Tier 3 — recorded milestone matrix.** Run the necessary Linux, Windows and Android matrix for phase exits,
-   release candidates, pinned toolchain/artifact changes and explicit protocol-compatibility milestones. Every phase
-   exit must retain at least one recorded set of platform evidence appropriate to its exit criteria.
+   release candidates, pinned toolchain/artifact changes and explicit cross-version protocol-compatibility or product
+   compatibility milestones. A schema/version edit that makes no phase-exit or cross-version product claim remains a
+   Tier 2 public boundary. Every phase exit must retain at least one recorded set of platform evidence appropriate to
+   its exit criteria.
 
 Platform-owned surfaces include `msvc-full-features/`, Windows batch/PowerShell/package code, Win32-only filesystem/
 process/socket/ACL or SDL behavior, plus Android Gradle/CMake/manifest/Java/JNI/ABI/resource/touch/lifecycle code.
@@ -336,6 +345,20 @@ scale with risk; the full-swap tests remain a negative identity comparison.
 - World mutation may only occur on the simulation thread. Never call game-rule methods from a per-player network thread.
 - Lobby auth/resume may validate transport data on a network thread, but accepted identity/generation/admission must
   wait for authoritative simulation-thread session-directory commit; follow ADR-0010.
+- A resume request must declare the client's last accepted generation and be checked against the token mirror and
+  runtime. A retry of a lost accepted response may replay only the immediately committed generation with the same
+  revision/sequence fingerprint; it must not increment twice. The first valid application frame starts exact-tuple
+  confirmation, but the replay permission is not considered consumed authoritatively until the simulation-thread
+  directory accepts that confirmation and the server explicitly acknowledges it back to the lobby mirror. Failure
+  paths must fail-stop or remain fail-closed without advancing the generation again.
+- The directory/runtime generation is authoritative. A lobby token mirror may lag exactly one generation only after an
+  accepted resume commit whose response could not be enqueued; the next matching directory replay must repair it.
+  Fresh authentication has no published token in that case and therefore gets a new admission, not same-generation
+  replay.
+- A fresh token not yet confirmed by any client application frame must not strand player capacity after disconnect.
+  Terminal `session_expired` rejection releases an inactive token record; active/pending conflicts preserve it and use
+  a retryable non-terminal rejection. Typed rejection bytes and close must use one ordered transport command, with a
+  queue-full close fallback.
 - Network/compression workers must not read live game objects. Build immutable command and snapshot DTOs at defined safe points.
 - Server command execution must not call blocking UI such as `query_yn()`, `uilist::query()`, inventory selectors, SDL, curses, or ImGui.
 - Keep network code independent from concrete UI backends, and keep game rules independent from sockets.

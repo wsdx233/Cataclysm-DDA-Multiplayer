@@ -229,6 +229,7 @@ int main( int argc, char **argv )
         resume.resume_token = authenticated.resume_token;
         resume.last_server_revision = initial_scene.server_revision;
         resume.last_client_sequence = 2;
+        resume.session_generation = authenticated.session_generation;
         request = {};
         request.message_type = multiplayer_protocol_message_type::resume_request;
         request.sequence = 1;
@@ -239,6 +240,9 @@ int main( int argc, char **argv )
         require( multiplayer_parse_resume_result_payload( response, resume_result, error ), error );
         require( resume_result.accepted && resume_result.full_snapshot_required,
                  "session resume was rejected: " + resume_result.message );
+        require( resume_result.session_generation == authenticated.session_generation + 1,
+                 "session resume did not advance generation exactly once" );
+        const std::uint64_t resumed_generation = resume_result.session_generation;
         const multiplayer_session_id resumed_session = response.session;
         require( resumed_session != first_session && resumed_session != multiplayer_session_id {},
                  "resume did not rotate the authenticated session id" );
@@ -269,6 +273,7 @@ int main( int argc, char **argv )
         require( exchange_hello( conflict_client, discovered.build_id, discovered.content_manifest,
                                  discovered.savegame_version ).accepted,
                  "sequence-conflict connection handshake was rejected" );
+        resume.session_generation = resumed_generation;
         request = {};
         request.message_type = multiplayer_protocol_message_type::resume_request;
         request.sequence = 1;
@@ -276,7 +281,9 @@ int main( int argc, char **argv )
         send_envelope( conflict_client, request );
         response = read_envelope( conflict_client );
         require( multiplayer_parse_resume_result_payload( response, resume_result, error ), error );
-        require( resume_result.accepted, "second resume was rejected" );
+        require( resume_result.accepted &&
+                 resume_result.session_generation == resumed_generation + 1,
+                 "second resume was rejected or did not advance generation exactly once" );
         const multiplayer_session_id conflict_session = response.session;
         const multiplayer_scene_snapshot conflict_scene = read_scene( conflict_client );
         command.base_revision = conflict_scene.server_revision;

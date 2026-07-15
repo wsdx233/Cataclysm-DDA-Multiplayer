@@ -12,7 +12,7 @@
 #include "multiplayer_transport.h"
 
 constexpr std::uint16_t multiplayer_protocol_current_major = 1;
-constexpr std::uint16_t multiplayer_protocol_current_minor = 0;
+constexpr std::uint16_t multiplayer_protocol_current_minor = 1;
 constexpr std::uint32_t multiplayer_server_state_schema_version = 1;
 constexpr std::size_t multiplayer_protocol_envelope_size = 48;
 constexpr std::size_t multiplayer_protocol_maximum_payload_size =
@@ -145,6 +145,7 @@ struct multiplayer_resume_request {
     std::string resume_token;
     std::uint64_t last_server_revision = 0;
     std::uint64_t last_client_sequence = 0;
+    std::uint64_t session_generation = 0;
 };
 
 struct multiplayer_resume_result {

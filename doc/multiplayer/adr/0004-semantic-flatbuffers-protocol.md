@@ -2,7 +2,7 @@
 
 - 状态：已接受
 - 日期：2026-07-12
-- 更新：2026-07-14
+- 更新：2026-07-15
 - 关联计划：第 10、11、12、13、19、20 节
 
 ## 背景
@@ -52,6 +52,14 @@ CDDA 的内部 C++ 对象和 JSON save schema 会随上游持续变化，也包�
 
 每个 command 携带单调递增的 `client_seq` 和 `base_revision`。服务器缓存最近的 command result；相同 session/sequence 的重发返回原结果，不重复执行。delta 必须声明 `base_revision` 与 `new_revision`，缺口通过 full snapshot 恢复。
 
+protocol minor `1` 起，`ResumeRequest` 还必须携带客户端最后接受的 `session_generation`。服务器将它与 bearer
+token record 和 authoritative runtime 交叉验证：正常 resume 只提交精确 `old + 1`；若上一 accepted resume response
+在客户端确认前丢失，只有 generation、last revision 和 last client sequence 与上一 committed resume fingerprint
+全部匹配时，才能在新 transport session 上幂等重发同一 generation。该字段不能作为客户端自报 authority，也不能
+允许跳代、回退或绕过 token。新 session 的第一条有效 application frame 会触发 exact-tuple simulation confirmation；
+只有 authoritative directory 接受 confirmation 且 server/main ack lobby mirror 后才完整消费该 fingerprint，之后旧
+generation 不能继续冒充 response-lost retry。
+
 ## 替代方案
 
 - 直接发送 save JSON：拒绝。字段范围过大、兼容轴错误，并允许不可信输入进入 save 反序列化路径。
@@ -78,6 +86,8 @@ CDDA 的内部 C++ 对象和 JSON save schema 会随上游持续变化，也包�
 - build-system 回归覆盖已有 `version.h` 时的重新核对、CMake override 贯穿 target、重复生成保持 mtime、Make
   dirty probe rc > 1 fail closed，以及 Windows workflow 的大小写敏感 canonical-ID assertion。
 - 幂等测试覆盖“服务器已执行但确认丢失”后的重连 replay。
+- resume admission 测试覆盖 accepted response 丢失后的同代 completion replay、客户端已接受后下一次精确 `+1`、
+  跳代/回退拒绝和旧 connection/session/generation tuple 不覆盖新绑定。
 - visibility golden test 证明协议 payload 不包含玩家不可见的怪物、陷阱、物品和未探索地图。
 - fuzz target 覆盖 frame decoder、FlatBuffer root、zstd envelope 和 UTF-8 字段。
 

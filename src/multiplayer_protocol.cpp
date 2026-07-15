@@ -14,6 +14,8 @@
 #include "third-party/flatbuffers/flatbuffers.h"
 #include <multiplayer_protocol_generated.h>
 
+#include "multiplayer_session_generation.h"
+
 namespace protocol = cdda::multiplayer::protocol;
 
 namespace
@@ -300,7 +302,8 @@ bool validate_authentication_result( const multiplayer_authentication_result &re
         if( result.rejection != multiplayer_protocol_rejection::none ||
             !is_uuid_v4( result.player_id ) ||
             !is_valid_identifier( result.character_id, maximum_capability_id_bytes ) ||
-            !is_bearer_token( result.resume_token ) || result.session_generation == 0 ) {
+            !is_bearer_token( result.resume_token ) ||
+            !multiplayer_is_valid_session_generation( result.session_generation ) ) {
             error = "accepted authentication result is incomplete";
             return false;
         }
@@ -327,7 +330,7 @@ bool validate_resume_result( const multiplayer_resume_result &result, std::strin
         if( result.rejection != multiplayer_protocol_rejection::none ||
             !is_uuid_v4( result.player_id ) ||
             !is_valid_identifier( result.character_id, maximum_capability_id_bytes ) ||
-            result.session_generation == 0 ) {
+            !multiplayer_is_valid_session_generation( result.session_generation ) ) {
             error = "accepted resume result is incomplete";
             return false;
         }
@@ -875,14 +878,15 @@ bool multiplayer_parse_authentication_result_payload(
 bool multiplayer_build_resume_request_payload( const multiplayer_resume_request &request,
         multiplayer_transport_payload &payload, std::string &error )
 {
-    if( !is_bearer_token( request.resume_token ) ) {
-        error = "resume token has an invalid format";
+    if( !is_bearer_token( request.resume_token ) ||
+        !multiplayer_is_valid_session_generation( request.session_generation ) ) {
+        error = "resume token or session generation has an invalid format";
         return false;
     }
     flatbuffers::FlatBufferBuilder builder;
     const auto root = protocol::CreateResumeRequestDirect(
                           builder, request.resume_token.c_str(), request.last_server_revision,
-                          request.last_client_sequence );
+                          request.last_client_sequence, request.session_generation );
     const auto message = protocol::CreateProtocolMessage(
                              builder, protocol::MessagePayload::ResumeRequest, root.Union() );
     protocol::FinishProtocolMessageBuffer( builder, message );
@@ -907,8 +911,10 @@ bool multiplayer_parse_resume_request_payload( const multiplayer_protocol_envelo
     parsed.resume_token = input->resume_token()->str();
     parsed.last_server_revision = input->last_server_revision();
     parsed.last_client_sequence = input->last_client_sequence();
-    if( !is_bearer_token( parsed.resume_token ) ) {
-        error = "resume token has an invalid format";
+    parsed.session_generation = input->session_generation();
+    if( !is_bearer_token( parsed.resume_token ) ||
+        !multiplayer_is_valid_session_generation( parsed.session_generation ) ) {
+        error = "resume token or session generation has an invalid format";
         return false;
     }
     request = std::move( parsed );

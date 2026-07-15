@@ -16,6 +16,7 @@ class stats_tracker;
 class time_duration;
 class time_point;
 class vehicle;
+class multiplayer_session_directory;
 enum safe_mode_type : int;
 namespace Messages
 {
@@ -116,6 +117,8 @@ class multiplayer_player_runtime
 
     private:
         bool begin_session();
+        bool transition_session_generation( std::uint64_t expected_old,
+                                            std::uint64_t next_generation );
         bool disconnect();
         bool mark_dead();
 
@@ -123,6 +126,7 @@ class multiplayer_player_runtime
         std::unique_ptr<impl> impl_;
 
         friend class multiplayer_player_registry;
+        friend class multiplayer_session_directory;
 };
 
 #endif // CATA_SRC_MULTIPLAYER_PLAYER_RUNTIME_H

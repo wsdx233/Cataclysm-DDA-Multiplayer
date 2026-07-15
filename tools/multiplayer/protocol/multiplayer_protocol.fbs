@@ -131,6 +131,7 @@ table ResumeRequest {
   resume_token:string (required);
   last_server_revision:ulong;
   last_client_sequence:ulong;
+  session_generation:ulong;
 }
 
 table ResumeResult {

@@ -59,8 +59,9 @@ remote 路径不执行 renderer recovery、music/SFX、autosave、截图、block
 - `player_end` 同时包含 `u.process_turn()`（当前在这里补充下一轮 moves）、逐玩家 body/morale/power/weather effect
   和本地 renderer/SFX。ADR 的“turn begin 准备 moves”是目标模型；在 phase adapter 证明等价前，不应顺手改变
   当前 replenishment 次序并引入 off-by-one。
-- production `src/main.cpp` 仍只有一个 `active_remote_session`，command replay cache 也只按 sequence 建索引；
-  `do_turn_remote()` 会让这个 avatar 用尽 moves 后才进入一次 world phase。它不是 round-robin 或多 session owner。
+- production `src/main.cpp` 已用 authoritative directory binding 替换 `active_remote_session`，但仍只路由固定 root
+  player，command replay cache 也只按 sequence 建索引；`do_turn_remote()` 会让这个 avatar 用尽 moves 后才进入一次
+  world phase。它不是 round-robin 或多-player scheduler owner。
 - `game::walk_move()` 仍直接使用固定 `game::u`，human-human collision、monster/death/field/scent/NPC target、
   tether/group-centered shift 和 player-scoped message/state 隔离都不是纯调度器能够补齐的能力。
 

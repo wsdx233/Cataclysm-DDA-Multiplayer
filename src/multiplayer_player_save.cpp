@@ -1,7 +1,6 @@
 #include "multiplayer_player_save.h"
 
 #include <cstdint>
-#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -13,6 +12,7 @@
 #include "json.h"
 #include "json_loader.h"
 #include "messages.h"
+#include "multiplayer_session_generation.h"
 #include "stats_tracker.h"
 
 namespace
@@ -70,8 +70,8 @@ multiplayer_player_load_result deserialize_multiplayer_player_runtime(
         if( !data.read( "session_generation", session_generation ) ) {
             return { nullptr, "missing session_generation" };
         }
-        if( session_generation >=
-            static_cast<std::uint64_t>( std::numeric_limits<std::int64_t>::max() ) ) {
+        if( session_generation != 0 &&
+            !multiplayer_is_valid_session_generation( session_generation ) ) {
             return { nullptr, "session generation exhausted" };
         }
 

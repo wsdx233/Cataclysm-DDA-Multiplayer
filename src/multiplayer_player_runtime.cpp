@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <limits>
 #include <random>
 #include <utility>
 
@@ -13,6 +12,7 @@
 #include "cata_assert.h"
 #include "game.h"
 #include "messages.h"
+#include "multiplayer_session_generation.h"
 #include "stats_tracker.h"
 
 namespace
@@ -179,11 +179,26 @@ bool multiplayer_player_runtime::begin_session()
         impl_->status != multiplayer_player_status::offline ) {
         return false;
     }
-    if( impl_->session_generation >=
-        static_cast<std::uint64_t>( std::numeric_limits<std::int64_t>::max() ) ) {
+    if( impl_->session_generation >= multiplayer_session_generation_exclusive_limit - 1 ) {
         return false;
     }
-    ++impl_->session_generation;
+    return transition_session_generation( impl_->session_generation,
+                                          impl_->session_generation + 1 );
+}
+
+bool multiplayer_player_runtime::transition_session_generation(
+    const std::uint64_t expected_old, const std::uint64_t next_generation )
+{
+    if( impl_->status != multiplayer_player_status::importing &&
+        impl_->status != multiplayer_player_status::offline &&
+        impl_->status != multiplayer_player_status::active ) {
+        return false;
+    }
+    if( impl_->session_generation != expected_old ||
+        !multiplayer_is_next_session_generation( expected_old, next_generation ) ) {
+        return false;
+    }
+    impl_->session_generation = next_generation;
     impl_->status = multiplayer_player_status::active;
     return true;
 }

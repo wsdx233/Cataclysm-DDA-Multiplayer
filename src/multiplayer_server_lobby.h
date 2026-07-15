@@ -52,8 +52,11 @@ struct multiplayer_server_lobby_action {
 };
 
 enum class multiplayer_server_lobby_event_type : std::uint8_t {
+    authentication_pending,
+    resume_pending,
     authenticated,
     resumed,
+    session_confirmed,
     disconnected,
     graceful_disconnect_requested,
     application_message
@@ -71,6 +74,25 @@ struct multiplayer_server_lobby_event {
     std::uint64_t last_server_revision = 0;
     std::uint64_t last_client_sequence = 0;
     multiplayer_protocol_envelope message;
+    std::uint64_t admission_id = 0;
+    std::uint64_t expected_session_generation = 0;
+    bool confirms_resume_generation = false;
+};
+
+struct multiplayer_server_lobby_admission_decision {
+    bool accepted = false;
+    std::string player_id;
+    std::string character_id;
+    std::uint64_t session_generation = 0;
+    multiplayer_protocol_rejection rejection =
+        multiplayer_protocol_rejection::internal_error;
+    std::string message;
+};
+
+struct multiplayer_server_lobby_prepared_admission {
+    multiplayer_server_lobby_event request;
+    multiplayer_server_lobby_admission_decision decision;
+    std::vector<multiplayer_server_lobby_action> actions;
 };
 
 class multiplayer_server_lobby
@@ -85,6 +107,13 @@ class multiplayer_server_lobby
             const multiplayer_transport_event &event, clock::time_point now );
         std::vector<multiplayer_server_lobby_action> complete_graceful_disconnect(
             const multiplayer_server_lobby_event &request );
+        bool admission_is_pending( const multiplayer_server_lobby_event &request ) const;
+        bool prepare_admission( const multiplayer_server_lobby_event &request,
+                                const multiplayer_server_lobby_admission_decision &decision,
+                                multiplayer_server_lobby_prepared_admission &prepared,
+                                std::string &error ) const;
+        bool publish_admission( const multiplayer_server_lobby_prepared_admission &prepared );
+        bool record_session_confirmed( const multiplayer_server_lobby_event &event );
         std::vector<multiplayer_server_lobby_action> tick( clock::time_point now );
         std::optional<multiplayer_server_lobby_event> poll_event();
 
@@ -95,6 +124,8 @@ class multiplayer_server_lobby
         enum class connection_stage : std::uint8_t {
             awaiting_hello,
             awaiting_authentication,
+            authentication_pending,
+            resume_pending,
             authenticated,
             draining,
             releasing,
@@ -111,11 +142,24 @@ class multiplayer_server_lobby
             std::string character_id;
             std::string display_name;
             std::uint64_t session_generation = 0;
+            std::uint64_t admission_id = 0;
+            std::uint64_t expected_session_generation = 0;
+            std::uint64_t pending_last_server_revision = 0;
+            std::uint64_t pending_last_client_sequence = 0;
+            std::uint64_t pending_resume_replay_high_water = 0;
+            bool pending_resume_replay = false;
+            clock::time_point pending_resume_expires_at = {};
             std::uint64_t last_inbound_sequence = 1;
             std::uint64_t resume_replay_high_water = 0;
             std::deque<clock::time_point> application_message_times;
             std::deque<std::pair<clock::time_point, std::size_t>> application_byte_times;
             std::size_t application_bytes_in_window = 0;
+        };
+
+        struct resume_fingerprint {
+            std::uint64_t expected_session_generation = 0;
+            std::uint64_t last_server_revision = 0;
+            std::uint64_t last_client_sequence = 0;
         };
 
         struct resume_record {
@@ -129,6 +173,11 @@ class multiplayer_server_lobby
             std::deque<std::uint64_t> recent_player_command_sequences;
             clock::time_point expires_at;
             std::optional<multiplayer_connection_id> active_connection;
+            std::optional<multiplayer_connection_id> pending_connection;
+            std::uint64_t pending_admission_id = 0;
+            std::optional<resume_fingerprint> last_resume;
+            std::optional<multiplayer_connection_id> pending_confirmation_connection;
+            bool client_has_resume_token = false;
         };
 
         std::vector<multiplayer_server_lobby_action> handle_frame(
@@ -145,7 +194,8 @@ class multiplayer_server_lobby
             const multiplayer_protocol_envelope &envelope, clock::time_point now );
         std::vector<multiplayer_server_lobby_action> handle_disconnect_notice(
             multiplayer_connection_id connection, connection_state &state,
-            const multiplayer_protocol_envelope &envelope );
+            const multiplayer_protocol_envelope &envelope,
+            resume_record &record );
         void handle_closed_connection( const multiplayer_transport_event &event,
                                        clock::time_point now );
         bool record_authentication_attempt( const std::string &peer_address,
@@ -157,6 +207,7 @@ class multiplayer_server_lobby
                                 multiplayer_server_lobby_action &action,
                                 std::string &error ) const;
         bool application_event_capacity_available() const;
+        std::size_t pending_authentication_count() const;
         void push_control_event( multiplayer_server_lobby_event event );
         std::vector<multiplayer_server_lobby_action> reject_authentication(
             multiplayer_connection_id connection, connection_state &state,
@@ -170,6 +221,7 @@ class multiplayer_server_lobby
         std::map<std::string, resume_record, std::less<>> resume_records_;
         std::map<std::string, std::deque<clock::time_point>, std::less<>> authentication_attempts_;
         std::deque<multiplayer_server_lobby_event> events_;
+        std::uint64_t next_admission_id_ = 1;
 };
 
 #endif // CATA_SRC_MULTIPLAYER_SERVER_LOBBY_H

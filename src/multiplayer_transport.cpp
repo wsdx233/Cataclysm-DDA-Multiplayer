@@ -398,6 +398,13 @@ class multiplayer_server_transport::impl
             command.connection = connection;
             command.reason = std::move( reason );
             if( !outbound_.try_push( std::move( command ) ) ) {
+                asio::post( io_, [this, connection]() {
+                    const auto found = connections_.find( connection );
+                    if( found != connections_.end() ) {
+                        found->second->close( multiplayer_transport_event_type::transport_error,
+                                              "server outbound transport queue is full" );
+                    }
+                } );
                 return false;
             }
             asio::post( io_, [this]() {
@@ -481,13 +488,14 @@ class multiplayer_server_transport::impl
                     if( closed_ ) {
                         return;
                     }
-                    closed_ = true;
-                    close_socket();
-                    owner_.connections_.erase( id_ );
-                    if( !owner_.push_control_event( {
-                    type, id_, {}, std::move( detail ), peer_address_
+                    const std::shared_ptr<connection> self = shared_from_this();
+                    self->closed_ = true;
+                    self->close_socket();
+                    self->owner_.connections_.erase( self->id_ );
+                    if( !self->owner_.push_control_event( {
+                    type, self->id_, {}, std::move( detail ), self->peer_address_
                     } ) ) {
-                        owner_.fail_transport(
+                        self->owner_.fail_transport(
                             "server inbound queue could not retain a terminal connection event" );
                     }
                 }

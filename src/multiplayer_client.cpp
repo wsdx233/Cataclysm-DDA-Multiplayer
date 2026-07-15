@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "multiplayer_crypto.h"
+#include "multiplayer_session_generation.h"
 
 namespace
 {
@@ -318,6 +319,7 @@ bool multiplayer_client::send_authentication( const bool resume, const clock::ti
         request.resume_token = resume_token_;
         request.last_server_revision = latest_scene_ ? latest_scene_->server_revision : 0;
         request.last_client_sequence = confirmed_sequence_;
+        request.session_generation = session_generation_;
         expected_replay_from_sequence_ = confirmed_sequence_ ==
                                          std::numeric_limits<std::uint64_t>::max() ?
                                          confirmed_sequence_ : confirmed_sequence_ + 1;
@@ -400,8 +402,10 @@ bool multiplayer_client::handle_resume_result( const multiplayer_protocol_envelo
         return fail( "accepted server resume response has an empty session", error );
     }
     if( result.player_id != player_id_ || result.character_id != character_id_ ||
-        result.session_generation <= session_generation_ ) {
-        return fail( "server resume response changed identity or did not advance generation", error );
+        !multiplayer_is_next_session_generation( session_generation_,
+                result.session_generation ) ) {
+        return fail( "server resume response changed identity or did not advance generation exactly once",
+                     error );
     }
     if( !result.full_snapshot_required ||
         result.replay_from_sequence != expected_replay_from_sequence_ ) {

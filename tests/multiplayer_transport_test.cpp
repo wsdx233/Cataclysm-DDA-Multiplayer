@@ -257,6 +257,28 @@ TEST_CASE( "multiplayer_server_transport_atomically_sends_before_ordered_disconn
         CHECK( event->detail != "must-not-be-reported" );
         server.stop();
     }
+
+    SECTION( "disconnect command queue failure still closes the connection" ) {
+        multiplayer_server_transport_settings settings;
+        settings.outbound_payload_bytes = 0;
+        multiplayer_server_transport server( settings );
+        std::string error;
+        REQUIRE( server.start( { "127.0.0.1", 0 }, error ) );
+        loopback_client client;
+        connect_client( client, server );
+        std::optional<multiplayer_transport_event> event = wait_for_event( server );
+        REQUIRE( event );
+        REQUIRE( event->type == multiplayer_transport_event_type::connected );
+
+        CHECK_FALSE( server.disconnect( event->connection, "cannot enter bounded queue" ) );
+        event = wait_for_event( server );
+        REQUIRE( event );
+        CHECK( event->type == multiplayer_transport_event_type::transport_error );
+        CHECK( event->detail.find( "outbound transport queue is full" ) !=
+               std::string::npos );
+        REQUIRE( wait_for_socket_close( client.socket ) );
+        server.stop();
+    }
 }
 
 TEST_CASE( "multiplayer_server_transport_retires_capacity_until_terminal_event_is_consumed",

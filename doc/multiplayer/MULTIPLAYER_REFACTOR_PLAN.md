@@ -287,19 +287,38 @@ sidecar 继续用于把当前散落在 `game` 或进程级单例中的玩家状�
   runtime lifecycle；registry 持有地址稳定 runtime/avatar，并提供这些状态的只读镜像与身份查询，不能独立推进
   session transition。
 - 当前连接、角色状态、所在 bubble、最后确认 revision 的可查询 snapshot。
-- 一个由 session directory 统一拥有的 session generation；lobby、runtime、scheduler participant key 和 resume
-  token 不得各自递增或复制不同代数。
+- 一个只由 session directory 推进的 canonical session generation；runtime 是 directory-controlled mirror，lobby
+  token record 是 wire/replay mirror，scheduler participant key 是 turn-local snapshot，三者都不得独立递增。
+  accepted resume 已 commit 但 response enqueue 失败时，lobby mirror 可以按明确定义暂时落后 directory/runtime
+  一代；该差异只能由下一次 exact-fingerprint directory replay 修复，不能成为第二个 generation owner。
 - auth/resume 必须采用两阶段提交：network lobby 只完成 wire validation、rate limit 和 token lookup，产生 pending
-  request；simulation thread 的 session directory 分配/核对 identity、runtime 和 generation 后，再调用 lobby 的
-  `complete_authentication`/`complete_resume` 类入口构造 accepted response。不得由 lobby 先发送成功、递增 record，
-  再让 simulation 侧被动追认。
-- 当前 resume wire request 只携带 token、revision 和 client sequence；expected old generation 由服务器 token record
-  解析并传给 directory。除非另行修改 protocol schema 并走 Tier 2 compatibility gate，不要求客户端新增 generation
-  字段。
+  request；simulation thread 的 session directory 先生成带 version 的 plan，lobby 按 plan 预编码 response，accepted
+  plan 再提交 identity/runtime/generation/connection tuple。随后 transport 先 enqueue response（rejection 使用单个
+  ordered `send_and_disconnect`），lobby 最后发布 token mirror 与 post-commit event。不得由 lobby 先发送成功、递增
+  record，再让 simulation 侧被动追认。accepted enqueue 失败时 generation 不回滚且只清 binding：resume 保留旧
+  token mirror，由 directory fingerprint 在重试时同代 replay 并修复 mirror；fresh auth 尚未发布 token record，后续
+  fresh retry 是新的 admission 并继续推进 generation，不承诺同代 replay。
+- `ResumeRequest` 携带客户端最后接受的 generation、token、revision 和 client sequence。lobby 先以 token record
+  校验 wire request 并形成 immutable pending DTO；directory 再以该 DTO 核对 authoritative entry/runtime 和
+  fingerprint。两层都不能信任客户端单独声明，但 directory 不直接读取 network-thread token map。该字段解决
+  accepted resume response 丢失时无法判断“重放已提交 `g + 1`”还是“推进到 `g + 2`”的歧义，因此 protocol minor
+  随之递增并按公共 wire boundary 验证。
+- 普通 resume 只允许 exact `old -> old + 1`。若 directory 已提交 `old + 1` 但 response 未被客户端确认，只有
+  connection 已断开、request 仍携带 old generation，且 last revision/client sequence 与上一 committed resume
+  fingerprint 精确匹配时，才允许在新 transport session 幂等重放同一 generation；不得再次递增。其他回退、跳代
+  或旧 fingerprint 一律过期。
+- 新 session 的第一条有效 application frame 触发 exact-tuple confirmation；只有 simulation-thread directory 接受
+  confirmation 后，authoritative replay fingerprint 才视为消费，server/main 再显式 ack lobby 完成对应 mirror
+  状态。lobby 在 ack 前只能标记 confirmation pending，不能提前清 fingerprint；确认或 ack 异常必须 fail-stop，不能
+  再次推进 generation。fresh auth token 在客户端 application confirmation 前若连接先断开，应
+  删除未知 token record；会令客户端清 token 的终态 `session_expired` 也必须释放 inactive record，
+  active/pending 冲突则保留 token 并返回 `invalid_state`。
 - runtime 需要 directory-only 的 exact generation transition（`expected_old -> new`，且只允许 `+1`）；现有
   `begin_session()` 的隐式自增和 active/offline 限制不能直接承担跨 lobby/runtime 的权威提交。canonical generation
   必须小于 `INT64_MAX`（与 player snapshot 可反序列化范围一致），lobby、runtime、scheduler 和 client accepted-resume
   检查统一拒绝更大值；client 必须验证 response 恰好是上一 generation 的 `+1`，不能只验证“变大”。
+- 进程启动时 directory 可以一次性采用 registry 已激活 root runtime 的现有有效 generation 作为 bootstrap；一旦建立
+  entry，后续 auth/resume 都必须通过 directory version 与 exact transition，不能再次静默 adopt。
 - 分离 transport connection state、当前 barrier participant state 和 runtime lifecycle state；不得用单一
   connected/offline 布尔值同时驱动网络关闭、自动 wait 和 avatar 可激活性。
 - active/offline/dead/importing 等状态机。
@@ -313,9 +332,11 @@ RFC 4122 v4 `player_id`、session generation、状态机和严格 snapshot schem
 ownership。普通移动由 registry 在查询边界验证位置快照，`map::shift()` 显式同步全部 human runtime 的
 位置、route 和 remote-control 坐标；同格查询优先稳定 human identity，human avatar 不进入 NPC AI。
 这些是进 Phase 1 的运行时身份基础，但仍不是网络协议或 canonical generation world save。
-Phase 2 lobby resume 与 runtime generation 目前仍由不同对象维护，首次 resume 后可能分叉；这是 Phase 3
-production session/runtime directory 必须先关闭的门禁，不能由 phase adapter 猜测或临时覆盖。ownership、两阶段
-admission、generation 和 disconnect 接受门禁见待验证 ADR-0010。
+Phase 3 的 production single-player path 已接入 authoritative session directory、两阶段 admission 与 canonical
+generation owner；lobby 只保留受控 token/replay mirror，旧 connection/session/generation tuple 不能覆盖新 binding。
+当前仍未把 barrier disconnect、forced wait、runtime offline/dormant、scheduler owner 和 durable save generation
+接到该 directory，
+因此 `players.max` 继续为 `1`，ADR-0010 仍待验证。
 
 ## 8. 回合与时间模型
 
@@ -399,12 +420,13 @@ world routing 和下游多人规则门禁前，`players.max` 保持 `1`。
   registry 仍持有且可激活的 runtime 上执行 forced wait -> 记录 barrier terminal state -> session directory 再决定
   runtime 是否进入 offline。不得先调用 runtime disconnect/offline 再尝试自动 wait。
 - 当前 `game::disconnect_multiplayer_player()` 拒绝将 active root runtime 置为 offline，单玩家 server 也没有可切换的
-  第二 active runtime。production 接入前必须作出并记录一个明确设计：引入不属于玩家 session 的 neutral server
-  root context，或把“当前 selected root”与 runtime online/offline lifecycle 解耦；不得靠跳过 offline transition 或
-  临时 dummy player 隐式绕过。
+  第二 active runtime。ADR-0010 已选择把 selected root context 与 runtime online/offline lifecycle 解耦；下一步必须
+  实现并验证 barrier/world 完成后的 offline/dormant 与同一稳定 runtime resume，不能靠跳过 offline transition、在
+  offline root 上继续跑 turn 或引入临时 dummy player 绕过。
 - 安全区服务器可以配置“安全下线后移除实体”，但必须有明确的安全判定和冷却，不能成为战斗逃生手段。
-- 重连必须携带 session resume token 和最后确认 revision；服务器用 token record 解析权威旧 generation，session
-  directory 只允许统一 generation 的精确 `+1`，服务器决定发送 delta 还是 full snapshot。
+- 重连必须携带 session resume token、客户端最后接受的 generation 和最后确认 revision/sequence；服务器用 token
+  record/runtime 交叉验证。session directory 对新 resume 只允许统一 generation 的精确 `+1`，对上一 accepted
+  response 丢失只允许同 fingerprint 的同代幂等 completion replay；服务器决定发送 delta 还是 full snapshot。
 
 ## 9. 主循环拆分计划
 
@@ -696,7 +718,7 @@ License 1.0。Linux GCC/Clang、Windows MSVC 和 Android NDK arm64 编译门禁�
 - `ContentManifest`
 - `JoinRequest`
 - `JoinAccepted` / `JoinRejected`
-- `ResumeRequest`
+- `ResumeRequest`（携带客户端最后接受的 session generation）
 
 游戏：
 
@@ -722,6 +744,9 @@ License 1.0。Linux GCC/Clang、Windows MSVC 和 Android NDK arm64 编译门禁�
 - command 带 `base_revision`；依赖旧场景的动作在 revision 不匹配时重新验证或拒绝。
 - delta 带 `base_revision` 与 `new_revision`；客户端缺失中间 delta 时请求 full snapshot。
 - TCP 有序不等于业务幂等，重连时仍必须处理“服务器执行成功但客户端未收到确认”的情况。
+- resume admission 本身也必须幂等：客户端在 accepted resume response 丢失后会以同一旧 generation/revision/
+  sequence 重试，服务器应重放已提交的 next generation，而不是再次递增；客户端已接受 response 后的下一次 resume
+  则携带新 generation 并推进一代。
 - clean `DisconnectNotice` 必须在 simulation FIFO 中晚于既有 command/result/scene；服务端只有在 ACK bytes
   写完且 transport 报告精确 ordered-close completion 后才能删除 resume record，任何 queue/read/write/peer-close
   failure 都保留 resume 能力。
@@ -745,6 +770,11 @@ License 1.0。Linux GCC/Clang、Windows MSVC 和 Android NDK arm64 编译门禁�
 - gameplay data hash 不同：拒绝。
 - tileset、字体、语言、soundpack 不参与 gameplay hash。
 - 客户端缺少服务器 mod 时给出缺失列表，不自动执行下载或安装。
+
+protocol minor `1` 引入 `ResumeRequest.session_generation`，属于不兼容的 session-admission 语义边界；当前严格握手
+应拒绝 minor `0`，不能把缺失 generation 当作 `0` 或仅依赖 token 猜测。该 Tier 2 public boundary 必须验证
+generated header、Linux production protocol/client/server，以及实际编译 changed production source 的 MSVC/NDK
+边界；它不同时宣称 phase exit、release 或跨版本互通，因此不单独触发 Tier 3 产品矩阵。
 
 multiplayer build ID 是后端无关的规范源码身份，格式必须是 40 位小写 Git SHA，可选追加 `-dirty`，即
 `^[0-9a-f]{40}(-dirty)?$`。Make、CMake、Gradle 和 MSVC 必须为同一 source tree 生成同一个值；显示用
@@ -1152,6 +1182,10 @@ world_runtime
   guard engagement/恢复、目标 action bookkeeping、真实 forced `pause()` before record、active-avatar safe-mode
   permission gate，以及
   callback/wait/world/record failure 后 scheduler 永久 fail-stop；替换 adapter 也不得重试已可能发生副作用的工作。
+- session directory/lobby 的 pending -> prepare/pre-encode -> simulation commit -> transport enqueue -> publish 顺序、
+  重复/stale completion、同 token 并发 claim、exact generation、accepted resume response 丢失后的同代 replay、
+  首个 application frame 的 exact-tuple directory confirmation 与显式 lobby ack、fresh/terminal token record 回收、
+  ordered rejection queue fallback，以及旧 connection/session/generation tuple 拒绝。
 - scene visibility filter，确保隐藏怪物、陷阱和未探索地形不出现在包中。
 - save generation 与 fallback。
 
@@ -1258,7 +1292,10 @@ Windows/Android 证据；isolated transport spike 只证明 spike、Asio pin 和
 - 每个 phase exit；
 - release candidate 与正式发布；
 - pinned compiler/NDK/JDK/vcpkg/Asio/FlatBuffers、workflow、artifact/ABI/signing contract 的里程碑变更；
-- protocol compatibility/version milestone，或明确宣称跨平台兼容性的 gate。
+- phase/release 级 protocol compatibility milestone、明确的跨版本互通承诺，或明确宣称跨平台产品兼容性的 gate。
+
+单次 append-only schema/public DTO 变更或 protocol minor bump 若不同时宣称 phase exit、release 或跨版本产品兼容，
+按 Tier 2 公共边界定向验证；本次 minor `1` 属于该情况，不因改了 version 字段自动升级为 Tier 3。
 
 Tier 3 至少覆盖 Linux GCC headless server + unit/integration + native client process smoke、Linux Clang
 ASan/UBSan、Windows MSVC 目标 build/package、Android arm64/x86_64 目标 build，以及 protocol generated-header
@@ -1271,7 +1308,7 @@ ASan/UBSan、Windows MSVC 目标 build/package、Android arm64/x86_64 目标 bui
 | 内部 shared rule/scheduler/adapter 实现 | Linux build + focused tests；按风险增加 full `[multiplayer]`/sanitizer/PTY |
 | 跨平台公共 header/schema/ABI/toolchain 边界 | Linux 主门禁 + 实际编译 changed source 的 MSVC/NDK 定向 gate |
 | Windows 或 Android owned build/runtime/UI/lifecycle | Linux 回归（若影响 shared code）+ 受影响平台的 compile/package/runtime gate |
-| phase exit、release、toolchain/artifact/protocol milestone | Tier 3 必要矩阵 |
+| phase exit、release、toolchain/artifact 或显式跨版本 protocol milestone | Tier 3 必要矩阵 |
 
 CI automation 与该策略对应：baseline workflow 的手工 dispatch 默认 `target=all` 运行全矩阵，Tier 2 也可显式
 选择 Linux、Windows 或 Android 单平台；自动 push/PR 先按 changed path 选择 package target，Windows-owned path
@@ -1280,7 +1317,8 @@ build/resource/toolchain contract 跑全矩阵，普通 backend-neutral `src/mul
 `Makefile` 只选择实际使用它的 Linux package；root `CMakeLists.txt`/`src/version.cmake` 由 Linux production workflow
 定向 configure 并构建 `get_version`，不触发无关平台 package。public transport/crypto header、protocol source、
 generated header 或 schema 当前临时映射到 Windows/Android actual-source package，等轻量 production portability
-target 建立后再缩小成本。
+target 建立后再缩小成本。该 fallback 即使实际执行完整 package，也只按本次 Tier 2 目标计作 changed production
+source 的编译证据；除非 package/resource/runtime 本身是验收对象，不能反向把 package 全绿变成规范要求。
 自动 selector 无法可靠解析 base/diff 时应快速失败并要求显式 manual target，不得静默消耗全矩阵。
 transport/protocol workflow 手工默认 `linux`，自动普通 production path 也只跑 Linux production tests/process
 smokes；其 Windows MSVC 与 Android NDK jobs 只编译 isolated transport spike，因此仅在 spike/workflow 自身变化或
@@ -1429,10 +1467,16 @@ scoped action bookkeeping、root-context restoration、execution fault latch 和
 测试调用；actual legacy bubble helper、`do_turn_remote()` 和 dedicated server 尚未由 scheduler/adapter 编排。
 `players.max` 仍必须为 `1`，本切片不构成 Phase 3 gate 完成。
 
-- 先建立 production session/runtime directory：统一 lobby/runtime/scheduler generation，分离 transport disconnected、
-  barrier disconnected 与 runtime offline；把 lobby auth/resume 改为 pending request -> simulation commit -> complete
-  response 两阶段，并为 runtime 增加 expected-old generation transition。对单玩家 root/offline 冲突先作出 neutral
-  context 或 lifecycle decoupling 决策，再私有持有 scheduler/adapter ownership。
+- production session/runtime directory 已成为 canonical generation owner，runtime 由 directory 精确推进，lobby 只保留
+  受控 mirror，并把 auth/resume 落为 `pending -> plan -> pre-encode -> directory commit -> transport enqueue -> lobby
+  mirror/event publish`；runtime exact transition、protocol
+  minor `1` 的 last accepted generation、同 fingerprint lost-response replay、exact-tuple confirmation、fresh/terminal
+  token 回收和 ordered rejection 已有 Linux 单元证据。accepted enqueue failure 只清 binding、不回滚 generation；
+  resume 可以用 directory fingerprint 同代重放并修复暂时落后一代的 lobby mirror，fresh auth 则没有同代 replay
+  承诺。
+- 下一步把 transport disconnected、barrier disconnected 与 runtime offline 真正接到同一 owner。单玩家 root 采用
+  selected-context/lifecycle decoupling：完成当前 barrier/world 后才 offline/dormant，resume 激活同一稳定 runtime 后
+  解除 dormant，再私有持有 scheduler/adapter ownership；在此之前 `players.max` 保持 `1`。
 - 保持 `players.max = 1` 接入 production command path；把实际
   `process_legacy_single_player_bubble_turn()` 放进 world claim，定义 fault 后的 typed fatal shutdown policy：若可能
   已发生非幂等副作用，不写新的 canonical save；只有明确发生在 gameplay side effect 前的 failure 才允许正常保存。

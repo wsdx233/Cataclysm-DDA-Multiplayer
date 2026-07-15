@@ -1273,7 +1273,8 @@ struct ResumeRequest FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_RESUME_TOKEN = 4,
     VT_LAST_SERVER_REVISION = 6,
-    VT_LAST_CLIENT_SEQUENCE = 8
+    VT_LAST_CLIENT_SEQUENCE = 8,
+    VT_SESSION_GENERATION = 10
   };
   const flatbuffers::String *resume_token() const {
     return GetPointer<const flatbuffers::String *>(VT_RESUME_TOKEN);
@@ -1284,12 +1285,16 @@ struct ResumeRequest FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   uint64_t last_client_sequence() const {
     return GetField<uint64_t>(VT_LAST_CLIENT_SEQUENCE, 0);
   }
+  uint64_t session_generation() const {
+    return GetField<uint64_t>(VT_SESSION_GENERATION, 0);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyOffsetRequired(verifier, VT_RESUME_TOKEN) &&
            verifier.VerifyString(resume_token()) &&
            VerifyField<uint64_t>(verifier, VT_LAST_SERVER_REVISION) &&
            VerifyField<uint64_t>(verifier, VT_LAST_CLIENT_SEQUENCE) &&
+           VerifyField<uint64_t>(verifier, VT_SESSION_GENERATION) &&
            verifier.EndTable();
   }
 };
@@ -1306,6 +1311,9 @@ struct ResumeRequestBuilder {
   }
   void add_last_client_sequence(uint64_t last_client_sequence) {
     fbb_.AddElement<uint64_t>(ResumeRequest::VT_LAST_CLIENT_SEQUENCE, last_client_sequence, 0);
+  }
+  void add_session_generation(uint64_t session_generation) {
+    fbb_.AddElement<uint64_t>(ResumeRequest::VT_SESSION_GENERATION, session_generation, 0);
   }
   explicit ResumeRequestBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -1324,8 +1332,10 @@ inline flatbuffers::Offset<ResumeRequest> CreateResumeRequest(
     flatbuffers::FlatBufferBuilder &_fbb,
     flatbuffers::Offset<flatbuffers::String> resume_token = 0,
     uint64_t last_server_revision = 0,
-    uint64_t last_client_sequence = 0) {
+    uint64_t last_client_sequence = 0,
+    uint64_t session_generation = 0) {
   ResumeRequestBuilder builder_(_fbb);
+  builder_.add_session_generation(session_generation);
   builder_.add_last_client_sequence(last_client_sequence);
   builder_.add_last_server_revision(last_server_revision);
   builder_.add_resume_token(resume_token);
@@ -1336,13 +1346,15 @@ inline flatbuffers::Offset<ResumeRequest> CreateResumeRequestDirect(
     flatbuffers::FlatBufferBuilder &_fbb,
     const char *resume_token = nullptr,
     uint64_t last_server_revision = 0,
-    uint64_t last_client_sequence = 0) {
+    uint64_t last_client_sequence = 0,
+    uint64_t session_generation = 0) {
   auto resume_token__ = resume_token ? _fbb.CreateString(resume_token) : 0;
   return cdda::multiplayer::protocol::CreateResumeRequest(
       _fbb,
       resume_token__,
       last_server_revision,
-      last_client_sequence);
+      last_client_sequence,
+      session_generation);
 }
 
 struct ResumeResult FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {

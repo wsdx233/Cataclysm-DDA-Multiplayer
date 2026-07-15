@@ -1,9 +1,10 @@
 #include "multiplayer_turn_scheduler.h"
 
 #include <algorithm>
-#include <limits>
 #include <string>
 #include <utility>
+
+#include "multiplayer_session_generation.h"
 
 bool multiplayer_turn_scheduler::begin_turn(
     const std::uint64_t shared_turn,
@@ -18,7 +19,8 @@ bool multiplayer_turn_scheduler::begin_turn(
     std::vector<participant_record> next_participants;
     next_participants.reserve( roster.size() );
     for( const multiplayer_turn_participant_key &participant : roster ) {
-        if( !participant.player_id.is_valid() || participant.session_generation == 0 ) {
+        if( !participant.player_id.is_valid() ||
+            !multiplayer_is_valid_session_generation( participant.session_generation ) ) {
             return false;
         }
         next_participants.push_back( { participant,
@@ -169,8 +171,8 @@ bool multiplayer_turn_scheduler::resume_barrier_participant(
     const std::optional<std::size_t> found = find_exact_participant( expected_participant );
     if( faulted_ || stage_ != multiplayer_turn_scheduler_stage::player_actions || !found ||
         participants_[*found].state != multiplayer_turn_participant_state::disconnected_grace ||
-        expected_participant.session_generation == std::numeric_limits<std::uint64_t>::max() ||
-        resumed_session_generation != expected_participant.session_generation + 1 ) {
+        !multiplayer_is_next_session_generation( expected_participant.session_generation,
+                resumed_session_generation ) ) {
         return false;
     }
 

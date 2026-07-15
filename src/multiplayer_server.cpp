@@ -221,6 +221,17 @@ bool multiplayer_dedicated_server::process_lobby_event(
         if( !multiplayer_encode_protocol_envelope( response, encoded, error ) ) {
             return false;
         }
+        if( event.confirms_resume_generation ) {
+            if( events_.size() >= maximum_server_events ) {
+                transport_.disconnect( event.connection,
+                                       "server simulation event queue is full" );
+                return true;
+            }
+            multiplayer_server_lobby_event confirmation = event;
+            confirmation.type = multiplayer_server_lobby_event_type::session_confirmed;
+            confirmation.message = {};
+            events_.emplace_back( std::move( confirmation ) );
+        }
         if( transport_.send( event.connection, std::move( encoded ) ) !=
             multiplayer_transport_send_result::queued ) {
             transport_.disconnect( event.connection, "server outbound queue rejected pong" );
@@ -289,6 +300,84 @@ bool multiplayer_dedicated_server::complete_graceful_disconnect(
                 multiplayer_server_lobby_action_type::send_and_disconnect;
     if( !execute_actions( std::move( actions ), error ) ) {
         completed = false;
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
+bool multiplayer_dedicated_server::admission_is_pending(
+    const multiplayer_server_lobby_event &request ) const
+{
+    return running_ && lobby_ && lobby_->admission_is_pending( request );
+}
+
+bool multiplayer_dedicated_server::prepare_admission(
+    const multiplayer_server_lobby_event &request,
+    const multiplayer_server_lobby_admission_decision &decision,
+    multiplayer_server_lobby_prepared_admission &prepared, std::string &error ) const
+{
+    if( !running_ || !lobby_ ) {
+        error = "dedicated server is not running";
+        return false;
+    }
+    return lobby_->prepare_admission( request, decision, prepared, error );
+}
+
+bool multiplayer_dedicated_server::publish_prepared_admission(
+    multiplayer_server_lobby_prepared_admission prepared, bool &published,
+    std::string &error )
+{
+    published = false;
+    if( !running_ || !lobby_ || prepared.actions.empty() ) {
+        error = "dedicated server admission is not prepared";
+        return false;
+    }
+    if( !lobby_->admission_is_pending( prepared.request ) ) {
+        error.clear();
+        return true;
+    }
+
+    multiplayer_server_lobby_action &response = prepared.actions.front();
+    const multiplayer_server_lobby_action_type expected_response_type =
+        prepared.decision.accepted ? multiplayer_server_lobby_action_type::send :
+        multiplayer_server_lobby_action_type::send_and_disconnect;
+    if( prepared.actions.size() != 1 || response.type != expected_response_type ||
+        response.connection != prepared.request.connection ) {
+        error = "dedicated server admission response is invalid";
+        return false;
+    }
+    const multiplayer_transport_send_result send_result = prepared.decision.accepted ?
+            transport_.send( response.connection, std::move( response.payload ) ) :
+            transport_.send_and_disconnect( response.connection, std::move( response.payload ),
+                                            std::move( response.reason ) );
+    if( send_result != multiplayer_transport_send_result::queued ) {
+        if( prepared.decision.accepted ) {
+            transport_.disconnect( response.connection,
+                                   "server outbound queue rejected admission response" );
+        }
+        error.clear();
+        return true;
+    }
+    if( !lobby_->publish_admission( prepared ) ) {
+        error = "dedicated server admission publish failed after response enqueue";
+        stop();
+        return false;
+    }
+    published = true;
+    error.clear();
+    return true;
+}
+
+bool multiplayer_dedicated_server::record_session_confirmed(
+    const multiplayer_server_lobby_event &event, std::string &error )
+{
+    if( !running_ || !lobby_ ) {
+        error = "dedicated server is not running";
+        return false;
+    }
+    if( !lobby_->record_session_confirmed( event ) ) {
+        error = "dedicated server session confirmation is stale";
         return false;
     }
     error.clear();

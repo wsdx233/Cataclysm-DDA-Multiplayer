@@ -2,25 +2,38 @@
 
 - 更新日期：2026-07-15
 - 分支：`multiplayer/main`
-- 当前阶段：**Phase 3，shared scheduler 与当前仅由测试调用的 source phase adapter/seams 已落地；下一入口是 production session/runtime directory**
+- 当前阶段：**Phase 3，authoritative production session directory/two-stage admission 已接入单玩家路径；下一门禁是 active-root offline/dormant 与 production scheduler/world claim**
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
-- 当前 source 提交：`804101995c175057856529be24439b0d7e87a49a`（phase adapter + 分层门禁；Linux
-  production 与本次 CI-contract 全矩阵均为 terminal success）
+- 当前 source 基线：`bd5f534c942ba1706ada9902b5e6cef3f952c924`；本工作树将提交 authoritative session
+  directory、protocol minor `1` 与 two-stage auth/resume，精确提交号在推送后的 handoff follow-up 补录
 - Phase 2 最终完整 hosted platform gate 提交：`86336ea847bea45f727fd97d74a811a32712518c`
   （canonical build-ID hardening）
-- 当前 Phase 3 slice：scheduler execution-fault latch、`multiplayer_turn_phase_adapter`、forced wait mode、单人
-  action/world helper seams，以及 Linux release/sanitizer tests；adapter 尚未接入 production runtime
+- 当前 Phase 3 slice：simulation-thread `multiplayer_session_directory` 已替换 `active_remote_session`，lobby 使用
+  pending/plan/pre-encode/commit/enqueue/publish，runtime/client/scheduler generation 统一为 `< INT64_MAX` 且 exact
+  `+1`；adapter 尚未接入 production runtime，disconnect 也尚未推进到 runtime offline/dormant
 - 当前 Windows 定向修复：`c9b28086e973fa497d5bd9f9a37e64a9ac22e464`；hosted MSVC package 已完整成功
 - 当前 hosted-green selector source：`804101995c175057856529be24439b0d7e87a49a`；transport routine path 已收敛
   到 Linux，automatic classification failure 不再隐式运行全矩阵
-- 当前下一行动：从 `src/main.cpp`/`src/multiplayer_server_lobby.*` 建立统一 generation 的 authoritative
-  session/runtime directory，先完成 two-phase auth/resume 与 active-root lifecycle 决策，再以 `players.max = 1`
-  接入 production scheduler/adapter 和 actual claimed bubble
+- 当前下一行动：实现 ADR-0010 已选定的 selected-root/lifecycle decoupling，把 transport disconnect、barrier
+  disconnect、forced wait、terminal record 与 runtime offline/dormant 接成状态表；随后在 `players.max = 1` 下接入
+  production scheduler/adapter 和 actual claimed bubble
 
 ## 当前结论
 
 Phase 0 已关闭，ADR-0001 至 ADR-0009 继续有效；ADR-0010 已记录 authoritative session directory/two-phase
 admission 方向，状态为待验证。Phase 1 的本地门禁和 hosted 平台门禁都已取得绿色证据：生产 dedicated runtime、Asio transport、FlatBuffers 协议、严格握手/content manifest、token auth、canonical server-owned avatar、结构化日志、signal save/shutdown 和真实进程 command/resume smoke 均已验证。
+
+当前 Phase 3 工作树已经把 authoritative directory 接入真实 `src/main.cpp` server owner：accepted response 在
+simulation plan 后预编码，directory commit 后先 enqueue transport，再由 lobby 发布 token mirror/event；enqueue
+失败只清 binding、不回滚已消耗 generation。resume enqueue failure 允许 lobby token mirror 暂时落后
+directory/runtime 一代，下一次 exact-fingerprint directory replay 修复 mirror；fresh auth enqueue failure 没有已发布
+token record，也不承诺同代 replay。`ResumeRequest` 在 protocol minor `1` 携带客户端最后接受的 generation；normal
+resume 精确 `+1`，accepted response 丢失只允许同 fingerprint 重放同一代。第一条有效 application frame 触发
+exact-tuple simulation confirmation，authoritative fingerprint 只在 directory 接受且 server/main 显式 ack lobby
+mirror 后完整消费。fresh auth 未确认 token、
+终态 `session_expired`、active/pending retry 和 ordered rejection capacity 状态表已有测试。该结论仍不包含 barrier
+timeout/offline、production scheduler/world claim、durable token checkpoint 或第二玩家，ADR-0010 继续“待验证”，
+`players.max` 保持 `1`。
 
 Phase 2 的服务器侧单远程玩家纵向切片保持完成。本批又实现了可复用的生产客户端 transport/state machine、桌面/Android connection UI、本地 input → semantic wait/move、visibility-filtered scene → 本地 curses/tiles renderer、heartbeat/manual reconnect、断线 resume、exactly-once replay 和按 simulation FIFO 完成的 typed clean session release。最终 source 的普通 release 与 ASan/UBSan binary 都已通过真实 Linux PTY auth、scene、wait、强制断线、resume、未确认命令重放、move 和 clean quit。
 
@@ -53,8 +66,9 @@ world-once 或 local-UI 工作，不能按 label 机械变成 ownership boundary
 当前 Phase 3 source slice 新增首个纯 `multiplayer_turn_scheduler` policy/test。它实现 immutable roster
 snapshot、稳定首位轮转、typed action disposition、generation resume、current-only timeout、
 `automatic_wait_pending` 和 `world_ready -> world_processing` ticket 状态语义，但没有接入 production
-`src/main.cpp`/`do_turn_remote()`，也不拥有 avatar、socket、command payload 或 gameplay callback。服务器仍只有
-一个 `active_remote_session`，`players.max` 继续只能是 `1`；不能把这个 policy 或其单测描述为已完成两玩家 server。
+`src/main.cpp`/`do_turn_remote()`，也不拥有 avatar、socket、command payload 或 gameplay callback。该 slice 当时的
+服务器仍只有 `active_remote_session`；当前已由 authoritative directory binding 替换，但 scheduler 仍未成为
+production owner，`players.max` 继续只能是 `1`，不能把这个 policy 或其单测描述为已完成两玩家 server。
 
 当前第二个 Phase 3 slice 在此 policy 上增加了 source `multiplayer_turn_phase_adapter`（目前仅由测试调用）和保持单人
 行为的 source seams：
@@ -96,6 +110,18 @@ Android job 在与该 Windows 修复无关的 x86_64 debug build 阶段耗尽 ho
 
 规范性规则见重构计划第 20.6 节；本节只记录当前批次的选择。
 
+- 当前 session-directory slice 平时属于 Linux-first shared authority work，但本次同时修改
+  `ResumeRequest` schema/generated header 与 protocol minor，因此选择 **Tier 2 public boundary**：Linux GCC release
+  build、focused/full tests、定向 ASan/UBSan、真实 headless/native-client process smoke 为主门禁；推送后只补实际
+  编译 changed protocol production source 的 MSVC/NDK 定向 evidence。没有 Android Activity/lifecycle 或 Windows UI
+  行为变化，所以不重跑 emulator/device 剧本，也不把完整三平台 package 变成后续内部 session `.cpp` 的日常前置。
+- 当前 baseline selector 会把 protocol/schema/generated-header 送入 Windows/Android actual-source package jobs；在
+  轻量 production portability target 建立前，这是本次 Tier 2 编译证据的 CI fallback。即使 job 实际完成 package，
+  也不把 package/resource/runtime 行为扩大为本批验收目标。本次没有 phase exit、release 或跨 minor 互通承诺，
+  因而不是 Tier 3 protocol-compatibility milestone。
+- 本地未运行 Windows/Android build，按策略等待 hosted actual-source gate；这在 gate 完成前是明确未验证项，不是
+  Linux 功能失败。缓存 AStyle 3.1 的最终 `astyle-check`、`git diff --check` 与 generated-schema
+  check 已通过。
 - gameplay/phase-adapter slice 属于 **routine backend-neutral shared implementation**，选择 Tier 1：Linux GCC
   release build、focused phase-adapter/scheduler/command/turn tests、完整 `[multiplayer]` 和定向
   ASan/UBSan/LSan。adapter 尚未接 production runtime，因此本 slice 不要求 PTY loopback。
@@ -165,6 +191,30 @@ Android job 在与该 Windows 修复无关的 x86_64 debug build 阶段耗尽 ho
   不改变普通 shared-code 提交的 Tier 1 Linux-first 默认。
 
 ## 本批实现
+
+### Phase 3 authoritative session directory 与 protocol minor 1
+
+- 新增 simulation-thread-only `multiplayer_session_directory` 与统一 generation helper。directory 解析 registry-owned
+  stable runtime，拒绝跨玩家复用 connection/session，plan 携带 entry version，commit 会重新 plan 关闭 stale/TOCTOU；
+  startup 只允许一次采用已 active root generation，后续 auth/resume 都经 exact transition。
+- lobby auth/resume 改为 pending admission。生产顺序固定为 `plan -> pre-encode response -> directory commit ->
+  transport enqueue -> lobby mirror/event publish`；rejection 使用单个 ordered `send_and_disconnect`。accepted enqueue
+  失败只清 connection binding，generation 不回滚；resume 由 directory fingerprint 在下次重试时同代 completion
+  replay 并修复暂时落后一代的 lobby mirror，fresh auth 则作为新的 admission 重试。普通 disconnect command queue
+  满时 I/O thread 直接关闭兜底。
+- protocol minor 从 `1.0` 升为 `1.1`，`ResumeRequest` append `session_generation`。client/server/scheduler/runtime/save
+  统一只接受 `0 < generation < INT64_MAX`，resume result 必须精确 `+1`。
+- normal resume 提交 `g -> g + 1`；accepted response 丢失时，同 token/旧 generation/revision/client-sequence
+  fingerprint 只重放已提交的 `g + 1`。新 session 第一条有效 application frame 产生 exact-tuple confirmation；
+  directory 接受后才消费 authoritative fingerprint，server/main 随后显式 ack lobby mirror；lobby 在 ack 前只保留
+  confirmation-pending 标记，之后旧 generation 终态过期。
+- fresh auth token 在客户端发出第一条有效 application frame 前视为未确认：连接若先断开，删除客户端可能不知道的
+  record。终态 `session_expired` 撤销 inactive record，让 client 清 token 后可 fresh auth；active/pending 冲突返回
+  `invalid_state` 并保留 token。所有 application/graceful/stale disconnect 都校验 exact
+  connection/session/player/character/generation tuple。
+- `src/main.cpp` 已用 directory binding 替换 `active_remote_session`，scene/result/application/graceful/disconnect 都
+  从 authoritative tuple 路由。该 owner 仍固定 server root player，尚未接 shared scheduler、barrier timeout、
+  runtime offline/dormant 或 durable save generation。
 
 ### Phase 3 source audit 与纯 scheduler policy
 
@@ -260,6 +310,104 @@ Android job 在与该 Windows 修复无关的 x86_64 debug build 阶段耗尽 ho
   handshake identity。
 
 ## 验证证据
+
+### Authoritative session directory：Linux 主门禁与 protocol public boundary（当前工作树）
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+./build-scripts/check-multiplayer-build-env.sh linux
+make -j8 \
+  COMPILER=g++-13 TILES=0 SOUND=0 RELEASE=1 LOCALIZE=0 \
+  BACKTRACE=0 PCH=0 ASTYLE=0 tests cataclysm
+g++-13 -std=c++17 -O2 -Wall -Wextra -Werror \
+  -Isrc -isystem src/third-party \
+  tools/multiplayer/headless_client_smoke.cpp \
+  src/multiplayer_protocol.cpp src/multiplayer_transport.cpp \
+  src/multiplayer_crypto.cpp -pthread \
+  -o build/multiplayer-smoke/headless_client_smoke
+
+./tests/cata_test '[multiplayer][session_directory]' --rng-seed 0 \
+  --user-dir test_user_dir_session_directory_final5
+./tests/cata_test '[multiplayer][server_lobby]' --rng-seed 0 \
+  --user-dir test_user_dir_server_lobby_final5
+./tests/cata_test '[multiplayer][transport]' --rng-seed 0 \
+  --user-dir test_user_dir_transport_final4
+./tests/cata_test '[multiplayer][dedicated_server]' --rng-seed 0 \
+  --user-dir test_user_dir_server_final4
+./tests/cata_test '[multiplayer][protocol]' --rng-seed 0 \
+  --user-dir test_user_dir_protocol_final2
+./tests/cata_test '[multiplayer][client]' --rng-seed 0 \
+  --user-dir test_user_dir_client_final2
+./tests/cata_test '[multiplayer][scheduler]' --rng-seed 0 \
+  --user-dir test_user_dir_scheduler_final2
+./tests/cata_test '[multiplayer]' --rng-seed 0 \
+  --user-dir test_user_dir_multiplayer_final3
+
+make -j8 AUTO_BUILD_PREFIX=1 \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 \
+  SANITIZE=address,undefined \
+  WARNINGS='-Wall -Wextra -Wno-error=array-bounds' \
+  tests release-local-back-sanitize-cataclysm
+ASAN_OPTIONS='detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1:abort_on_error=1' \
+UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1' \
+./tests/release-local-back-sanitize-cata_test \
+  '[multiplayer][session_directory],[multiplayer][server_lobby],[multiplayer][dedicated_server],[multiplayer][transport]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-session-confirmation-sanitize-final2
+
+FLATC="$PWD/build/flatbuffers-host/flatc" \
+  tools/multiplayer/protocol/generate.sh --check
+make \
+  ASTYLE_BINARY="$HOME/.cache/cdda-tools/astyle-3.1-3build1/root/usr/bin/astyle" \
+  astyle-check
+git diff --check
+```
+
+- Linux environment gate 通过；GCC 13 release `cataclysm`、`tests` 与 workflow-equivalent smoke client 都构建成功。
+  最终 focused 结果：session directory `5/121`、lobby `8/2708`、transport `7/165`、dedicated server `5/334`、
+  protocol `9/253`、client `12/764`、scheduler `7/422`，全部通过。
+- 最终 source 的完整 `[multiplayer]` 为 80 cases：78 通过，2 个既有 full-avatar move-swap
+  `[!mayfail]` 对照按预期失败；5,436 assertions 中 5,433 通过、3 个 expected failures，exit 0。
+- 首次最终 sanitizer 重跑在 queue-full direct-close 路径捕获了真实 heap-use-after-free：
+  `connection::close()` 从 `connections_` 擦除最后一个 `shared_ptr` 后仍继续访问成员。修复为函数内
+  `shared_from_this()` 自持有跨越 erase，不改变 close/event 顺序。用 `pipefail` 重跑后，session directory/
+  lobby/dedicated server/transport 定向集合为 25 cases / 3,328 assertions，全过，运行 205.673 秒；
+  无 ASan、UBSan、LSan 或 stack-use-after-return finding。仍只对既有 GCC 13 optimizer `array-bounds`
+  warning 精确降级 `-Werror`。
+- FlatBuffers 1.12.0 generated-header `--check`、AStyle 3.1 `astyle-check` 与 `git diff --check` 通过。
+  最初尝试用 Make implicit rule 直接构建
+  `tools/multiplayer/headless_client_smoke`，因未链接 production sources 而失败；随后改用 workflow 中上述明确
+  `g++-13` 命令成功，这不是 source/link contract failure。
+
+真实进程闭环使用 workflow 同构的私有 server root：
+
+```bash
+./cataclysm \
+  --userdir build/multiplayer-session-process-smoke-final/user \
+  --server build/multiplayer-session-process-smoke-final/server.json
+build/multiplayer-smoke/headless_client_smoke \
+  127.0.0.1 38195 \
+  build/multiplayer-session-process-smoke-final/server-auth-token.txt
+
+./cataclysm \
+  --userdir build/multiplayer-session-ui-smoke-final/server-user \
+  --server build/multiplayer-session-ui-smoke-final/server.json
+python3 tools/multiplayer/network_client_ui_smoke.py \
+  --client "$PWD/cataclysm" --backend-port 51395 \
+  --token-file build/multiplayer-session-ui-smoke-final/server-auth-token.txt \
+  --user-dir build/multiplayer-session-ui-smoke-final/client-user \
+  --transcript build/multiplayer-session-ui-smoke-final/client.transcript \
+  --event-log build/multiplayer-session-ui-smoke-final/client-events.txt
+```
+
+- headless smoke 通过 auth/scene/resync/wait、generation `1 -> 2` resume、duplicate command replay，再以客户端已接受的
+  generation `2 -> 3` 做正常第二次 resume，随后验证不同 payload 重用 sequence 会断线。server JSONL 含 generation
+  2/3、accepted/duplicate、save/shutdown，所有非空 stdout/stderr 行均为无 ANSI 的合法 JSON。
+- 真实 curses `--connect` smoke 通过：proxy generation 1，wait result 后断线，generation 2 resume，uncertain wait
+  exactly-once duplicate，east move accepted，clean quit；command statuses 精确为 `0, 2, 0`，transcript 9,235 bytes。
+- 本批按风险没有再跑 sanitizer PTY：相同 production path 已由 release 两种 process smoke 覆盖，内存生命周期由
+  25-case sanitizer 集合覆盖。没有 Android lifecycle 变更，因此不重跑 Phase 2 emulator/device 剧本。
+- 缓存 AStyle 3.1 binary 的最终 `astyle-check` 已通过。Windows/Android actual-source portability 仍等待本次
+  protocol/schema push 的定向 hosted gate，当前不能记为已验证。
 
 ### Phase 3 phase adapter/source seams：Tier 1 Linux（当前 source state）
 
@@ -769,9 +917,9 @@ git diff --check
   resources 成功，Windows validator failure 已由 `c9b2808` 的 hosted MSVC package 定向成功关闭。run
   `29344937410` 整体因 Android runner no-space 后的 policy cancellation 为 `cancelled`，不能称为全平台绿色，
   但按当前 Tier 2 策略不构成 active blocker。
-- Phase 3 scheduler 与当前仅由测试调用的 source phase adapter/seams 已存在；stable registry/runtime、active-player guard 和
-  human tracker 基础已复用，但 adapter 没有 production caller，dedicated-server routing 与 authoritative
-  session/runtime directory 尚未接入。`players.max > 1` 仍未实现。
+- Phase 3 scheduler 与当前仅由测试调用的 source phase adapter/seams 已存在；stable registry/runtime、active-player
+  guard 和 human tracker 基础已复用。authoritative session directory 已接入 dedicated-server routing，但 adapter/
+  scheduler 仍没有 production caller，`players.max > 1` 仍未实现。
 - 五个 `do_turn()` trace labels 不是 ownership boundary。`player_begin`/`player_input`/`player_end` 仍混入 world/UI
   工作；当前 `do_turn_remote()` 仍让单 avatar 用尽 moves 才执行一次 world phase。moves 在 `player_end` 的
   `u.process_turn()` 补充；first-turn 回归已保持现有顺序，但普通稳态 turn 的完整多人 off-by-one 等价仍待 production
@@ -781,14 +929,12 @@ git diff --check
   test 只是 lambda。fault 也没有 typed save/shutdown/restart recovery，不能宣称真实 bubble exactly-once。
 - adapter 拒绝 offline runtime。真实 disconnect 必须分离 transport disconnected、barrier disconnected 和 runtime
   offline，在 forced wait 完成前保留 active stable owner；当前 `disconnect_multiplayer_player()` 的时序不能直接
-  复用为 barrier timeout。它还拒绝断开 active root runtime，单玩家 server 必须先决定 neutral server context 或
-  selected-root/lifecycle 解耦，才能在 forced wait 后合法进入 offline。
-- lobby resume generation 与 `multiplayer_player_runtime::session_generation()` 仍可能分叉；scheduler participant key
-  尚无统一 authoritative owner。当前 lobby 会先递增 generation、更新 resume record 并构造 accepted response，之后
-  才 emit event；必须改成 pending auth/resume -> simulation directory commit -> complete response 两阶段。当前 resume
-  request 不携带 generation，expected old generation 应由 server token record 解析，不应为此无意修改 wire schema。
-  lobby/scheduler 的 `UINT64_MAX`、runtime/save 的 `INT64_MAX` 边界和 client“只要变大”检查也必须统一为
-  `< INT64_MAX` 且 exact `+1`。
+  复用为 barrier timeout。ADR-0010 已选择 selected-root/lifecycle decoupling；尚未实现的是 forced wait/world 完成后
+  把同一稳定 root 置为 offline/dormant，以及 resume 时先恢复 active 再解除 dormant，不再等待 neutral-root 选型。
+- lobby 已不再独立推进 generation；directory/runtime 是 authoritative state，token record 只是 wire/replay mirror，
+  scheduler participant 仍只是 turn-local snapshot。accepted resume commit 后若 response enqueue 失败，mirror 允许
+  按定义暂时落后一代，并只能由下一次 exact-fingerprint directory replay 修复。protocol minor `1`、`< INT64_MAX`
+  与 client exact `+1` 已落地；尚未完成的是 durable token/save generation、barrier participant lifecycle 和第二玩家。
 - 本批 phase-adapter shared source 的功能验收只采用 Tier 1 Linux release/sanitizer evidence。同一提交因独立
   workflow milestone 实际运行并通过了 Windows/Android packages，但这只关闭 compile/package CI contract；它们和
   transport standalone W/A probes 都不能证明 adapter behavior 或 production routing。
@@ -805,35 +951,38 @@ git diff --check
 - durable process-restart resume 属于 Phase 4：resume token、pending command 和 scene revision 当前仍只在 native process 内存中，进程杀死后不能继续旧 session；后续需 app-private、版本化、原子 checkpoint，但不阻塞当前 Phase 3 scheduler/adapter source slice。
 - clean `DisconnectNotice` 已验证 command settlement、ACK write drain、ordered close 以及仅在精确 completion 后清除 resume record；但多数 protocol/auth/application 错误仍通过 transport close reason 而非 typed disconnect payload 返回。
 - client token reader 的 size/mode/symlink 检查仍存在 path-check → open 的 TOCTOU 窗口；Windows private-file ACL 尚未由本地平台证据验证。
-- 服务器仍只有一个 `active_remote_session`，command cache 也只按 sequence 建索引；config 继续拒绝
-  `players.max > 1`。当前 policy 没有接入 session ownership、command routing、scene/result routing 或真实 world
-  execution。
+- 服务器已用 authoritative directory binding 替换 `active_remote_session`，但仍只路由固定 root player，command
+  cache 也只按 sequence 建索引；config 继续拒绝 `players.max > 1`。scheduler/adapter 尚未接管 command execution、
+  barrier timeout 或真实 world claim。
 - save 仍是 canonical single-avatar generation；没有 multi-player runtime split、RNG engine save、generation fallback 或 portable character。
 - 当前动作只有 wait 和八方向平面 move。所有其他动作必须保持明确未支持，不能进入 server blocking UI。
 - 无嵌入式 TLS；loopback 默认、trusted-LAN 显式例外和外部 authenticated tunnel 政策保持不变。
 
 ## 下一门禁和首个动作
 
-Phase 2 已关闭；Phase 3 scheduler、phase adapter/source seams 和 two-runtime in-process wait-only test 已有 Tier 1
-Linux evidence。下一代码门禁是 **authoritative production session/runtime directory**，不是立即启用第二 client 或
-move。首个要检查的文件和命令是：
+Phase 2 已关闭；Phase 3 authoritative session directory/two-stage admission 已有本地 Linux release、完整
+`[multiplayer]`、sanitizer 与真实 process smoke。推送本工作树后仍须记录 protocol minor `1` 的 Windows/Android
+actual-source Tier 2 terminal 结果；当前 workflow 的 package job 只是轻量 target 建立前的编译 fallback。下一代码
+门禁是 **selected root lifecycle 的 offline/dormant 状态表**，不是重做 session directory，也不是立即启用第二 client
+或 move。首个要检查的文件和命令是：
 
 ```bash
-rg -n 'active_remote_session|session_generation|resume|disconnect' \
-  src/main.cpp src/multiplayer_server_lobby.* src/multiplayer_player_runtime.*
-sed -n '360,570p' src/multiplayer_server_lobby.cpp
-sed -n '145,205p' src/multiplayer_player_runtime.cpp
+rg -n 'disconnect_multiplayer_player|record_disconnected|graceful_disconnect|offline|dormant|automatic_wait_pending|record_automatic_wait_executed|claim_world|record_world_completed' \
+  src/main.cpp src/game.cpp src/multiplayer_player_runtime.* \
+  src/multiplayer_session_directory.* src/multiplayer_turn_scheduler.* \
+  src/multiplayer_turn_phase_adapter.*
+sed -n '1210,1270p' src/main.cpp
 sed -n '540,650p' src/game.cpp
 ```
 
 按四个可独立验收的 Linux-first slices 推进：
 
-1. 先写 session 状态表和 API tests：将 lobby auth/resume 改为 pending request -> simulation-thread directory commit
-   -> `complete_*` response；增加 directory-only exact `expected_old -> new` generation transition；由 resume token
-   record 提供旧 generation。覆盖 pre-grace/grace/timeout 竞争、stale disconnect、重复 completion 和失败不发成功响应。
-2. 对单玩家 active root 无法 offline 的冲突作出 ADR 级决定：neutral server root context，或 selected context 与
-   runtime lifecycle 解耦。实现后固定“transport disconnect -> barrier disconnect -> forced wait -> terminal record ->
-   runtime offline”的顺序。
+1. 先写 selected-root lifecycle 状态表与 API tests：明确 transport disconnected、graceful release pending、barrier
+   disconnected grace、forced-wait pending、world completion、runtime offline 和 server dormant 的独立状态；覆盖
+   timeout-before-resume、resume-before-timeout、stale disconnect、重复 terminal completion 和 graceful ACK 时序。
+2. 实现 ADR-0010 已选定的 lifecycle decoupling：stable selected root 在当前 barrier forced wait 与 actual world phase
+   完成前保持 active，到 canonical turn boundary 后才 offline/dormant；dormant 不启动新 turn/guard/command，resume
+   对同一 runtime 完成 exact generation admission 并恢复 active 后才解除 dormant。
 3. 保持 `players.max = 1`，让 production owner 私有持有 scheduler/adapter，将 semantic command、forced timeout wait
    和 actual `process_legacy_single_player_bubble_turn()` 放进不可绕过的 claim/record 路径；把 execution fault 映射为
    typed fatal shutdown。只要可能已发生非幂等 gameplay side effect，就不得写新的 canonical save；只有明确分类为
@@ -843,8 +992,9 @@ sed -n '540,650p' src/game.cpp
 4. 将已绿色的 in-process two-runtime wait-only case 接入 production owner，再依次关闭 move/collision、monster/death、
    field/scent/NPC、tether/group shift 和 player-state isolation，最后才考虑 `players.max > 1`。
 
-每个 slice 默认只跑 Linux focused tests；shared authority/session semantics 改变时增加完整 `[multiplayer]`，地址/
-生命周期风险增加 sanitizer，production path 接通后增加 PTY loopback。只有 public compiler/ABI boundary、明确
-Windows/Android-owned code 或 Phase 3 exit 才升级到对应 Tier 2/3；不得把全平台 package 作为日常前置。
+每个后续 internal lifecycle/scheduler slice 默认只跑 Linux focused tests；shared authority/session semantics 改变时
+增加完整 `[multiplayer]`，地址/生命周期风险增加 sanitizer，production path 接通后增加 PTY loopback。只有新的
+public compiler/ABI boundary、明确 Windows/Android-owned code 或 Phase 3 exit 才升级到对应 Tier 2/3；不得把本次
+minor `1` 的一次性 actual-source fallback package 变成日常前置。
 
 不得把本批单客户端 UI smoke 描述为两玩家/shared-barrier、完整 remote avatar replica、portable character 或生产发布完成。

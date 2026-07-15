@@ -47,8 +47,9 @@ transport 或 TLS，生产边界位于 `src/multiplayer_*`。
   Win32/SDL 变更跑 Windows；Android Gradle/CMake/manifest/Java/JNI/ABI/resource/touch/lifecycle 变更跑 Android；
   schema/public header/ABI/toolchain boundary 只跑能实际编译 changed production source 的轻量 MSVC/NDK gate。
   shared internal `.cpp` 本身不自动触发两端完整 package 要求。
-- Tier 3 在 phase exit、release candidate、pinned toolchain/artifact contract 或 protocol compatibility milestone
-  手工运行并记录必要的 Linux、Windows、Android 矩阵。
+- Tier 3 在 phase exit、release candidate、pinned toolchain/artifact contract、显式跨版本 protocol compatibility
+  milestone 或跨平台产品兼容声明时，手工运行并记录必要的 Linux、Windows、Android 矩阵。单次 schema/public DTO
+  变更或 minor bump 若不同时作这些声明，仍是 Tier 2 public boundary。
 
 自动 baseline selector 的当前规则是：
 
@@ -61,7 +62,8 @@ transport 或 TLS，生产边界位于 `src/multiplayer_*`。
   production source 被对应编译器编译；后续建立轻量 production portability target 后可替换这项较重门禁。
 - protocol implementation/header、generated FlatBuffers header 或 `.fbs` schema 变化同样选择 Windows 与 Android
   package；Linux transport job先校验 generated header并构建 production tests，三端 package 实际编译生成的
-  production protocol source。纯 protocol README 不触发该门禁。
+  production protocol source。轻量 target 建立前，这些 package job 只是 Tier 2 actual-source compile fallback；
+  package/resource/runtime 行为不是自动扩大的验收目标。纯 protocol README 不触发该门禁。
 - `android/**` 与 Android-owned build/runtime path 只选择 Android package 及其 translations/tileset/shaders 依赖。
 - `msvc-full-features/**`、vcpkg triplet、Windows PowerShell/MSVC/windist script 和 Win32-owned source 只选择
   Windows package 及其四类 resource 依赖。

@@ -50,6 +50,15 @@ class multiplayer_dedicated_server
                    const multiplayer_protocol_envelope &envelope, std::string &error );
         bool complete_graceful_disconnect( const multiplayer_server_lobby_event &request,
                                            bool &completed, std::string &error );
+        bool admission_is_pending( const multiplayer_server_lobby_event &request ) const;
+        bool prepare_admission( const multiplayer_server_lobby_event &request,
+                                const multiplayer_server_lobby_admission_decision &decision,
+                                multiplayer_server_lobby_prepared_admission &prepared,
+                                std::string &error ) const;
+        bool publish_prepared_admission( multiplayer_server_lobby_prepared_admission prepared,
+                                         bool &published, std::string &error );
+        bool record_session_confirmed( const multiplayer_server_lobby_event &event,
+                                       std::string &error );
         void disconnect( multiplayer_connection_id connection, std::string reason );
 
     private:

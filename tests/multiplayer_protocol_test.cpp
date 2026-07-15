@@ -7,6 +7,7 @@
 #include "cata_catch.h"
 #include "get_version.h"
 #include "multiplayer_protocol.h"
+#include "multiplayer_session_generation.h"
 
 namespace
 {
@@ -65,6 +66,7 @@ TEST_CASE( "multiplayer_build_id_excludes_local_ui_backend_suffixes",
 TEST_CASE( "multiplayer_protocol_client_hello_round_trip_and_envelope_validation",
            "[multiplayer][protocol]" )
 {
+    static_assert( multiplayer_protocol_current_minor == 1 );
     const multiplayer_client_hello source = valid_client_hello();
     multiplayer_protocol_envelope source_envelope = client_hello_envelope( source );
     source_envelope.sequence = 0x0102030405060708ULL;
@@ -153,7 +155,7 @@ TEST_CASE( "multiplayer_protocol_hello_business_limits_are_enforced",
     CHECK_FALSE( multiplayer_build_client_hello_payload( hello, payload, error ) );
 
     multiplayer_protocol_envelope envelope = client_hello_envelope( valid_client_hello() );
-    envelope.protocol_minor = 1;
+    envelope.protocol_minor = multiplayer_protocol_current_minor + 1;
     multiplayer_client_hello parsed;
     CHECK_FALSE( multiplayer_parse_client_hello_payload( envelope, parsed, error ) );
     CHECK( error.find( "envelope" ) != std::string::npos );
@@ -163,6 +165,41 @@ TEST_CASE( "multiplayer_protocol_hello_business_limits_are_enforced",
     multiplayer_transport_payload encoded;
     CHECK_FALSE( multiplayer_encode_protocol_envelope( envelope, encoded, error ) );
     CHECK( error.find( "does not match" ) != std::string::npos );
+}
+
+TEST_CASE( "multiplayer_protocol_resume_request_round_trips_exact_generation",
+           "[multiplayer][protocol]" )
+{
+    multiplayer_resume_request source;
+    source.resume_token.assign( 64, 'c' );
+    source.last_server_revision = 17;
+    source.last_client_sequence = 23;
+    source.session_generation = 7;
+
+    multiplayer_protocol_envelope envelope;
+    envelope.message_type = multiplayer_protocol_message_type::resume_request;
+    std::string error;
+    REQUIRE( multiplayer_build_resume_request_payload( source, envelope.payload, error ) );
+
+    multiplayer_resume_request parsed;
+    REQUIRE( multiplayer_parse_resume_request_payload( envelope, parsed, error ) );
+    CHECK( parsed.resume_token == source.resume_token );
+    CHECK( parsed.last_server_revision == source.last_server_revision );
+    CHECK( parsed.last_client_sequence == source.last_client_sequence );
+    CHECK( parsed.session_generation == source.session_generation );
+
+    source.session_generation = multiplayer_session_generation_exclusive_limit - 1;
+    REQUIRE( multiplayer_build_resume_request_payload( source, envelope.payload, error ) );
+    REQUIRE( multiplayer_parse_resume_request_payload( envelope, parsed, error ) );
+    CHECK( parsed.session_generation == multiplayer_session_generation_exclusive_limit - 1 );
+
+    source.session_generation = 0;
+    CHECK_FALSE( multiplayer_build_resume_request_payload( source, envelope.payload, error ) );
+    CHECK( error.find( "session generation" ) != std::string::npos );
+
+    source.session_generation = multiplayer_session_generation_exclusive_limit;
+    CHECK_FALSE( multiplayer_build_resume_request_payload( source, envelope.payload, error ) );
+    CHECK( error.find( "session generation" ) != std::string::npos );
 }
 
 TEST_CASE( "multiplayer_protocol_negotiates_all_compatibility_axes_and_capabilities",

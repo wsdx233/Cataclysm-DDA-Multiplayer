@@ -30,6 +30,7 @@ enum class scripted_server_behavior : std::uint8_t {
     pong_then_drop_first_command,
     accepted_without_semantic_scene,
     resume_without_generation_advance,
+    resume_with_generation_jump,
     resume_with_wrong_replay_boundary,
     resume_scene_ahead_of_cached_result,
     delay_scene_after_command_result,
@@ -248,6 +249,7 @@ class scripted_multiplayer_server
             std::string error;
             REQUIRE( multiplayer_parse_resume_request_payload( envelope, request, error ) );
             REQUIRE( request.resume_token == test_resume_token );
+            REQUIRE( request.session_generation == 1 );
             resume_last_client_sequence_ = request.last_client_sequence;
             REQUIRE( request.last_client_sequence == 1 );
             multiplayer_resume_result result;
@@ -256,7 +258,8 @@ class scripted_multiplayer_server
                 result.player_id = test_player_id;
                 result.character_id = test_character_id;
                 result.session_generation =
-                    behavior_ == scripted_server_behavior::resume_without_generation_advance ? 1 : 2;
+                    behavior_ == scripted_server_behavior::resume_without_generation_advance ? 1 :
+                    behavior_ == scripted_server_behavior::resume_with_generation_jump ? 3 : 2;
                 result.replay_from_sequence =
                     behavior_ == scripted_server_behavior::resume_with_wrong_replay_boundary ? 3 : 2;
                 result.full_snapshot_required = true;
@@ -294,6 +297,7 @@ class scripted_multiplayer_server
                 cached_command_revision_ = revision_;
                 if( behavior_ == scripted_server_behavior::drop_first_command ||
                     behavior_ == scripted_server_behavior::resume_without_generation_advance ||
+                    behavior_ == scripted_server_behavior::resume_with_generation_jump ||
                     behavior_ == scripted_server_behavior::resume_with_wrong_replay_boundary ||
                     behavior_ == scripted_server_behavior::resume_scene_ahead_of_cached_result ||
                     behavior_ == scripted_server_behavior::resume_session_expired ) {
@@ -821,6 +825,7 @@ TEST_CASE( "multiplayer_client_rejects_invalid_resume_boundaries_and_event_overf
 {
     for( const scripted_server_behavior behavior : {
              scripted_server_behavior::resume_without_generation_advance,
+             scripted_server_behavior::resume_with_generation_jump,
              scripted_server_behavior::resume_with_wrong_replay_boundary
          } ) {
         CAPTURE( behavior );

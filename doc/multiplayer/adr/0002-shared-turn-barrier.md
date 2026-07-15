@@ -59,17 +59,18 @@ execution 之间的最低顺序固定为：
 - adapter 已在 in-process tests 中证明真实 forced wait 的 execute-before-record 和 guard 恢复，但目前只接受
   `active` runtime。断线 orchestration 必须把 transport disconnected、barrier disconnected 和 runtime offline 分开，
   在 forced wait 完成前保持 registry owner 可激活。
-- lobby、runtime 和 scheduler 仍没有统一的权威 generation owner；production session directory 必须先关闭 resume
-  后 generation 分叉，不能让 adapter 猜测不同对象的代数。
-- 当前 lobby 在 auth/resume handler 内先生成/递增 identity 与 generation、构造 accepted response、更新 resume
-  record，随后才 emit application event。session directory 接入时必须改为两阶段 pending request -> simulation-thread
-  commit -> lobby complete response；否则 directory 无法成为权威 owner。resume token record 在服务器侧提供 expected
-  old generation，当前 wire request 不新增 generation 字段。
-- runtime 需要 directory-only 的 exact `expected_old -> new` generation transition；现有 `begin_session()` 只能从
-  importing/offline 隐式自增，不能在 active grace state 上同步 lobby resume。
-- 单玩家 server 的 active root runtime 目前不能通过 `game::disconnect_multiplayer_player()` 进入 offline。production
-  disconnect 接入前必须决定 neutral server root context 或 selected-context/lifecycle decoupling，并为所有玩家断线
-  后的 world/save/shutdown 行为增加测试。
+- production session directory 已成为 canonical generation owner，runtime 由 directory 精确推进，lobby 只保留受控
+  token/replay mirror，并实现 `pending -> plan -> pre-encode -> commit -> transport enqueue -> mirror/event publish`。
+  `ResumeRequest` 携带客户端最后接受的 generation，由 token/runtime
+  分层交叉验证；上一 accepted response 丢失只按相同 revision/sequence fingerprint 重放同一代。首个有效
+  application frame 触发 exact-tuple directory confirmation，只有该 simulation-thread confirmation 接受后才消费
+  authoritative replay permission，并由 server/main 显式 ack lobby mirror。scheduler participant 仍只在
+  turn-local snapshot 中读取 directory 提供的代数。
+- runtime 已有 directory-only exact `expected_old -> new` transition；bootstrap 只允许一次采用 registry 已 active root
+  的有效 generation，后续不能绕过 directory version。
+- 单玩家 server 的 active root runtime 仍不能通过 `game::disconnect_multiplayer_player()` 直接进入 offline。ADR-0010
+  已选择 selected-context/lifecycle decoupling，但 production 还未实现 barrier/world 后的 offline/dormant 和 resume
+  reactivation；所有玩家断线后的 world/save/shutdown 测试仍是门禁。
 - world ticket 与 adapter 目前只包裹测试 lambda；真实 `process_legacy_single_player_bubble_turn()` 仍由
   `do_turn_impl()` 直接调用。因此尚未证明 actual bubble callback 在 claim 后恰好执行一次。
 - execution fault 当前是进程内 fail-stop，不是 retry、rollback、save/restart 或 typed shutdown recovery protocol；
@@ -77,8 +78,9 @@ execution 之间的最低顺序固定为：
 - 若 execution fault 可能发生在 `pause()`、player action 或 world callback 等非幂等副作用之后，server 必须停止模拟、
   记录诊断并拒绝写新的 canonical save；没有 journal/rollback 时保存会固化不确定的部分 turn。只有明确分类为
   pre-side-effect 的 failure 才可走正常保存路径。
-- 当前 production server 仍是单一 `active_remote_session`，没有使用该 scheduler，配置仍拒绝
-  `players.max > 1`。本注记不代表两玩家 server 或 Phase 3 退出标准已经完成。
+- 当前 production server 已用 authoritative directory binding 替代单一 `active_remote_session`，但仍只路由固定 root
+  player，command cache 仍只按 sequence 索引，也没有使用 shared scheduler；配置继续拒绝 `players.max > 1`。
+  本注记不代表两玩家 server 或 Phase 3 退出标准已经完成。
 
 ## 替代方案
 

@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "multiplayer_session_generation.h"
 #include "multiplayer_turn_scheduler.h"
 
 namespace
@@ -47,6 +48,11 @@ TEST_CASE( "multiplayer_turn_scheduler_snapshots_and_validates_roster",
     CHECK_FALSE( scheduler.begin_turn( 1, {} ) );
     CHECK_FALSE( scheduler.begin_turn( 1, { multiplayer_turn_participant_key{} } ) );
     CHECK_FALSE( scheduler.begin_turn( 1, { { alpha.player_id, 0 } } ) );
+    CHECK_FALSE( scheduler.begin_turn( 1, { {
+            alpha.player_id,
+            multiplayer_session_generation_exclusive_limit
+        }
+    } ) );
     CHECK_FALSE( scheduler.begin_turn( 1, { alpha, { alpha.player_id, 2 } } ) );
     CHECK_FALSE( scheduler.begin_turn( 1, { alpha, beta, gamma, participant( 4 ), participant( 5 ) } ) );
     CHECK( scheduler.stage() == multiplayer_turn_scheduler_stage::idle );
@@ -77,6 +83,36 @@ TEST_CASE( "multiplayer_turn_scheduler_snapshots_and_validates_roster",
     REQUIRE( scheduler.begin_turn( 11, roster ) );
     CHECK( scheduler.participant_count() == 3 );
     CHECK( scheduler.has_participant( gamma.player_id ) );
+}
+
+TEST_CASE( "multiplayer_turn_scheduler_session_generation_stays_below_int64_max",
+           "[multiplayer][scheduler]" )
+{
+    const std::uint64_t maximum_generation =
+        multiplayer_session_generation_exclusive_limit - 1;
+
+    multiplayer_turn_scheduler final_valid_resume;
+    const multiplayer_turn_participant_key penultimate =
+        participant( 1, maximum_generation - 1 );
+    REQUIRE( final_valid_resume.begin_turn( 1, { penultimate } ) );
+    REQUIRE( final_valid_resume.mark_barrier_disconnected( penultimate ) );
+    REQUIRE( final_valid_resume.resume_barrier_participant( penultimate,
+             maximum_generation ) );
+    REQUIRE( final_valid_resume.participant_key( penultimate.player_id ) );
+    CHECK( final_valid_resume.participant_key(
+               penultimate.player_id )->session_generation == maximum_generation );
+
+    multiplayer_turn_scheduler exhausted_resume;
+    const multiplayer_turn_participant_key exhausted = participant( 2, maximum_generation );
+    REQUIRE( exhausted_resume.begin_turn( 1, { exhausted } ) );
+    REQUIRE( exhausted_resume.mark_barrier_disconnected( exhausted ) );
+    CHECK_FALSE( exhausted_resume.resume_barrier_participant(
+                     exhausted, multiplayer_session_generation_exclusive_limit ) );
+    REQUIRE( exhausted_resume.participant_key( exhausted.player_id ) );
+    CHECK( exhausted_resume.participant_key(
+               exhausted.player_id )->session_generation == maximum_generation );
+    CHECK( exhausted_resume.participant_state( exhausted.player_id ) ==
+           multiplayer_turn_participant_state::disconnected_grace );
 }
 
 TEST_CASE( "multiplayer_turn_scheduler_round_robin_records_typed_results",
