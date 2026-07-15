@@ -15,6 +15,8 @@
 
 class game;
 class multiplayer_player_runtime;
+struct multiplayer_multi_runtime_routed_command_result;
+struct multiplayer_player_command;
 
 enum class multiplayer_multi_runtime_barrier_status : std::uint8_t {
     applied,
@@ -152,6 +154,12 @@ class multiplayer_multi_runtime_barrier_owner
         bool gameplay_side_effects_may_have_occurred() const noexcept;
 
     private:
+        friend multiplayer_multi_runtime_routed_command_result
+        multiplayer_route_multi_runtime_basic_command(
+            multiplayer_multi_runtime_barrier_owner &owner,
+            const multiplayer_turn_participant_key &expected_participant,
+            const multiplayer_player_command &command );
+
         multiplayer_multi_runtime_barrier_owner( game &simulation,
                 std::size_t maximum_participants );
 

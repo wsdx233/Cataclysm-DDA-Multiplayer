@@ -7685,6 +7685,7 @@ bool game::is_dangerous_tile( const tripoint_bub_ms &dest_loc ) const
 bool game::prompt_dangerous_tile( const tripoint_bub_ms &dest_loc,
                                   std::vector<std::string> *harmful_stuff ) const
 {
+    const avatar &u = active_avatar();
     map &here = get_map();
 
     if( u.has_effect( effect_stunned ) || u.has_effect( effect_psi_stunned ) ) {
@@ -7718,6 +7719,7 @@ bool game::prompt_dangerous_tile( const tripoint_bub_ms &dest_loc,
 std::vector<std::string> game::get_dangerous_tile( const tripoint_bub_ms &dest_loc,
         const size_t max ) const
 {
+    const avatar &u = active_avatar();
     map &here = get_map();
 
     if( u.is_blind() ) {
@@ -7806,7 +7808,7 @@ std::vector<std::string> game::get_dangerous_tile( const tripoint_bub_ms &dest_l
         body_part_hand_l, body_part_hand_r, body_part_torso
     };
 
-    const auto sharp_bp_check = [this]( bodypart_id bp ) {
+    const auto sharp_bp_check = [&u]( bodypart_id bp ) {
         return u.immune_to( bp, { damage_cut, 10 } );
     };
 
@@ -7837,8 +7839,9 @@ std::vector<std::string> game::get_dangerous_tile( const tripoint_bub_ms &dest_l
 }
 
 bool game::walk_move( const tripoint_bub_ms &dest_loc, const bool via_ramp,
-                      const bool furniture_move )
+                      const bool furniture_move, const bool allow_interactive_ui )
 {
+    avatar &u = active_avatar();
     if( u.has_flag( json_flag_PHASE_MOVEMENT ) ) {
         place_player( dest_loc );
         return true; // debug trait immunity to gravity, walls etc
@@ -7981,7 +7984,9 @@ bool game::walk_move( const tripoint_bub_ms &dest_loc, const bool via_ramp,
 
     std::vector<std::string> harmful_stuff = get_dangerous_tile( dest_loc );
     if( !shifting_furniture && !pushing && !harmful_stuff.empty() ) {
-        if( harmful_stuff.size() == 1 && harmful_stuff[0] == "ledge" ) {
+        if( !allow_interactive_ui ) {
+            return false;
+        } else if( harmful_stuff.size() == 1 && harmful_stuff[0] == "ledge" ) {
             iexamine::ledge( u, tripoint_bub_ms( dest_loc ) );
             return true;
         } else if( get_option<std::string>( "DANGEROUS_TERRAIN_WARNING_PROMPT" ) == "ALWAYS" &&
@@ -9201,6 +9206,7 @@ bool game::grabbed_furn_move( const tripoint_rel_ms &dp )
 
 bool game::grabbed_move( const tripoint_rel_ms &dp, const bool via_ramp, bool stairs_move )
 {
+    avatar &u = active_avatar();
     if( u.get_grab_type() == object_type::NONE ) {
         return false;
     }
@@ -9228,6 +9234,7 @@ bool game::grabbed_move( const tripoint_rel_ms &dp, const bool via_ramp, bool st
 
 void game::on_move_effects()
 {
+    avatar &u = active_avatar();
     // TODO: Move this to a character method
     if( !u.is_mounted() ) {
         // FIXME: stop initializing new items every time this runs.

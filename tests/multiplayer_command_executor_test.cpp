@@ -3,6 +3,7 @@
 #include "cata_scope_helpers.h"
 #include "calendar.h"
 #include "enums.h"
+#include "field_type.h"
 #include "game.h"
 #include "map.h"
 #include "map_helpers.h"
@@ -129,6 +130,47 @@ TEST_CASE( "multiplayer_remote_move_rejects_interactive_deep_water_confirmation"
     CHECK_FALSE( execution.action_taken );
     CHECK( execution.moves_spent == 0 );
     CHECK( player.pos_bub() == start );
+}
+
+TEST_CASE( "multiplayer_remote_move_rejects_dangerous_terrain_without_prompting",
+           "[multiplayer][command_executor]" )
+{
+    clear_avatar();
+    clear_map();
+    on_out_of_scope cleanup( []() {
+        clear_avatar();
+        clear_map();
+    } );
+    override_option dangerous_prompt( "DANGEROUS_TERRAIN_WARNING_PROMPT", "ALWAYS" );
+    const safe_mode_type original_safe_mode = g->get_safe_mode();
+    on_out_of_scope restore_safe_mode( [original_safe_mode]() {
+        g->set_safe_mode( original_safe_mode );
+    } );
+    g->set_safe_mode( SAFE_MODE_OFF );
+
+    avatar &player = get_avatar();
+    map &here = get_map();
+    const tripoint_bub_ms start( 60, 60, 0 );
+    const tripoint_bub_ms destination = start + tripoint_rel_ms::east;
+    here.ter_set( start, ter_id( "t_floor" ) );
+    here.ter_set( destination, ter_id( "t_floor" ) );
+    REQUIRE( here.add_field( destination, fd_fire, 1 ) );
+    player.setpos( here, start );
+    player.set_moves( 100 );
+
+    multiplayer_player_command command;
+    command.client_sequence = 2;
+    command.base_revision = 1;
+    command.kind = multiplayer_command_kind::move;
+    command.direction = multiplayer_protocol_direction{ 1, 0, 0 };
+    const multiplayer_command_execution execution = multiplayer_execute_basic_command(
+                *g, player, command );
+
+    CHECK( execution.status == multiplayer_command_status::rejected );
+    CHECK_FALSE( execution.action_taken );
+    CHECK( execution.moves_spent == 0 );
+    CHECK( player.pos_bub() == start );
+    CHECK( player.get_moves() == 100 );
 }
 
 TEST_CASE( "multiplayer_remote_move_rejects_vehicle_control_without_entering_local_ui",

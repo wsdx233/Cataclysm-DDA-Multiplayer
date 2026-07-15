@@ -1103,7 +1103,8 @@ class game
         bool phasing_move_enchant( const tripoint_bub_ms &dest, int phase_distance = 0 );
         bool can_move_furniture( tripoint_bub_ms fdest, const tripoint_rel_ms &dp );
         // Regular movement. Returns false if it failed for any reason
-        bool walk_move( const tripoint_bub_ms &dest, bool via_ramp = false, bool furniture_move = false );
+        bool walk_move( const tripoint_bub_ms &dest, bool via_ramp = false,
+                        bool furniture_move = false, bool allow_interactive_ui = true );
         void on_move_effects();
     private:
         // Game-start procedures

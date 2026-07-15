@@ -543,7 +543,7 @@ bool avatar_action::move( avatar &you, map &m, const tripoint_rel_ms &d,
 
     const tripoint_abs_ms old_abs_pos = you.pos_abs();
     const tripoint_abs_ms abs_dest_loc = here.get_abs( dest_loc );
-    if( g->walk_move( dest_loc, via_ramp ) ) {
+    if( g->walk_move( dest_loc, via_ramp, false, allow_interactive_ui ) ) {
         // AUTOPEEK: If safe mode would be triggered after the move, look around and move back
         if( allow_interactive_ui && g->get_safe_mode() == SAFE_MODE_ON && !you.is_running() &&
             you.pos_abs() == abs_dest_loc ) {
