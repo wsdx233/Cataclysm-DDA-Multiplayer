@@ -22,8 +22,10 @@ Linux curses 包仍是无 SDL 的打包基线；同一 binary 已有显式 `--se
 - 面向 `multiplayer/main` 的 pull request 修改构建相关文件。
 
 工作流不创建 GitHub Release，不需要 Android keystore，也不会使用正式发布凭据。每个产物旁边包含构建 manifest、源码提交和 SHA-256。
-`workflow_dispatch` 的 `target` 默认为 `all`，供 Tier 3 milestone 运行 Linux、Windows、Android 全矩阵；Tier 2
-也可显式选择 `linux`、`windows` 或 `android` 单平台。自动 push/PR run 先由
+`workflow_dispatch` 的界面当前仍默认 `target=all`，但该默认值不是验证策略。手工运行者必须根据已经完成的
+platform-owned/public-boundary/release 批次显式选择 `linux`、`windows`、`android` 或 `all`；phase exit 本身不要求
+选择 `all`。界面描述中的 Tier 3 milestone 在这里仅指明确需要 all-platform package 的 release/artifact/兼容性
+里程碑，不包括每个普通 phase exit。自动 push/PR run 先由
 `Select affected platform packages` 比较 event base 与当前 commit，再只启用受影响的平台 package；若无法可靠
 解析 base 或 diff，则快速失败并要求用明确的 manual target 重跑，不再静默消耗全矩阵。
 
@@ -36,20 +38,23 @@ Linux curses 包仍是无 SDL 的打包基线；同一 binary 已有显式 `--se
 Android job 只在 standalone spike/workflow 自身变化或显式 target 时运行。standalone spike 本身仍不构成生产
 transport 或 TLS，生产边界位于 `src/multiplayer_*`。
 
-### 2.1 何时运行平台构建
+### 2.1 验证节奏与平台构建
 
 本文件保留三平台产物契约，但不要求每个 shared C++ 提交都完成整套 package。具体测试内容遵循重构计划
 第 20.6 节的三层策略：
 
-- Tier 1 日常默认使用 Linux native client/server、focused tests，并按风险增加完整 `[multiplayer]`、sanitizer
-  与真实 PTY loopback。portable scheduler/game-rule/protocol routine 的 Linux 结果可作为日常功能证据。
-- Tier 2 只为受影响的平台或跨平台公共边界补定向证据：Windows-owned MSVC/project/batch/PowerShell/windist/
-  Win32/SDL 变更跑 Windows；Android Gradle/CMake/manifest/Java/JNI/ABI/resource/touch/lifecycle 变更跑 Android；
-  schema/public header/ABI/toolchain boundary 只跑能实际编译 changed production source 的轻量 MSVC/NDK gate。
-  shared internal `.cpp` 本身不自动触发两端完整 package 要求。
-- Tier 3 在 phase exit、release candidate、pinned toolchain/artifact contract、显式跨版本 protocol compatibility
-  milestone 或跨平台产品兼容声明时，手工运行并记录必要的 Linux、Windows、Android 矩阵。单次 schema/public DTO
-  变更或 minor bump 若不同时作这些声明，仍是 Tier 2 public boundary。
+- Tier 1 编辑循环只做 Linux incremental build 和 changed-area focused tests。一个 coherent slice 准备收口时，
+  再按生命周期、所有权、协议和进程风险增加完整 `[multiplayer]`、sanitizer 与真实 Linux PTY loopback；portable
+  scheduler/game-rule/protocol routine 的 Linux native client/server 结果可作为 backend-neutral 功能证据。
+- Tier 2 只在关键 platform-owned 或跨平台公共边界批次完成后运行一次定向证据：Windows-owned MSVC/project/
+  batch/PowerShell/windist/Win32/SDL 批次跑 Windows；Android Gradle/CMake/manifest/Java/JNI/ABI/resource/touch/
+  lifecycle 批次跑 Android；schema/public header/ABI boundary 只跑能实际编译 changed production source 的最小
+  MSVC/NDK gate。shared internal `.cpp` 本身不自动触发两端 package 要求，也不为每个中间提交重复平台门禁。
+- Tier 3 是 phase/release milestone evidence review。phase exit 先核对产品声明、当前候选新证据和最近兼容平台证据，
+  不自动运行全平台；当前 Linux 候选仍运行阶段要求的 headless/native-client、integration 和 sanitizer 主门禁。
+  未变化的平台边界可以引用最近 evidence commit，并记录到当前候选的显式 diff audit 与兼容理由；必须同时注明
+  当前候选未在该平台编译或运行。release candidate、pinned toolchain/artifact/signing contract、显式跨版本兼容或
+  新的平台行为声明仍必须取得所有受影响平台的新证据。
 
 自动 baseline selector 的当前规则是：
 
@@ -73,13 +78,23 @@ transport 或 TLS，生产边界位于 `src/multiplayer_*`。
   它的 Linux package。root `CMakeLists.txt`/`src/version.cmake` 不再触发无关 package，而由 Linux production
   workflow 的定向 root-CMake configure + `get_version` target 验证。其余共享 build scripts、data/lang/version、
   baseline workflow 和真正的 artifact-contract path 才选择相应矩阵。
-- 手工 baseline `workflow_dispatch` 默认 `target=all`；Tier 2 可选单平台。自动 selector 无法解析 event base/diff
-  时失败并要求显式重跑，不能把分类失败转换成昂贵的隐式全矩阵。
+- 手工 baseline 界面虽然默认 `target=all`，操作者仍必须按本批验收目标显式选择 target；不要把 UI 默认值当成
+  phase-exit 或日常验证要求。自动 selector 无法解析 event base/diff 时失败并要求显式重跑，不能把分类失败转换成
+  昂贵的隐式全矩阵。
 
 changed-path selector 只是自动化优化，不替代工程判断。新增或重命名 platform-owned file 时，必须在同一改动中
 同步维护 push/PR 的两份 path list 与 selector case mapping。若普通路径内部新增 platform conditional，路径匹配
 无法自动识别；修改已有 platform conditional/branch 也同样如此。应显式运行受影响的 Tier 2 gate，并决定扩展
 selector 或在 `STATUS.md` 记录继续手工触发的理由。
+
+自动 selector 若因中间 push 启动平台 package，只表示该提交命中了路径规则，不会把每个后续中间提交变成必须
+重复的平台门禁。关键批次冻结后，应使用最后一次修改该平台/公共边界的候选证据；若最终候选只追加了可审计的
+内部改动，可以按第 20.6 节记录 evidence commit 与 diff audit，而不能声称最终候选已在该平台编译。
+
+当前 workflow 不会自动把多个 push 合并成一个 coherent batch：每个匹配的 push/PR 都可能启动 package，concurrency
+只会取消仍在运行的旧 job。要实际避免重复平台消耗，应把中间 platform/public-boundary commits 保留在本地或 topic
+branch，并尽量只向受监控分支推送冻结的验收候选。后续应以轻量 production portability target 或显式 batch trigger
+替换这项操作纪律；在那之前，自动启动的中间 run 不改变第 20.6 节的规范门禁，但仍会实际消耗 CI。
 
 `multiplayer-transport-spike.yml` 的 Linux job 是 production tests/process-smoke 主门禁；Windows MSVC 与 Android
 NDK jobs 明确只编译 `tools/multiplayer/transport_spike/`，不编译 changed production `src/multiplayer_*`。因此它们
@@ -540,8 +555,9 @@ Windows x64 MSVC tiles+sound package job
 的成功 Android package；同批 NDK job 只属于 standalone transport toolchain evidence。因此这两次 Android 结果
 既不是 scheduler/code failure，也不阻塞 Linux-first Phase 3 工作。
 run `29344937410` 不能标成 terminal-green 全平台矩阵；它的可用结论是 Windows Tier 2 成功、Android attempt 1
-runner-capacity failure、attempt 2 policy cancellation。Phase 3 退出时仍须按 Tier 3 为同一候选 source 记录必要
-平台矩阵；当前 `players.max` 必须保持 `1`。
+runner-capacity failure、attempt 2 policy cancellation。Phase 3 退出时必须复核当前候选的新证据与未变化平台的
+最近兼容 evidence/diff audit，但不因 phase exit 自动要求同一候选重跑全平台；任何引用都不得声称未运行平台已经
+编译当前候选。当前 `players.max` 必须保持 `1`。
 
 ### 分层 package selector hosted gate
 
@@ -607,8 +623,9 @@ package `87234324282` 共 8 个 jobs 全绿。平台 artifacts 为：
 这两条 runs 关闭本次 workflow/selector CI-contract milestone。phase-adapter gameplay slice 的 acceptance 仍是
 Linux Tier 1；Windows/Android transport artifacts 只证明 isolated spike/toolchain，而 package matrix 只证明该
 提交的 package/artifact workflow 成功。除非对应 job 实际编译或运行 changed production source，不得把这些结果
-外推为 adapter 的平台 portability 或 production routing evidence。后续普通 backend-neutral source 提交继续默认
-只跑 Linux，平台或里程碑触发时再升级 Tier 2/3。
+外推为 adapter 的平台 portability 或 production routing evidence。后续普通 backend-neutral source 提交继续使用
+Linux incremental/focused loop；slice 收口按风险增加 Linux 门禁，完成关键平台/公共边界批次或提出需要新证据的
+release/platform 行为声明时再升级。
 
 ### Authoritative session directory / protocol minor 1 hosted gate
 

@@ -80,13 +80,13 @@ the simulation-thread directory, and stale tuples cannot replace a newer binding
 tests; `do_turn_impl()` still calls the actual legacy bubble directly rather than through `claim_world()`; barrier
 disconnect is not yet connected to runtime offline/dormant; and fail-stop has no production save/shutdown recovery
 owner. `players.max` must remain `1`.
-Phase 1/2 hosted platform and Android lifecycle evidence remains valid as recorded in `STATUS.md`; do not rerun or
-restate it as evidence for unrelated Phase 3 shared-code changes. The five `do_turn()` trace labels remain observation
-points, not safe ownership boundaries, and the isolated `tools/` transport spike is not production-source portability
-evidence.
+Phase 1/2 hosted platform and Android lifecycle evidence remains valid as recorded in the build baseline and refactor
+plan; do not rerun or restate it as evidence for unrelated Phase 3 shared-code changes. The five `do_turn()` trace
+labels remain observation points, not safe ownership boundaries, and the isolated `tools/` transport spike is not
+production-source portability evidence.
 
-The last hosted-green selector source `804101995c175057856529be24439b0d7e87a49a` has a terminal-green Linux production gate and a
-one-time terminal-green CI-contract package matrix recorded in `STATUS.md` and the build baseline. That closes the
+The last hosted-green selector source `804101995c175057856529be24439b0d7e87a49a` has a terminal-green Linux production
+gate and a one-time terminal-green CI-contract package matrix recorded in the build baseline. That closes the
 workflow/selector milestone only; routine backend-neutral Phase 3 work remains Linux-first.
 
 Current authoritative-session source `eb990c4ad9975915336f3acd65431b47d123e842` has terminal-green Linux production
@@ -107,22 +107,23 @@ Completed Phase 0 gates:
   control matrix pass 274 release and sanitizer assertions. Full avatar move-swap retains three expected identity
   failures. ADR-0005 is accepted.
 - `game::do_turn()` has five observable phase boundaries and a source audit for world-phase active-player getters;
-  see `doc/multiplayer/DO_TURN_PHASE_AUDIT.md` and `STATUS.md` for exact evidence.
+  see `doc/multiplayer/DO_TURN_PHASE_AUDIT.md` for exact evidence.
 
 The active work, in order, is:
 
-1. Implement the selected active-root lifecycle design: keep the stable selected root activatable through required
-   forced wait and world completion, then transition it offline/dormant without running new turns; resume reactivates
-   the same runtime before command execution. Connect transport disconnected, barrier disconnected and runtime offline
-   as separate states; do not mark ADR-0010 accepted until these gates pass.
-2. Keep `players.max = 1` while wiring the scheduler/adapter into the production command loop and putting the actual
-   `process_legacy_single_player_bubble_turn()` call behind the world claim. Map a latched execution fault to typed
+1. Close the selected-root lifecycle contract in state-table and focused tests. Keep transport disconnected, barrier
+   disconnected and runtime offline/dormant as separate states; keep the stable selected root activatable through the
+   required forced wait and world completion; require resume to reactivate the same runtime before command execution.
+   Do not mark ADR-0010 accepted from policy intent alone.
+2. Keep `players.max = 1` while implementing that contract in the production single-root owner. Wire the
+   scheduler/adapter into the command loop, put the actual `process_legacy_single_player_bubble_turn()` call behind the
+   world claim, stop new turns while root-dormant and resume the same runtime. Map a latched execution fault to typed
    fatal shutdown; if a non-idempotent side effect may already have happened, stop without writing a new canonical
-   save. Only failures proven to precede gameplay side effects may use normal save. Then run the Linux headless-server/
-   native-client PTY regression.
+   save. Only failures proven to precede gameplay side effects may use normal save. Close this slice with the
+   risk-selected Linux full/sanitizer/process gates, including the headless-server/native-client PTY regression.
    Replace or bypass legacy `execute_turn_player_action()` bookkeeping when the adapter owns an action; wrapping the
    adapter inside the current `do_turn_remote()` bool callback would record the action twice.
-3. Promote the already-green in-process two-runtime wait-only case into the production owner, then close movement,
+3. Promote the already-green in-process two-runtime wait-only case into that production owner, then close movement,
    collision, monster/death, field/scent/NPC, tether/group-shift and player-state isolation gates before enabling a
    second client. Do not pull portable characters, multiple save generations or Phase 4 durable restart resume into
    these entry slices.
@@ -142,14 +143,15 @@ The fork-specific workflow is [`.github/workflows/multiplayer-baseline.yml`](.gi
 - Pinned default tileset, soundpack, desktop shaders, and compiled translations.
 - Per-artifact provenance, SHA-256, CLI/resource and smoke-test output.
 
-The workflow runs manually and on relevant changes pushed to, or proposed against, `multiplayer/main`. Manual runs
-default to `target=all` for the full Tier 3 matrix, while an explicit `linux`, `windows` or `android` target supports a
-single-platform Tier 2 gate. Automatic runs compare changed paths and select only affected packages. Ordinary
-backend-neutral `src/multiplayer_*` changes do not trigger the package baseline. Windows-owned paths select Windows,
+The workflow runs manually and on relevant changes pushed to, or proposed against, `multiplayer/main`. Its current UI
+default is `target=all`, but that default is not a validation policy: select `linux`, `windows`, `android` or `all`
+explicitly from the completed batch's acceptance target. Automatic runs compare changed paths and select only affected
+packages. Ordinary backend-neutral internal gameplay/policy files do not trigger the package baseline; protocol,
+public-header and client/platform exceptions are listed in the build baseline. Windows-owned paths select Windows,
 Android-owned paths select Android, shared graphical/platform adapters select their affected targets, and shared
 artifact/toolchain paths select their required matrix. `Makefile` is Linux-only; root CMake/version generation uses a
-targeted Linux configure; public protocol/schema/transport/crypto boundaries temporarily use actual-source
-Windows/Android packages. That package execution is a temporary CI implementation detail for Tier 2 portability, not
+targeted Linux configure; public protocol/schema/transport/crypto boundaries temporarily use actual-source Windows/
+Android packages. That package execution is a temporary CI implementation detail for Tier 2 portability, not
 an instruction to require package or lifecycle acceptance when only the public compile boundary changed.
 An unresolvable automatic base/diff fails and requires an explicit manual
 target instead of silently running every package. The transport workflow defaults manual and routine automatic runs
@@ -195,8 +197,9 @@ For the default Linux-first development loop, run:
 ./build-scripts/check-multiplayer-build-env.sh linux
 ```
 
-Use `./build-scripts/check-multiplayer-build-env.sh all` only when an Android/toolchain change or a Tier 3 matrix
-requires every configured toolchain.
+Use `./build-scripts/check-multiplayer-build-env.sh all` only when a completed toolchain/artifact/release batch or an
+explicit multi-platform acceptance target requires every configured toolchain. A phase exit by itself is an evidence
+review, not an automatic request for this command.
 
 The local Linux toolchain uses GCC 13, Make, gettext, ncurses, zlib, and bzip2 from the user prefix because system package installation may not be available. The prefix must include matching ncursesw/tinfo runtime libraries as well as development files; the environment gate rejects mixed shared ncurses/static tinfo links. Local `ccache` is optional; CI enables it.
 
@@ -288,30 +291,33 @@ msbuild -m `
 .\build-scripts\windist.ps1 -SDL3
 ```
 
-MinGW cross-compilation on Linux does not replace native MSVC evidence. Run the hosted `windows-2022` job for
-Windows-specific changes, an MSVC-sensitive public boundary or Tier 3 milestones. Prefer a lightweight gate that
+MinGW cross-compilation on Linux does not replace native MSVC evidence. Run the hosted `windows-2022` job once a
+coherent Windows-owned batch or MSVC-sensitive public boundary is ready for acceptance, and whenever a release or
+Windows behavior claim requires fresh evidence. Prefer a lightweight gate that
 actually compiles the changed production source; require the full Windows package only when package/runtime behavior
 is the acceptance target. Backend-neutral internal shared C++ changes do not require Windows on every iteration.
 
 ## Verification Expectations
 
-Use the three verification tiers defined in the refactor plan and build baseline:
+Use the three verification tiers defined by the refactor plan and mapped to concrete jobs by the build baseline:
 
-1. **Tier 1 — daily Linux evidence.** Backend-neutral gameplay, scheduler, protocol and transport work defaults to a
-   Linux build plus focused tests. Add the complete `[multiplayer]` suite, sanitizers and a real Linux headless-server/
-   native-client PTY loopback according to risk. A Linux curses or SDL client and Linux `--server` process are valid
-   daily functional evidence for shared code.
-2. **Tier 2 — platform/public-boundary evidence.** Run Windows MSVC/package tests when Windows-owned build/runtime
-   surfaces change, and Android NDK/APK/emulator or device tests when Android-owned surfaces change. Wire/schema/
-   version/capability, public DTO/serialization layout, compiler-sensitive public headers and shared toolchain/source
-   contracts also require targeted portability evidence, but use the smallest gate that actually compiles the changed
-   production source. Shared internal C++ alone does not require both packages. A compile-only or cross-compile smoke
-   proves only that boundary and never substitutes for package/lifecycle evidence when those are the acceptance target.
-3. **Tier 3 — recorded milestone matrix.** Run the necessary Linux, Windows and Android matrix for phase exits,
-   release candidates, pinned toolchain/artifact changes and explicit cross-version protocol-compatibility or product
-   compatibility milestones. A schema/version edit that makes no phase-exit or cross-version product claim remains a
-   Tier 2 public boundary. Every phase exit must retain at least one recorded set of platform evidence appropriate to
-   its exit criteria.
+1. **Tier 1 — Linux edit loop and slice closure.** During implementation, use incremental Linux builds and the focused
+   tests for the changed area. Do not turn every edit into a full-suite gate. When a coherent slice is ready to close,
+   add the complete `[multiplayer]` suite, sanitizers and/or a real Linux headless-server/native-client PTY loopback in
+   proportion to lifecycle, ownership, protocol and process risk. A Linux curses or SDL client and Linux `--server`
+   process are valid functional evidence for backend-neutral shared code.
+2. **Tier 2 — completed platform/public-boundary batch.** Run platform evidence once the relevant Windows-owned,
+   Android-owned or cross-platform public-boundary batch is complete enough to accept. Wire/schema/version/capability,
+   public DTO/serialization layout, compiler-sensitive public headers and shared toolchain/source contracts require
+   the smallest targeted gate that actually compiles the changed production source. Shared internal C++ alone does
+   not require both packages. A compile-only or cross-compile smoke proves only that boundary and never substitutes
+   for package/lifecycle evidence when those are the acceptance target.
+3. **Tier 3 — milestone evidence review.** A phase exit reviews whether its claims are covered; it does not
+   automatically rerun every platform. The current Linux candidate still runs the phase's required server/client,
+   integration and sanitizer gates. For an unchanged platform surface, the review may cite the latest compatible
+   evidence commit plus an explicit diff audit, while stating that the current candidate was not compiled or run on
+   that platform. Release candidates, pinned toolchain/artifact/signing changes, explicit cross-version compatibility
+   claims and new platform behavior claims require fresh evidence on every affected platform.
 
 Platform-owned surfaces include `msvc-full-features/`, Windows batch/PowerShell/package code, Win32-only filesystem/
 process/socket/ACL or SDL behavior, plus Android Gradle/CMake/manifest/Java/JNI/ABI/resource/touch/lifecycle code.
@@ -320,17 +326,24 @@ platform conditionals. Record the selected tier, commands, results and intention
 "not run by policy" is not a blocker, but it cannot be presented as platform evidence.
 
 Do not run `check-multiplayer-build-env.sh all`, a full baseline matrix, Windows package or Android APK by habit. Start
-with Linux and escalate only for an identified Tier 2/3 trigger. A job that did not compile or run the changed
-production source is not evidence for that change; in particular, the isolated Windows/Android transport-spike jobs
-do not prove scheduler, phase-adapter or other production `src/multiplayer_*` portability.
+with the incremental Linux edit loop, close the slice with risk-selected Linux gates, and escalate only for a completed
+platform/public-boundary batch or a milestone claim that requires fresh evidence. A job that did not compile or run
+the changed production source is not evidence for that change; in particular, the isolated Windows/Android
+transport-spike jobs do not prove scheduler, phase-adapter or other production `src/multiplayer_*` portability.
 
 The baseline changed-path selector is an optimization, not an authority oracle. When a platform-owned file is added
 or renamed, update both push/pull-request path lists and the selector mapping in the same change. If a generic path
 adds or modifies a platform conditional that path matching cannot detect, run the affected Tier 2 gate explicitly and either
 extend the selector or record why the case remains manual.
 
+The workflow does not batch coherent platform work automatically: each matching push/PR may start a package run.
+Accumulate intermediate platform/public-boundary commits locally or on a topic branch and push the frozen acceptance
+candidate when practical; do not use repeated pushes to `multiplayer/main` as the edit loop. A future lightweight
+production portability target or explicit batch trigger may replace the current package fallback.
+
 `multiplayer-transport-spike.yml target=all` means Linux production plus Windows/Android isolated spike probes; it is
-not the Tier 3 product/package matrix. Use the baseline workflow and the phase exit criteria for full platform evidence.
+not a product/package matrix. Use the baseline workflow only when the selected platform/public/release acceptance
+target actually requires package evidence.
 
 For changed Bash/workflow/toolchain code, still run the relevant syntax/lint checks. Verify artifact ABI, provenance
 and SHA-256 whenever an artifact is actually part of the selected tier. Multiplayer simulation tests continue to

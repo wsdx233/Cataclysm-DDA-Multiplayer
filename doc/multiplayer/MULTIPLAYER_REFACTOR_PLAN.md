@@ -1251,68 +1251,87 @@ TCP 不会乱序交付同一连接中的字节，但业务测试仍要覆盖重�
 
 ### 20.6 分层验证与 CI 矩阵
 
-验证按风险与里程碑分为三层，不要求每个 backend-neutral shared C++ 提交都重新完成 Windows package 和
-Android APK。每次交接在 `STATUS.md` 记录所选层级、原因、精确命令、结果和按策略未运行的平台；“本批按策略
-未运行”不是 blocker，也不能冒充对应平台证据。
+验证同时按风险层级和交付频率组织，不要求每个 backend-neutral shared C++ 提交都重新完成 Windows package 和
+Android APK。每次可交接的切片收口在 `STATUS.md` 记录所选层级、原因、精确命令、结果和按策略未运行的平台；
+“本批按策略未运行”不是 blocker，也不能冒充对应平台证据。
 
-本节是选择验证层级的唯一规范来源。默认从 Tier 1 开始，只有 diff 或验收声明实际跨入平台/公共兼容边界时才
-升级。不得因为文件名含 `multiplayer`、代码是 shared C++，或某个 workflow 恰好有 Windows/Android job，就自动
-要求完整全平台编译。反过来，任何 job 若没有编译或运行本次 changed production source，也不能作为该变更的
-Windows/Android 证据；isolated transport spike 只证明 spike、Asio pin 和对应 compiler/toolchain contract。
+本节是选择验证层级的唯一规范来源。默认从 Linux 开始，只有已经完成的切片或验收声明实际跨入平台专属、公共
+兼容或发布边界时才升级。不得因为文件名含 `multiplayer`、代码是 shared C++，或某个 workflow 恰好有 Windows/
+Android job，就自动要求完整全平台编译。反过来，任何 job 若没有编译或运行本次 changed production source，也
+不能作为该变更的 Windows/Android 证据；isolated transport spike 只证明 spike、Asio pin 和对应 compiler/toolchain
+contract。
 
-**Tier 1：日常 Linux 闭环。** 这是 scheduler、game rule、协议状态机、服务器和 portable transport 变更的默认层级：
+验证频率分为三种：
 
-- 在 Linux GCC 上构建受影响的 native client/server 或 tests，并运行 changed-area focused tests。
+- **编辑循环**：开发中的中间提交或本地修改只运行能快速暴露当前问题的 Linux compile/focused tests。除非正在
+  诊断平台专属失败，不为同一未收口切片的每个提交重复 Windows package、Android APK 或设备测试。
+- **切片收口**：一组可交接的 scheduler、rule、session、protocol、client 或 server 行为完成后，以当前 Linux
+  候选 source 运行 native client + headless server 默认闭环，并按风险增加完整 `[multiplayer]`、sanitizer 和真实
+  PTY/loopback。`STATUS.md` 的日常证据以这个频率记录，而不是把每条编辑命令写成独立平台门禁。
+- **平台里程碑**：Windows/Android owned code、公共 wire/ABI/toolchain 边界或平台产品声明形成一个完整关键批次后，
+  对冻结的该批候选补受影响平台证据。同一关键批次的中间提交不逐个重跑平台；平台门禁之后若又修改该边界，才
+  需要对新的候选重跑。
+
+**Tier 1：Linux 默认闭环。** 这是内部 scheduler、game rule、session/protocol 状态机、服务器和 portable
+transport 变更的默认层级，前提是没有修改 wire schema/version、public header 或平台 adapter：
+
+- 编辑循环在 Linux GCC 上构建受影响的 native client/server 或 tests，并运行 changed-area focused tests。
+- 切片收口时，Linux headless `--server` 与 Linux native client（curses 或 SDL）是 backend-neutral client/server
+  功能的默认验收组合；接通 production transport、session、command 或 UI 路径时运行真实 PTY/loopback smoke。
 - 共享 turn、authority、session、protocol、visibility、save 或 transport invariant 改变时，增加完整
-  `[multiplayer]` suite；涉及地址/生命周期/线程/内存所有权时按风险增加 ASan/UBSan/LSan。
-- 接通 production transport、session、command 或 UI 路径时，运行真实 Linux `--server` 与 native client 的 PTY/
-  loopback smoke；客户端默认可用 curses，触及 SDL/tiles renderer 时改用对应 Linux graphical build。
-- Linux native client（curses 或 SDL）与 headless server 共享 semantic executor 和 protocol，因此可作为
-  backend-neutral 功能的日常证据。它不证明 Windows package、Android Activity lifecycle 或平台专属行为。
+  `[multiplayer]` suite；涉及地址、生命周期、线程或内存所有权时按风险增加 ASan/UBSan/LSan。
+- 触及 SDL/tiles renderer 时使用 Linux graphical client；否则 curses client 足以验证共享 semantic executor 和
+  protocol。Linux 结果不证明 Windows package、Android Activity lifecycle 或其他平台专属行为。
 
-**Tier 2：平台专属或跨平台公共边界定向验证。** 只有改动跨入以下边界时才要求对应平台：
+**Tier 2：平台专属或跨平台公共边界定向验证。** 只有完成的关键批次跨入以下边界时才要求对应平台；门禁按切片
+收口或平台里程碑运行，而不是按每个提交运行：
 
 - Windows：`msvc-full-features/`、batch/PowerShell/windist、MSVC-only compiler boundary、Win32 filesystem/process/
-  socket/ACL 或 Windows SDL input/rendering。按改动运行 hosted MSVC compile、loopback、package 或 native smoke；
-  只有 package/runtime 是验收目标时才要求完整 tiles+sound package。
+  socket/ACL 或 Windows SDL input/rendering。按验收对象运行 hosted MSVC compile、loopback、package 或 native smoke；
+  只有 package/runtime 是目标时才要求完整 tiles+sound package。
 - Android：Gradle/CMake/manifest、Java/JNI、ABI/resources、SDL touch/rendering、credential storage、Activity
-  pause/resume/reconnect。按改动运行 NDK compile、目标 ABI APK/resource smoke；触及 lifecycle/runtime 行为时必须
-  再跑 emulator 或 device，compile-only APK 不能替代运行证据。
+  pause/resume/reconnect。按验收对象运行 NDK compile、目标 ABI APK/resource smoke；触及 lifecycle/runtime 行为时
+  必须再跑 emulator 或 device，compile-only APK 不能替代运行证据。
 - 跨平台公共边界：wire schema/version/capability/build ID、公开 DTO/serialization layout、compiler/ABI-sensitive
   public header、共享 source-list 或 pinned toolchain contract。Linux 主门禁仍必须运行，再选择能实际编译 changed
-  production source 的 MSVC/NDK 轻量 gate；package/resource/runtime 不是验收目标时，不升级为完整包。
-- backend-neutral `src/multiplayer_*` policy/rule routine 不因使用 shared C++ 就自动要求 Windows+Android 完整
-  package。内部 `.cpp` scheduler/rule/phase-adapter 实现、测试或不改变接口/协议的重构仍属 Tier 1；若新增或修改
-  已有 platform conditional、compiler-sensitive ABI/header 或平台 adapter，则只补受影响的定向门禁。
+  production source 的 MSVC/NDK 最小 gate；package/resource/runtime 不是验收目标时，不升级为完整包。
+- backend-neutral `src/multiplayer_*` 内部 `.cpp` policy/rule/phase-adapter 实现、测试或不改变接口/协议的重构仍属
+  Tier 1；若新增或修改 platform conditional、compiler-sensitive ABI/header 或平台 adapter，只补受影响平台。
 - MinGW/NDK 等廉价 cross-compile smoke 只证明该编译边界；它不能关闭 MSVC package、Android APK resource 或
-  emulator/device lifecycle gate。反过来，非当前验收目标的平台完整 package 也不是日常 shared-code 进度的前置。
+  emulator/device lifecycle gate。反过来，非当前验收目标的平台完整 package 也不是 shared-code 切片收口前置。
 
-**Tier 3：阶段出口与发布矩阵。** 下列节点必须手工运行并记录当时必要的完整平台证据：
+**Tier 3：阶段出口、发布与兼容性里程碑。** Tier 3 是一次候选证据审计，不等同于自动运行全平台：
 
-- 每个 phase exit；
-- release candidate 与正式发布；
-- pinned compiler/NDK/JDK/vcpkg/Asio/FlatBuffers、workflow、artifact/ABI/signing contract 的里程碑变更；
-- phase/release 级 protocol compatibility milestone、明确的跨版本互通承诺，或明确宣称跨平台产品兼容性的 gate。
+- 每个 phase exit 必须在当前候选 source 上完成 Linux GCC headless server、unit/integration 和 native client process
+  smoke，并按该阶段风险运行 Linux sanitizer gate；这是不可由历史结果替代的当前候选主门禁。
+- Windows/Android 只有在本阶段自其最近兼容证据后修改了对应 owned code、公共 wire/ABI/toolchain 边界，或阶段出口
+  新增/改变该平台产品声明时，才必须为当前候选补新的定向 compile/package/runtime 证据。
+- 若阶段没有触及上述边界，可以引用最近兼容平台证据，但必须记录 evidence commit/run，并对
+  `git diff --name-status <evidence_commit>..<candidate_commit>` 及相关路径/条件分支做 diff audit，确认没有相关
+  platform-owned、public boundary、source-list、toolchain 或 platform conditional 变化。该记录只能表述为“沿用兼容
+  证据”，不得写成当前候选已在该平台编译或运行；diff 无法可靠审计时必须重跑受影响平台。
+- release candidate、正式发布、明确的跨版本互通承诺或跨平台产品兼容声明，仍须在同一候选 source 上运行与声明
+  匹配的必要平台矩阵。pinned compiler/NDK/JDK/vcpkg/Asio/FlatBuffers、workflow、artifact/ABI/signing contract 的
+  里程碑变更必须覆盖受影响的平台。
+- 单次 append-only schema/public DTO 变更或 protocol minor bump 若不同时宣称 phase exit、release 或跨版本产品兼容，
+  按 Tier 2 公共边界定向验证；本次 minor `1` 属于该情况，不因改了 version 字段自动升级为全平台 Tier 3。
+- Android emulator/device、单人 save compatibility、跨平台 loopback、fuzz/soak 只在对应阶段退出标准或发布风险要求
+  时纳入。每夜 4-client soak 可独立运行，不把其每次结果变成日常提交的同步前置。
 
-单次 append-only schema/public DTO 变更或 protocol minor bump 若不同时宣称 phase exit、release 或跨版本产品兼容，
-按 Tier 2 公共边界定向验证；本次 minor `1` 属于该情况，不因改了 version 字段自动升级为 Tier 3。
-
-Tier 3 至少覆盖 Linux GCC headless server + unit/integration + native client process smoke、Linux Clang
-ASan/UBSan、Windows MSVC 目标 build/package、Android arm64/x86_64 目标 build，以及 protocol generated-header
-一致性。Android emulator/device、单人 save compatibility、跨平台 loopback、fuzz/soak 只在对应阶段退出标准或
-发布风险要求时纳入，但阶段退出至少保留一组与其产品声明匹配、可追溯到同一候选 source 的必要平台证据。
-每夜 4-client soak 可独立运行，不把其每次结果变成日常提交的同步前置。
-
-| 变更类别 | 默认验证 |
+| 频率/变更类别 | 默认验证 |
 | --- | --- |
-| 内部 shared rule/scheduler/adapter 实现 | Linux build + focused tests；按风险增加 full `[multiplayer]`/sanitizer/PTY |
-| 跨平台公共 header/schema/ABI/toolchain 边界 | Linux 主门禁 + 实际编译 changed source 的 MSVC/NDK 定向 gate |
-| Windows 或 Android owned build/runtime/UI/lifecycle | Linux 回归（若影响 shared code）+ 受影响平台的 compile/package/runtime gate |
-| phase exit、release、toolchain/artifact 或显式跨版本 protocol milestone | Tier 3 必要矩阵 |
+| 编辑循环；内部 shared rule/scheduler/adapter 实现 | Linux compile + focused tests |
+| 切片收口；backend-neutral client/server 行为 | 当前 Linux native client + headless server；按风险增加 full `[multiplayer]`/sanitizer/PTY |
+| 完成的公共 header/schema/ABI/toolchain 关键批次 | Linux 主门禁 + 实际编译 changed source 的 MSVC/NDK 最小定向 gate |
+| 完成的 Windows 或 Android owned build/runtime/UI/lifecycle 批次 | Linux 回归（若影响 shared code）+ 受影响平台的 compile/package/runtime gate |
+| phase exit | 当前 Linux 候选必跑；平台边界有变化则补新证据，否则记录最近兼容 evidence commit + diff audit |
+| release、artifact/signing 或显式跨版本/跨平台产品里程碑 | 与声明匹配的同候选必要平台矩阵 |
 
-CI automation 与该策略对应：baseline workflow 的手工 dispatch 默认 `target=all` 运行全矩阵，Tier 2 也可显式
-选择 Linux、Windows 或 Android 单平台；自动 push/PR 先按 changed path 选择 package target，Windows-owned path
-只跑 Windows，Android-owned path 只跑 Android，共享 graphical/platform adapter 跑受影响端，共享
+CI automation 与该策略对应：日常 Tier 1 使用 production transport workflow 的 `target=linux`，不调用 package
+baseline。baseline workflow 的手工 dispatch 技术默认仍是 `target=all`，但只用于显式 package/release 矩阵；任何
+手工 baseline 都必须按已完成批次的验收目标显式确认 Linux、Windows、Android 或 `all`。自动 push/PR 先按
+changed path 选择 package target：Windows-owned path 只跑 Windows，Android-owned path 只跑 Android，共享
+graphical/platform adapter 跑受影响端，共享
 build/resource/toolchain contract 跑全矩阵，普通 backend-neutral `src/multiplayer_*` 不触发 package baseline。
 `Makefile` 只选择实际使用它的 Linux package；root `CMakeLists.txt`/`src/version.cmake` 由 Linux production workflow
 定向 configure 并构建 `get_version`，不触发无关平台 package。public transport/crypto header、protocol source、
@@ -1474,23 +1493,30 @@ scoped action bookkeeping、root-context restoration、execution fault latch 和
   token 回收和 ordered rejection 已有 Linux 单元证据。accepted enqueue failure 只清 binding、不回滚 generation；
   resume 可以用 directory fingerprint 同代重放并修复暂时落后一代的 lobby mirror，fresh auth 则没有同代 replay
   承诺。
-- 下一步把 transport disconnected、barrier disconnected 与 runtime offline 真正接到同一 owner。单玩家 root 采用
-  selected-context/lifecycle decoupling：完成当前 barrier/world 后才 offline/dormant，resume 激活同一稳定 runtime 后
-  解除 dormant，再私有持有 scheduler/adapter ownership；在此之前 `players.max` 保持 `1`。
-- 保持 `players.max = 1` 接入 production command path；把实际
-  `process_legacy_single_player_bubble_turn()` 放进 world claim，定义 fault 后的 typed fatal shutdown policy：若可能
-  已发生非幂等副作用，不写新的 canonical save；只有明确发生在 gameplay side effect 前的 failure 才允许正常保存。
-  随后跑 Linux headless server + native client PTY regression。
-- 当前两个 registry runtime 的 in-process wait-only test 已绿色；下一步把它接入 production owner，再接入两玩家
-  round-robin moves。
-- 处理互相阻挡、近战、死亡、field、monster target。
-- 消息、safe mode、stats 基础隔离。
-- 实现 tether 和 group-centered map shift。
+- **Gate 1：selected-root lifecycle contract/API。** 先用状态表和 focused tests 定义 transport disconnected、barrier
+  disconnected grace、forced-wait pending、terminal barrier、world completed、runtime offline、server dormant 与
+  same-runtime resume reactivation。该 gate 只证明 contract/API；在 Gate 2 完成前不得宣称 production dormant 已接通。
+- **Gate 2：production single-root lifecycle。** 保持 `players.max = 1`，由 dedicated owner 私有持有
+  scheduler/adapter，一次接通 `disconnect -> grace -> forced wait -> terminal record -> actual world claim/completion ->
+  runtime offline -> dormant`，并在 resume 时先激活同一稳定 runtime 再解除 dormant。semantic command 与
+  authoritative wait 必须经 adapter，actual `process_legacy_single_player_bubble_turn()` 必须位于不可绕过的
+  claim/record 路径。定义 typed fatal shutdown：若可能已发生非幂等副作用，不写新的 canonical save；只有明确在
+  gameplay side effect 前失败才允许正常保存。该 gate 收口后运行 Linux headless server + native client PTY。
+- **Gate 3：two-runtime owner 与规则矩阵。** 先把当前已绿色的 in-process two-runtime wait-only case 提升为
+  owner-level integration test，但继续拒绝外部 `players.max > 1`；再依次关闭 round-robin move、human collision、
+  monster/death、field/scent/NPC、tether/group shift，以及 messages/safe-mode/stats/player-state isolation。全部 owner/
+  rule gates 绿色后，先开放仅供 integration/process test 使用的双连接 routing 并完成 Linux 双 client smoke/soak；
+  该测试开关不得作为用户配置发布。只有这些证据也绿色后，才评估允许用户配置 `players.max > 1`。
 
-退出标准：两个 test client 能在同一 bubble 中连续游戏 60 分钟，怪物可正确攻击任一玩家，ASan/UBSan 无错误；
-按 Tier 3 对同一 Phase 3 候选 source 记录一次与该出口声明匹配的 Linux headless/client、Windows MSVC 和 Android
-build evidence。若 Phase 3 不改变 Android lifecycle，本阶段无需重复 Phase 2 的完整设备 lifecycle 剧本，但仍须
-保留 Android 目标 compile/package 证据；任何新增平台专属行为都必须补对应 Tier 2 runtime gate。
+这三道 gate 的编辑循环均只跑 Linux incremental/focused tests；切片收口按风险增加完整 `[multiplayer]` 和 sanitizer，
+Gate 2/真实双 client routing 接通时再增加 Linux process smoke。只有 gate diff 修改公共 wire/ABI/toolchain 或明确的
+Windows/Android owned boundary 时，才补受影响平台证据。
+
+退出标准：两个 test client 能在同一 bubble 中连续游戏 60 分钟，怪物可正确攻击任一玩家，ASan/UBSan 无错误。
+Phase 3 内部 scheduler/rule/session 切片默认由 Linux headless server + native client 收口；阶段出口对当前候选运行
+第 20.6 节规定的 Linux 主门禁。Windows/Android 仅在 Phase 3 修改对应 owned code、公共 wire/ABI/toolchain 边界或
+改变平台产品声明时补当前候选证据；否则记录最近兼容 evidence commit/run 与到当前候选的 diff audit，不得称为
+当前候选已在该平台编译。若未改变 Android lifecycle，无需重复 Phase 2 的完整设备 lifecycle 剧本。
 
 ### Phase 4：客户端 replica 与渲染完整度（6 至 10 周）
 
@@ -1502,7 +1528,14 @@ build evidence。若 Phase 3 不改变 Android lifecycle，本阶段无需重复
 - 完善 Android pause/resume、后台超时、进程重启 resume checkpoint 与自动 reconnect/backoff；Phase 2 只要求
   单客户端 vertical-slice 的最小真实设备 lifecycle smoke。
 
-退出标准：移动、战斗和观察体验与同版本本地单人模式视觉上基本一致，不向客户端泄露隐藏实体。
+scene/replica/rendering 的编辑循环和普通切片先用 Linux headless server + Linux SDL client 验证。Windows renderer/
+input/UI 形成关键批次后，在该批收口候选上运行 MSVC/native 或 package gate；Android touch/Activity/reconnect 形成
+关键批次后运行目标 APK/resource 与 emulator/device gate。不得为同一未收口 scene layer 的每个中间提交重复两端
+完整构建，但平台批次通过后若继续修改其 owned boundary，必须对新候选重跑。
+
+退出标准：移动、战斗和观察体验与同版本本地单人模式视觉上基本一致，不向客户端泄露隐藏实体；当前 Linux 候选
+完成完整 visual/visibility 回归，Windows/Android 按本阶段实际完成的平台批次与产品声明补证据，未变化的平台可按
+第 20.6 节引用最近兼容 evidence commit + diff audit。
 
 ### Phase 5：存档与人物导入（4 至 8 周）
 
@@ -1529,7 +1562,10 @@ build evidence。若 Phase 3 不改变 Android lifecycle，本阶段无需重复
 - 车辆驾驶、控制、维修和乘客。
 - computers、特殊活动和 mod EOC 流程。
 
-每个动作必须有 command schema、server validation、client UI、错误处理、保存/重连测试和两玩家冲突测试。
+每个动作必须有 command schema、server validation、client UI、错误处理、保存/重连测试和两玩家冲突测试。每个
+动作家族的编辑循环和功能收口默认使用 Linux headless server + Linux native client；不因动作数量或中间提交数量
+重复 Windows/Android 完整构建。若一个收口批次修改 public wire schema/header，则在该批冻结候选上补一次实际编译
+production source 的 MSVC/NDK 定向 gate；若修改平台 input/UI/renderer/lifecycle，则只补受影响平台的 Tier 2 gate。
 
 退出标准：预先维护的 action coverage matrix 达到 v1 门槛，未支持动作在客户端被明确禁用而不是导致 server popup 或挂死。
 
@@ -1620,7 +1656,9 @@ tests/multiplayer_integration_test.cpp
 
 ## 24. PR/提交拆分建议
 
-建议保持每个 PR 可独立验证并尽量不混入格式化：
+建议保持每个 PR 按第 20.6 节对应频率和层级可独立验证并尽量不混入格式化。“可独立验证”表示当前 Linux 候选
+闭环及该 PR 实际触及的平台/公共边界有证据，不表示每个 PR 或每个中间提交都完成全平台矩阵。平台专属改动应按
+可验收的关键批次组织，使该批收口时只需对冻结候选运行一次相应平台门禁：
 
 1. 加入本计划、ADR 模板和 multiplayer feature flag，不改行为。
 2. runtime mode 与 headless bootstrap。
@@ -1734,12 +1772,15 @@ tests/multiplayer_integration_test.cpp
 ## 28. 长期维护策略
 
 - 保留 `upstream` remote，fork 的 `origin` 指向自己的仓库。
-- multiplayer 主分支固定通过 CI 后再吸收上游。
+- multiplayer 主分支通过第 20.6 节按 diff 风险要求的当前层级 CI 后再吸收上游；不要求普通 shared-code 合并先跑
+  无关平台完整矩阵。
 - 每 1 至 2 周合并一次上游，不积累数月差异。
 - multiplayer 文件使用统一前缀，减少与上游文件名冲突。
 - 对 `do_turn.cpp`、`game.h`、`handle_action.cpp`、savegame 文件的改动保持小块、可审查。
 - 禁止无关格式化、批量 rename 和目录重排。
-- 每次上游合并后优先跑 single-player save compatibility 与 two-client integration。
+- 每次上游合并后优先在当前 Linux 候选上跑 single-player save compatibility 与 two-client integration。只有合并
+  diff 触及 Windows/Android owned code、公共 wire/ABI/toolchain、platform conditional 或相关产品声明时，才补受影响
+  平台；否则在阶段出口记录最近兼容 evidence commit 与从该提交到当前候选的 diff audit。
 - 协议版本、server state schema、portable character schema 分开演进，不能复用 `savegame_version` 表示所有兼容性。
 - 保持 action coverage matrix、known limitations 和 migration guide 与代码同 PR 更新。
 
