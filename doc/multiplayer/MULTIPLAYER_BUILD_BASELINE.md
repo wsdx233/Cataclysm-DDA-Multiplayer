@@ -85,13 +85,14 @@ NDK jobs 明确只编译 `tools/multiplayer/transport_spike/`，不编译 change
 平台证据，也不是完整 platform package/runtime gate。MinGW/NDK cross-compile、MSVC loopback 或 compile-only APK
 只证明各自边界，不能替代目标为 native package、resource 或 emulator/device lifecycle 时的完整平台 gate。
 
-2026-07-14 的后续 selector source 已通过本地静态/动态门禁：两个 workflow 的 actionlint、YAML parse 和全部
+2026-07-14/15 的后续 selector source 已通过本地静态/动态门禁：两个 workflow 的 actionlint、YAML parse 和全部
 Bash-compatible run block `bash -n` 通过；transport manual 四种 target、routine scheduler diff 的 Linux-only、
 transport-workflow diff 的三端选择、root-CMake output 和两个 selector 的 unresolved-base fail-fast 均有动态断言。
 本地 GCC 13 root CMake configure + `get_version` target 也通过。静态 mapping 断言确认 protocol/schema/generated
 header 走 W/A actual-source package、Makefile 只走 Linux，并移除纯 README/Windows-only props 的无效 Linux trigger。
-该 source 推送前只有本地 evidence；workflow 自身属于 cross-platform CI boundary，首次 hosted run 应验证 selector
-与必要 jobs，之后普通 production source push 才以 Linux-only 为默认。
+commit `804101995c175057856529be24439b0d7e87a49a` 的首次 hosted transport 与 baseline runs 已全部 terminal
+`success`，关闭 workflow 自身的 cross-platform CI boundary；详细 jobs/artifacts 见第 9 节末尾。之后普通
+production source push 以 Linux-only 为默认，除非命中明确 Tier 2/3 trigger。
 
 ## 3. 固定依赖
 
@@ -571,5 +572,40 @@ probe 全绿。它们的 artifact IDs 分别为 `8319340742`、`8318224196`、`8
 这组 evidence 关闭 selector/workflow 自身的关键 CI 里程碑，不重新建立“每个 shared C++ 提交必须全平台 package”
 的旧约束。Android-only、Windows-only、shared graphical/platform、all-platform adapter、Windows-only build script
 和 `workflow_dispatch all|linux|windows|android` 分类已由本地动态断言覆盖；未来实际 Tier 2 仍只运行受影响 target。
+
+### Linux-first 最终 selector 与 phase-adapter 批次 hosted gate
+
+最终 source `804101995c175057856529be24439b0d7e87a49a` 同时包含 test-owned phase adapter 和最终
+Linux-first workflow/selector 修正。transport run
+[`29377566098`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29377566098) 已 terminal
+`success`：selector job `87234082789`、Windows isolated MSVC probe `87234108316`、Linux production job
+`87234108318` 与 Android isolated NDK probe `87234108325` 全部成功。Linux job 实际运行 root-CMake
+configure/`get_version`、FlatBuffers/Asio gate、GCC production build、完整 `[multiplayer]`、headless
+command/resume smoke 和 native client UI reconnect/resume smoke。transport artifacts 为：
+
+| Artifact | Artifact ID | GitHub UI size | GitHub artifact digest |
+| --- | ---: | ---: | --- |
+| Linux production/provenance | `8329082394` | `144 KB` | `555ea053beb0825a304ea210dda4be7ecdf2bbe56464b6c3ddece6cc03e9a845` |
+| Windows isolated spike | `8328455030` | `52.8 KB` | `a14db45adb476e37ddfdbcdcc55fdfdcf714180c14bf4687bde92915a253f579` |
+| Android isolated spike | `8328453980` | `1.63 MB` | `b238e479b7396c70316da6f0e72f1075cc996670df37e9f17fd6bf200ebab1d3` |
+
+同一 source 的 baseline run
+[`29377566114`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29377566114) 也 terminal
+`success`。selector job `87234082868`、shaders `87234105207`、soundpack `87234105233`、translations
+`87234105243`、tileset `87234105274`、Linux package `87234154681`、Windows package `87234324264` 与 Android
+package `87234324282` 共 8 个 jobs 全绿。平台 artifacts 为：
+
+| Artifact | Artifact ID | GitHub UI size | GitHub artifact digest |
+| --- | ---: | ---: | --- |
+| Linux curses x64 | `8328662814` | `175 MB` | `c893cf53ffeb6301223fe8c1a52c2a1b09ed7b3cb797df69cf6b59ba4c440401` |
+| Windows x64 MSVC tiles+sound | `8329011211` | `300 MB` | `ba70df76e9b687b6e5a673b83d5acfaee53a0535140c9ebc773cd278f542fba3` |
+| Android arm64 release | `8329209090` | `172 MB` | `0751d131514060f5769bb9356ce6eb7f7a56a489f5a179bec4fff48e42c9f704` |
+| Android x86_64 debug compile evidence | `8329210402` | `273 MB` | `13856e99b2853b8c23ac3dd3b9366b55f7cb1e70902a42bfdf8933c289437055` |
+
+这两条 runs 关闭本次 workflow/selector CI-contract milestone。phase-adapter gameplay slice 的 acceptance 仍是
+Linux Tier 1；Windows/Android transport artifacts 只证明 isolated spike/toolchain，而 package matrix 只证明该
+提交的 package/artifact workflow 成功。除非对应 job 实际编译或运行 changed production source，不得把这些结果
+外推为 adapter 的平台 portability 或 production routing evidence。后续普通 backend-neutral source 提交继续默认
+只跑 Linux，平台或里程碑触发时再升级 Tier 2/3。
 
 本地生成物位于仓库默认的忽略目录中，不作为源码提交。规范产物和 hash 以 fork 上的 `multiplayer-baseline` workflow 为准。

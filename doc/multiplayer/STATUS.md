@@ -1,16 +1,18 @@
 # CDDA 多人 fork 当前状态
 
-- 更新日期：2026-07-14
+- 更新日期：2026-07-15
 - 分支：`multiplayer/main`
 - 当前阶段：**Phase 3，shared scheduler 与当前仅由测试调用的 source phase adapter/seams 已落地；下一入口是 production session/runtime directory**
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
-- 当前 scheduler source 提交：`45be077ac2d0d042190e54d1bdb77d48676b67e6`（transport 全绿；baseline 的 Linux、Android、resources 成功，Windows validator failure）
-- 上一个完整 hosted platform gate 全绿提交：`86336ea847bea45f727fd97d74a811a32712518c`（canonical build-ID hardening）
+- 当前 source 提交：`804101995c175057856529be24439b0d7e87a49a`（phase adapter + 分层门禁；Linux
+  production 与本次 CI-contract 全矩阵均为 terminal success）
+- Phase 2 最终完整 hosted platform gate 提交：`86336ea847bea45f727fd97d74a811a32712518c`
+  （canonical build-ID hardening）
 - 当前 Phase 3 slice：scheduler execution-fault latch、`multiplayer_turn_phase_adapter`、forced wait mode、单人
   action/world helper seams，以及 Linux release/sanitizer tests；adapter 尚未接入 production runtime
 - 当前 Windows 定向修复：`c9b28086e973fa497d5bd9f9a37e64a9ac22e464`；hosted MSVC package 已完整成功
-- 上一个 hosted-green selector source：`9a561f6172d9042c1c424f16d923448e0de9152a`；当前 source 进一步把
-  transport routine path 收敛到 Linux，并移除 automatic classification failure 的隐式全矩阵 fallback
+- 当前 hosted-green selector source：`804101995c175057856529be24439b0d7e87a49a`；transport routine path 已收敛
+  到 Linux，automatic classification failure 不再隐式运行全矩阵
 - 当前下一行动：从 `src/main.cpp`/`src/multiplayer_server_lobby.*` 建立统一 generation 的 authoritative
   session/runtime directory，先完成 two-phase auth/resume 与 active-root lifecycle 决策，再以 `players.max = 1`
   接入 production scheduler/adapter 和 actual claimed bubble
@@ -97,13 +99,15 @@ Android job 在与该 Windows 修复无关的 x86_64 debug build 阶段耗尽 ho
 - gameplay/phase-adapter slice 属于 **routine backend-neutral shared implementation**，选择 Tier 1：Linux GCC
   release build、focused phase-adapter/scheduler/command/turn tests、完整 `[multiplayer]` 和定向
   ASan/UBSan/LSan。adapter 尚未接 production runtime，因此本 slice 不要求 PTY loopback。
-- 本批没有修改 Windows/Android-owned runtime/UI/package/lifecycle，也没有改变 wire schema、public DTO、protocol
-  version 或 compiler-sensitive public ABI；Windows package 与 Android APK 按策略未运行，不是 blocker，也不是本批
-  绿色证据。
+- gameplay slice 没有修改 Windows/Android-owned runtime/UI/package/lifecycle，也没有改变 wire schema、public DTO、
+  protocol version 或 compiler-sensitive public ABI，因此它的验收只需要上述 Linux Tier 1。由于同一提交还修改了
+  workflow/selector，随后执行的 Windows/Android package 属于独立 CI-contract milestone，不是 gameplay slice 的
+  日常前置，也不能据此要求后续 shared `.cpp` 每次跑全平台。
 - workflow/selector slice 属于独立 **Tier 3 CI-contract milestone**：自动 routine multiplayer source 只跑 Linux；
   transport Windows/Android job 只编译 isolated spike，今后仅在 spike/workflow 自身或显式 target 时运行。baseline
-  自动 base/diff 无法分类时快速失败并要求 manual target，不再静默全矩阵。本地 lint/selector assertions 不是
-  hosted evidence；推送后必须记录 workflow 自身触发的必要 jobs。
+  自动 base/diff 无法分类时快速失败并要求 manual target，不再静默全矩阵。commit `8041019` 的首次 hosted
+  selector、Linux production、isolated portability probes 和完整 package matrix 已全部 terminal `success`，该一次性
+  CI-contract gate 已关闭。
 - 任何未编译 changed production source 的 job 不得作为该 change 的平台证据。现有 transport Windows/Android
   artifacts 只证明 standalone spike/Asio/toolchain；production public boundary 后续需要实际编译 source 的轻量
   MSVC/NDK target，或在当时显式运行对应 package。
@@ -119,6 +123,18 @@ Android job 在与该 Windows 修复无关的 x86_64 debug build 阶段耗尽 ho
   package，protocol/schema/generated-header boundary 也触发 W/A actual-source package。`Makefile` 只选 Linux；root
   `CMakeLists.txt`/`src/version.cmake` 改由 transport Linux job 的定向 configure + `get_version` target 验证。generic
   file 内已有或新增平台分支变化必须人工选择 Tier 2。对应 workflow 静态/selector 验证见本批证据。
+
+- 当前 source `804101995c175057856529be24439b0d7e87a49a` 的 transport run
+  [`29377566098`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29377566098) 已 terminal
+  `success`：selector job `87234082789`、Linux production job `87234108318`、Windows isolated MSVC probe
+  `87234108316` 与 Android isolated NDK probe `87234108325` 均成功。Linux job 实际完成 root-CMake
+  configure/`get_version`、GCC production build、完整 `[multiplayer]`、headless command/resume smoke 和 native client
+  UI reconnect/resume smoke；后两个 probe 仍只证明 standalone spike/Asio/toolchain。
+- 同一 source 的 baseline run
+  [`29377566114`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29377566114) 也 terminal
+  `success`：selector、四项 resources、Linux curses、Windows x64 MSVC tiles+sound、Android arm64 release 与
+  x86_64 debug compile 共 8 个 jobs 全绿。这是 workflow/selector 自身变化所要求的一次 CI-contract/full-package
+  milestone；它不把 phase adapter 提升为 production routing，也不改变日常 Linux-first 规则。
 
 以下 commit/run 记录旧 selector 的演进与 hosted evidence；其中 fail-open 和 main/crypto/config/log 自动分类已经被
 上述当前 source 取代，不再代表现行 routing：
@@ -282,10 +298,12 @@ UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1' \
   UBSan、LSan 或 stack-use-after-return finding。仅出现既有 GCC 13 initializer-list `array-bounds` optimizer warning，
   本 sanitizer build 继续用精确 `-Wno-error=array-bounds` 降级，不隐藏其他 warning。
 - AStyle 3.1 `make ... astyle-check` 报 `no astyle regressions`；最终 `git diff --check` 通过。
-- 这是 Tier 1 backend-neutral source evidence。Windows/Android production builds 未运行；adapter 未接 production
-  runtime，所以 PTY loopback 未运行。二者均为按策略未运行，不是 blocker。
+- 这是 gameplay/phase-adapter slice 的 Tier 1 backend-neutral acceptance evidence。该 slice 不要求 Windows/Android；
+  同一提交后来因 workflow 自身变化执行了完整 package matrix，但那属于独立 CI-contract milestone，不能替代对
+  adapter production routing 的后续验证。adapter 尚未接 production runtime，因此没有 adapter-specific PTY
+  loopback；这不是 blocker。
 
-### Linux-first workflow/selector 本地门禁（当前 source state）
+### Linux-first workflow/selector 本地与 hosted 门禁（当前 source state）
 
 - actionlint 1.7.12 对 `.github/workflows/multiplayer-baseline.yml` 和
   `.github/workflows/multiplayer-transport-spike.yml` 均无输出、exit 0。
@@ -302,8 +320,12 @@ UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1' \
   与 Windows-only common props，manual default 为 Linux，standalone W/A 自动 selector 只匹配其 workflow/spike path。
 - 本地 root CMake 定向命令以 GCC 13、curses、无 tiles/sound/localize/tests 配置成功，并构建 `get_version` target；
   本机因 user-prefix zlib/ncurses 额外传入 `CMAKE_PREFIX_PATH`，hosted Ubuntu job使用已安装系统开发包。
-- 这是 selector/source lint evidence，尚不是修改后 workflow 的 hosted evidence。由于本批修改 workflow 自身，首次
-  推送会按 cross-platform CI boundary 跑必要的 selector/platform jobs；后续 routine source push 才收敛为 Linux-only。
+- 上述本地 selector/source lint 已由 commit `804101995c175057856529be24439b0d7e87a49a` 的 hosted runs 闭环：
+  transport run [`29377566098`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29377566098)
+  与 baseline run
+  [`29377566114`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29377566114) 均 terminal
+  `success`。本次 workflow source 的 cross-platform CI boundary 已关闭；后续 routine source push 按现行 selector
+  收敛为 Linux-only，除非命中明确 Tier 2/3 trigger。
 
 ### Phase 3 scheduler policy 本地验证（上一 source state）
 
@@ -767,8 +789,9 @@ git diff --check
   request 不携带 generation，expected old generation 应由 server token record 解析，不应为此无意修改 wire schema。
   lobby/scheduler 的 `UINT64_MAX`、runtime/save 的 `INT64_MAX` 边界和 client“只要变大”检查也必须统一为
   `< INT64_MAX` 且 exact `+1`。
-- 本批 phase-adapter shared source 只取得 Tier 1 Linux release/sanitizer evidence。Windows/Android production
-  build 按策略未运行；transport standalone W/A probes 即使绿色也不构成本批 source evidence。
+- 本批 phase-adapter shared source 的功能验收只采用 Tier 1 Linux release/sanitizer evidence。同一提交因独立
+  workflow milestone 实际运行并通过了 Windows/Android packages，但这只关闭 compile/package CI contract；它们和
+  transport standalone W/A probes 都不能证明 adapter behavior 或 production routing。
 - `game::walk_move()` 仍使用固定 `game::u`；human-human collision、monster target/attack、death、field、single
   `typescent`/scent center、NPC/overmap anchor、tether/group-centered shift 和 player-state isolation 均未关闭。
 - 本地 Android diagnostic package 缺 `grayscale.frag.spv`，因此该 shader variant 被禁用；ASCIITiles scene 已正常

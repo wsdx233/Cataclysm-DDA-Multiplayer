@@ -81,6 +81,10 @@ session/lobby/runtime generation is not unified; and fail-stop has no production
 trace labels remain observation points, not safe ownership boundaries, and the isolated `tools/` transport spike is
 not production-source portability evidence.
 
+Current source `804101995c175057856529be24439b0d7e87a49a` has a terminal-green Linux production gate and a
+one-time terminal-green CI-contract package matrix recorded in `STATUS.md` and the build baseline. That closes the
+workflow/selector milestone only; routine backend-neutral Phase 3 work remains Linux-first.
+
 Completed Phase 0 gates:
 
 - Local branch: `multiplayer/main`; baseline tag: `multiplayer-upstream-baseline-d84b90d`; fork remote:
