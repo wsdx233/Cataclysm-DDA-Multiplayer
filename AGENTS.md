@@ -105,25 +105,36 @@ cover symmetric adjacent blocking and two-turn contention for one empty tile, in
 winner and exact world/player-end closure. The blocker key is internal authority data that a future outer wire owner
 must visibility-filter. This remains an inner contract without a production caller, actual bubble or two-client route.
 
+Gate 3 source `6fe9be5ce8a6cca137b04b08002184c8ec8b0eb6` closes only **4A.1**, the ordinary hostile-monster target/basic
+melee slice. World rules now enumerate explicit living `active`/`offline` registry avatars, exclude importing,
+runtime-dead and avatar-dead entries, use each target's visibility, select equal-rated humans without fixed-root bias,
+and route `attack_at()`/`move()` melee to the exact selected avatar. `LOCKS_ON` is bound to the exact target character
+and Tindalos consumes only that target's lock. Direct special attacks, last-known-invisible behavior, differentiated
+per-target attitude/hostility, messages/SFX and all death/game-over policy remain outside 4A.1.
+
 The first owner slice has local Linux focused/full-multiplayer and ASan/UBSan/LSan evidence plus a Linux curses client
 version smoke. Slice 2 has Linux focused/full-multiplayer, targeted sanitizer and native curses PTY regression evidence
 recorded precisely in `STATUS.md`; the PTY protects the unchanged single-root route, not a two-runtime production
 caller. Slice 3 has Linux focused/full-multiplayer, targeted sanitizer and format evidence recorded in
-`STATUS.md`; it has no production caller, so no process/PTY rerun is required. Gate 2 retains its open-turn save-hash
-evidence. These Gate 3 diffs do not change wire/schema/version, platform conditionals, shared build lists, pinned
-toolchains or Windows/Android-owned code, so Windows/Android remain
-intentionally unrun. The latest compatible
-public-boundary evidence remains run `29385561653` for protocol-minor-1 source
-`eb990c4ad9975915336f3acd65431b47d123e842`; it is not current Gate 3 platform evidence. Routine Phase 3 work remains
-Linux-first under the validation policy below.
+`STATUS.md`; it has no production caller, so no process/PTY rerun is required. 4A.1 has Linux release/focused/full,
+targeted ASan/UBSan/LSan, format and native curses `--version` evidence. Its generic gameplay source is client-reachable,
+but the process smoke proves only Linux native binary compile/link and the CLI version path; single-avatar gameplay
+behavior is covered by in-process focused regressions, and the two-runtime behavior remains test-only. Gate 2 retains
+its open-turn save-hash evidence. These Gate 3 diffs do not change wire/schema/version,
+serialization, external ABI, platform conditionals, shared build lists, pinned toolchains or Windows/Android-owned code,
+so Windows/Android remain intentionally unrun. The latest compatible hosted package evidence is successful baseline
+run `29428814425` for source `4f7fed7d9455d767fee37e6aba39e14c68dd8d2d`; it is not current 4A.1 platform
+evidence. Routine Phase 3 work remains Linux-first under the validation policy below.
 
 The active work, in order, is:
 
 1. Keep `players.max = 1` and keep `multiplayer_single_root_owner::create()` fixed at exactly one player. Treat source
    `2eccb92087991966423c18b63f6ef707462b1428`, `3204f8f45606a20ea6ab0892369b9806f89c4353` and
    `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` as inner barrier/rule contracts only; do not wire them directly into the
-   production single-root loop or mistake their lambda world callback for actual bubble evidence.
-2. Split the current work into 4A monster target/attack and 4B death/game-over safe-boundary policy. Then close
+   production single-root loop or mistake their lambda world callback for actual bubble evidence. Treat
+   `6fe9be5ce8a6cca137b04b08002184c8ec8b0eb6` as the scoped 4A.1 rule seam, not a production multi-runtime caller.
+2. Close 4A.2 direct monster specials, last-known-invisible behavior and differentiated per-target attitude/hostility,
+   then close 4B death/game-over safe-boundary policy. After that close
    field/scent/NPC; tether/group shift; and dedicated messages/safe-mode/stats/player-scoped cache isolation. Preserve
    one shared bubble and single simulation thread. Each slice uses Linux incremental/focused tests; authority/lifecycle
    risk selects full `[multiplayer]` or sanitizer, and a process smoke is added only after the changed production route

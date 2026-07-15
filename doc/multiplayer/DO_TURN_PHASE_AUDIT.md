@@ -64,7 +64,9 @@ remote 路径不执行 renderer recovery、music/SFX、autosave、截图、block
   round-robin multi-player owner。
 - 本次审计发现 `game::walk_move()` 直接使用固定 `game::u`。Gate 3 source `3204f8f45606a20ea6ab0892369b9806f89c4353` 后续只把已审计的
   plain-walk 直接链改为读取 `active_avatar()`；source `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` 又在该链之前关闭 adjacent semantic
-  move 的 human-human occupied destination。复杂/forced movement、monster target/attack、death/game-over、
+  move 的 human-human occupied destination。source `6fe9be5ce8a6cca137b04b08002184c8ec8b0eb6` 进一步关闭
+  4A.1 ordinary hostile monster target/basic melee 和 exact target-keyed `LOCKS_ON`。复杂/forced movement、
+  monster direct specials/last-known-invisible/per-target attitude-hostility/messages-SFX、death/game-over、
   field/scent/NPC、tether/group-centered shift 和 player-scoped message/state 隔离仍不是纯调度器能够补齐的能力。
 
 复核没有推翻 ADR-0002，但证明五个 trace range 不能直接作为实现边界。Gate 2 已把保持单人行为的 owned action/
@@ -207,9 +209,32 @@ Gate 3 source `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` 增加以下窄 contrac
 
 因此五个 trace label 仍不是 ownership boundary，`walk_move()`/`place_player()` 也不是已批准的全局 human collision
 guard。teleport、knockback、fling、vehicle/phasing 等 forced movement 必须在其自己的 authority slice 中验证或拒绝。
-当前下一 slice 是 monster target/attack 与 death/game-over safe boundary；其中 `monster::plan()` 的单
-`get_player_character()` seed，以及 `game::is_game_over()` 的 fixed `u/uquit`、blocking death UI 和 global cleanup 都须
-先重定 ownership，不能让最后一个 active-player guard 隐式决定 world target 或终止整个 server。
+当前下一 slice 是 4A.2 direct specials、last-known-invisible 和差异化 per-target attitude/hostility；
+observer-filtered messages/SFX 仍由后续 dedicated isolation 处理。随后的 4B 单独处理 `game::is_game_over()`
+的 fixed `u/uquit`、blocking death UI 和 global cleanup。不能让最后一个 active-player guard 隐式决定 world
+target 或终止整个 server。
+
+## Gate 3 4A.1 ordinary monster target/basic-melee rule seam
+
+Gate 3 source `6fe9be5ce8a6cca137b04b08002184c8ec8b0eb6` 将 world-phase 中最小的 ordinary hostile
+monster/human seam 从 fixed active avatar 改为 explicit registry authority：
+
+- runtime 只在 avatar 存活且 lifecycle 为 `active` 或 `offline` 时参与 world rules；`importing`、
+  runtime-dead 和 avatar-dead 不是 target/occupant；
+- `monster::plan()` 显式遍历 living humans，用目标自身 visibility 和几何 LoS 评估候选，对 equal
+  rating 公平选择；当前 active-player guard 不能替换 world target population；
+- `attack_target()`、`attack_at()` 和 `move()` 解析 exact living avatar，basic melee/stumble 只作用于
+  selected target，不再回落到 fixed root；
+- `LOCKS_ON` 保存 exact target `character_id` source，direct LoS 丢失后不自刷新、不转移到其他
+  avatar；Tindalos teleport 只使用当前 target 的 exact lock。source-less 旧 effect 只在严格单 living-avatar
+  情况保留兼容。
+
+该 source 是 generic gameplay seam，Linux native binary 已编译链接，`--version` CLI path 正常；single-avatar
+gameplay 与所有 two-runtime 断言都只由 in-process tests 覆盖。它没有 outer multi-runtime owner、actual
+bubble/two-client route、scene publish 或 save proof，不允许提高 `players.max`，也不代表整个 4A、Gate 3 或
+Phase 3 完成。
+direct specials、last-known-invisible 和差异化 per-target attitude/hostility 留给 4A.2；observer-filtered
+messages/SFX 留给后续 dedicated isolation；death/game-over lifecycle/save boundary 留给 4B。
 
 ## Phase 0 基线
 
@@ -259,7 +284,7 @@ rg -n 'get_avatar\(\)|get_player_character\(\)|get_player_view\(\)' src
 | `map::vehmove()` | vehicle 路径中的 driver、ownership、可见消息可能取活动玩家 | driver 显式来自 vehicle；结果事件按可见玩家分发 | Phase 3 identity；Phase 6 完整驾驶 |
 | `map::process_fields()` | `map_field.cpp` 的角色效果和 EOC dialogue 可取活动 avatar | 受影响实体显式传入；server rule path 禁止 popup/dialogue UI 栈 | Phase 1 headless guard；Phase 3 field 测试 |
 | `sounds::process_sounds()` | AI sound 与当前玩家听觉/室内状态混用 | 世界 sound propagation 一次；每玩家可听事件和 marker 单独投影 | Phase 3 AI；Phase 4 per-player sound events |
-| `monmove()` / `monster::plan()` / `monster::move()` | motion alarm、attitude、target、visibility、消息大量使用活动 getter | 从所有合法 human/NPC 目标选取；伤害和 RNG 执行一次；消息按观察者过滤 | Phase 3 两玩家 target/attack/visibility 矩阵 |
+| `monmove()` / `monster::plan()` / `monster::move()` | motion alarm、attitude、target、visibility、消息大量使用活动 getter | 从所有合法 human/NPC 目标选取；伤害和 RNG 执行一次；消息按观察者过滤 | 4A.1 已关 ordinary hostile living-human target/basic melee/target-keyed lock；4A.2 仍关 direct specials、last-known invisible、per-target attitude；messages/SFX 属后续 isolation |
 | NPC turn loop | ally、enemy、talk、follow、可见性常以活动玩家为唯一 host | relation/target 使用稳定 ID；阻塞对话拆为 command/response state | Phase 1 禁 UI；Phase 3 AI；Phase 6 对话 |
 | `overmap_npc_move()` | “near player”与 reload 距离以活动 avatar 为中心 | v1 使用共享 bubble/group anchor，不按最后激活玩家漂移 | Phase 3 tether 与 group-centered shift |
 | `mon_info_update()`、visibility cache | 当前 player view 是唯一观察者 | world cache 与每玩家 visibility projection 分离 | Phase 4 visibility leak test |
@@ -277,5 +302,6 @@ rg -n 'get_avatar\(\)|get_player_character\(\)|get_player_view\(\)' src
 5. 每次移动边界时保留 phase-order 测试，并增加“每 turn 真实 callback 调用次数”和失败路径断言；性能采样不得
    成为发布构建的无条件时钟开销。
 6. adjacent semantic move 的 human block 必须在 legacy movement side effects 前完成；该 router guarantee 不能外推到
-   forced movement。monster target/death 也必须显式遍历 registry-owned humans 和逐玩家 lifecycle，不能继续把
-   `get_player_character()`、`game::u` 或 global `uquit` 当作多人 authority。
+   forced movement。4A.1 ordinary monster target/basic melee 必须显式遍历 living registry-owned humans，且
+   `LOCKS_ON` 必须绑定 exact target；该 guarantee 不能外推到 direct specials、last-known-invisible、messages/SFX
+   或 death lifecycle。4B 仍必须定义逐玩家 lifecycle，不能把 `game::u` 或 global `uquit` 当作多人 authority。
