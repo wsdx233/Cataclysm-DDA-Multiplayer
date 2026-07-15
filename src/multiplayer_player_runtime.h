@@ -87,6 +87,8 @@ class multiplayer_player_runtime
         const multiplayer_player_id &player_id() const;
         std::uint64_t session_generation() const;
         multiplayer_player_status status() const;
+        /** Simulation-thread-only eligibility as a living avatar in physical world rules. */
+        bool is_living_world_avatar() const;
 
         avatar &player();
         const avatar &player() const;

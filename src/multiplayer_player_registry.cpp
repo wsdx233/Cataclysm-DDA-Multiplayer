@@ -5,6 +5,7 @@
 
 #include "avatar.h"
 #include "cata_assert.h"
+#include "game.h"
 #include "multiplayer_player_runtime.h"
 
 multiplayer_player_registry::multiplayer_player_registry() = default;
@@ -177,6 +178,27 @@ avatar *multiplayer_player_registry::find_at( const tripoint_abs_ms &position ) 
            found->second.empty() ? nullptr : found->second.front();
 }
 
+avatar *multiplayer_player_registry::find_living_world_avatar_at(
+    const tripoint_abs_ms &position ) const
+{
+    const bool simulation_thread = g != nullptr && g->is_simulation_thread();
+    cata_assert( simulation_thread );
+    if( !simulation_thread ) {
+        return nullptr;
+    }
+    rebuild_indexes();
+    const auto found = players_by_position.find( position );
+    if( found == players_by_position.end() ) {
+        return nullptr;
+    }
+    const auto participant = std::find_if( found->second.begin(), found->second.end(),
+    [this]( const avatar * candidate ) {
+        const shared_ptr_fast<multiplayer_player_runtime> runtime = find_runtime( *candidate );
+        return runtime != nullptr && runtime->is_living_world_avatar();
+    } );
+    return participant == found->second.end() ? nullptr : *participant;
+}
+
 avatar *multiplayer_player_registry::find_other_at(
     const tripoint_abs_ms &position, const avatar &excluded ) const
 {
@@ -190,6 +212,19 @@ avatar *multiplayer_player_registry::find_other_at(
         return candidate != &excluded;
     } );
     return other == found->second.end() ? nullptr : *other;
+}
+
+std::size_t multiplayer_player_registry::living_world_avatar_count() const
+{
+    const bool simulation_thread = g != nullptr && g->is_simulation_thread();
+    cata_assert( simulation_thread );
+    if( !simulation_thread ) {
+        return 0;
+    }
+    return static_cast<std::size_t>( std::count_if( players.begin(), players.end(), [](
+    const shared_ptr_fast<multiplayer_player_runtime> &runtime ) {
+        return runtime != nullptr && runtime->is_living_world_avatar();
+    } ) );
 }
 
 shared_ptr_fast<avatar> multiplayer_player_registry::shared_from( const avatar &player ) const

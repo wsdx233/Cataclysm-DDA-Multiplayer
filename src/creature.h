@@ -406,6 +406,9 @@ class Creature : public viewer
         bool sees( const map &here, const Creature &critter ) const override;
         bool sees( const map &here, const tripoint_bub_ms &t, bool is_avatar = false,
                    int range_mod = 0 ) const override;
+        /** Direct position visibility using the specified avatar's visibility factor. */
+        bool sees_avatar_position( const map &here, const avatar &target,
+                                   int range_mod = 0 ) const;
         /*@}*/
 
         /**

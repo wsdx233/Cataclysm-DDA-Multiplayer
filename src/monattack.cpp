@@ -3858,7 +3858,7 @@ bool mattack::tindalos_teleport( monster *z )
     const int distance_to_target = rl_dist( z->pos_abs(), target->pos_abs() );
     if( distance_to_target > 5 ) {
         const tripoint_bub_ms oldpos = z->pos_bub( here );
-        const bool locked_on = z->has_effect( effect_monster_locked_on );
+        const bool locked_on = z->is_locked_on_to( *target );
         for( const tripoint_bub_ms &dest : here.points_in_radius( target->pos_bub( here ), 4 ) ) {
             // Only teleports if player has been seen and locked on
             if( !locked_on ) {

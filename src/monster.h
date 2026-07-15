@@ -239,6 +239,8 @@ class monster : public Creature
         tripoint_abs_ms get_dest() const;
         // Returns the creature at the end of plans (if hostile)
         Creature *attack_target();
+        /** Whether the lock-on effect is bound to this exact avatar target. */
+        bool is_locked_on_to( const Creature &target ) const;
         // Go towards p using the monster's pathfinding settings.
         void set_dest( const tripoint_abs_ms &p );
         // Reset our plans, we've become aimless.

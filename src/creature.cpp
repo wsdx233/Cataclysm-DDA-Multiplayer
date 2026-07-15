@@ -15,6 +15,7 @@
 
 #include "ammo_effect.h"
 #include "anatomy.h"
+#include "avatar.h"
 #include "body_part_set.h"
 #include "calendar.h"
 #include "cata_assert.h"
@@ -54,6 +55,7 @@
 #include "mdarray.h"
 #include "messages.h"
 #include "monster.h"
+#include "multiplayer_player_registry.h"
 #include "mtype.h"
 #include "npc.h"
 #include "options.h"
@@ -501,6 +503,60 @@ static bool majority_rule( const bool a_vote, const bool b_vote, const bool c_vo
     return ( a_vote + b_vote + c_vote ) > 1;
 }
 
+static std::optional<int> sight_range_to_point( const Creature &observer, const map &here,
+        const tripoint_bub_ms &target, const int range_mod )
+{
+    if( std::abs( observer.posz() - target.z() ) > fov_3d_z_range ) {
+        return std::nullopt;
+    }
+
+    const tripoint_bub_ms pos = observer.pos_bub( here );
+    const int range_cur = observer.sight_range( here.ambient_light_at( target ) );
+    const int range_day = observer.sight_range( default_daylight_level() );
+    const int range_night = observer.sight_range( 0 );
+    const int range_max = std::max( range_day, range_night );
+    const int range_min = std::min( range_cur, range_max );
+    const int wanted_range = rl_dist( pos, target );
+    if( wanted_range > range_min &&
+        ( wanted_range > range_max ||
+          here.ambient_light_at( target ) <=
+          here.get_cache_ref( target.z() ).natural_light_level_cache ) ) {
+        return std::nullopt;
+    }
+
+    int range = here.ambient_light_at( target ) >
+                here.get_cache_ref( target.z() ).natural_light_level_cache ?
+                MAX_VIEW_DISTANCE : range_min;
+    if( observer.has_effect( effect_no_sight ) ) {
+        range = 1;
+    }
+    if( range_mod > 0 ) {
+        range = std::min( range, range_mod );
+    }
+    return range;
+}
+
+static bool sees_point_with_avatar_visibility( const Creature &observer, const map &here,
+        const tripoint_bub_ms &target, const std::optional<float> &avatar_visibility_factor,
+        const int range_mod )
+{
+    const std::optional<int> range = sight_range_to_point( observer, here, target, range_mod );
+    if( !range ) {
+        return false;
+    }
+
+    const tripoint_bub_ms pos = observer.pos_bub( here );
+    const int wanted_range = rl_dist( pos, target );
+    if( avatar_visibility_factor ) {
+        // Legacy single-avatar symmetry uses the active avatar's seen cache.
+        const int adjusted_range = std::floor( *range * *avatar_visibility_factor );
+        return adjusted_range >= wanted_range &&
+               here.get_cache_ref( observer.posz() ).seen_cache[pos.x()][pos.y()] >
+               LIGHT_TRANSPARENCY_SOLID;
+    }
+    return here.sees( pos, target, *range );
+}
+
 bool Creature::sees( const map &here, const Creature &critter ) const
 {
     const Character *ch = critter.as_character();
@@ -522,8 +578,12 @@ bool Creature::sees( const map &here, const Creature &critter ) const
         return false;
     }
 
-    if( critter.has_flag( mon_flag_ALWAYS_VISIBLE ) || ( ( has_flag( mon_flag_ALWAYS_SEES_YOU ) ||
-            has_effect( effect_monster_locked_on ) ) && critter.is_avatar() ) ) {
+    const monster *const observer_monster = as_monster();
+    const bool locked_on_target = observer_monster != nullptr &&
+                                  observer_monster->is_locked_on_to( critter );
+    if( critter.has_flag( mon_flag_ALWAYS_VISIBLE ) ||
+        ( has_flag( mon_flag_ALWAYS_SEES_YOU ) && critter.is_avatar() ) ||
+        locked_on_target ) {
         return true;
     }
 
@@ -600,7 +660,9 @@ bool Creature::sees( const map &here, const Creature &critter ) const
     }
 
     // If we cannot see without any of the penalties below, bail now.
-    if( !sees( here, critter_pos, critter.is_avatar() ) ) {
+    const avatar *const avatar_target = critter.as_avatar();
+    if( avatar_target != nullptr ? !sees_avatar_position( here, *avatar_target ) :
+        !sees( here, critter_pos ) ) {
         return false;
     }
 
@@ -683,44 +745,33 @@ bool Creature::sees( const map &here, const Creature &critter ) const
 bool Creature::sees( const map &here, const tripoint_bub_ms &t, bool is_avatar,
                      int range_mod ) const
 {
-    if( std::abs( posz() - t.z() ) > fov_3d_z_range ) {
+    const std::optional<float> avatar_visibility_factor = is_avatar ?
+            std::make_optional( get_player_character().visibility() / 100.0f ) : std::nullopt;
+    return sees_point_with_avatar_visibility( *this, here, t, avatar_visibility_factor, range_mod );
+}
+
+bool Creature::sees_avatar_position( const map &here, const avatar &target,
+                                     const int range_mod ) const
+{
+    if( g != nullptr && g->multiplayer_players().living_world_avatar_count() == 1 &&
+        &target == &get_player_character() ) {
+        return sees_point_with_avatar_visibility( *this, here, target.pos_bub( here ),
+                target.visibility() / 100.0f, range_mod );
+    }
+
+    const tripoint_bub_ms observer_position = pos_bub( here );
+    const tripoint_bub_ms target_position = target.pos_bub( here );
+    const int wanted_range = rl_dist( observer_position, target_position );
+    const std::optional<int> observer_range = sight_range_to_point( *this, here,
+            target_position, range_mod );
+    if( !observer_range ) {
         return false;
     }
 
-    const tripoint_bub_ms pos = pos_bub( here );
-    const int range_cur = sight_range( here.ambient_light_at( t ) );
-    const int range_day = sight_range( default_daylight_level() );
-    const int range_night = sight_range( 0 );
-    const int range_max = std::max( range_day, range_night );
-    const int range_min = std::min( range_cur, range_max );
-    const int wanted_range = rl_dist( pos, t );
-    if( wanted_range <= range_min ||
-        ( wanted_range <= range_max &&
-          here.ambient_light_at( t ) > here.get_cache_ref( t.z() ).natural_light_level_cache ) ) {
-        int range = 0;
-        if( here.ambient_light_at( t ) > here.get_cache_ref( t.z() ).natural_light_level_cache ) {
-            range = MAX_VIEW_DISTANCE;
-        } else {
-            range = range_min;
-        }
-        if( has_effect( effect_no_sight ) ) {
-            range = 1;
-        }
-        if( range_mod > 0 ) {
-            range = std::min( range, range_mod );
-        }
-        if( is_avatar ) {
-            // Special case monster -> player visibility, forcing it to be symmetric with player vision.
-            const float player_visibility_factor = get_player_character().visibility() / 100.0f;
-            int adj_range = std::floor( range * player_visibility_factor );
-            return adj_range >= wanted_range &&
-                   here.get_cache_ref( posz() ).seen_cache[pos.x()][pos.y()] > LIGHT_TRANSPARENCY_SOLID;
-        } else {
-            return here.sees( pos, t, range );
-        }
-    } else {
-        return false;
-    }
+    const int adjusted_observer_range = std::floor( *observer_range *
+                                        ( target.visibility() / 100.0f ) );
+    return adjusted_observer_range >= wanted_range &&
+           here.sees( target_position, observer_position, adjusted_observer_range );
 }
 
 // Helper function to check if potential area of effect of a weapon overlaps vehicle

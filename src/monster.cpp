@@ -64,6 +64,8 @@
 #include "monfaction.h"
 #include "mongroup.h"
 #include "mtype.h"
+#include "multiplayer_player_registry.h"
+#include "multiplayer_player_runtime.h"
 #include "mutation.h"
 #include "npc.h"
 #include "options.h"
@@ -1650,6 +1652,13 @@ Creature *monster::attack_target()
         attitude_to( *target ) == Attitude::FRIENDLY || !sees( here,  *target ) ||
         target->is_hallucination() ) {
         return nullptr;
+    }
+    if( avatar *player = target->as_avatar() ) {
+        const shared_ptr_fast<multiplayer_player_runtime> runtime =
+            g->multiplayer_players().find_runtime( *player );
+        if( runtime == nullptr || !runtime->is_living_world_avatar() ) {
+            return nullptr;
+        }
     }
 
     return target;

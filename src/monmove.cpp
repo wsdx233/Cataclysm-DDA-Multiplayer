@@ -10,8 +10,10 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
+#include "avatar.h"
 #include "behavior.h"
 #include "bionics.h"
 #include "cata_assert.h"
@@ -21,6 +23,7 @@
 #include "damage.h"
 #include "debug.h"
 #include "effect.h"
+#include "effect_source.h"
 #include "enums.h"
 #include "field.h"
 #include "field_type.h"
@@ -37,6 +40,8 @@
 #include "monfaction.h"
 #include "mongroup.h"
 #include "monster_oracle.h"
+#include "multiplayer_player_registry.h"
+#include "multiplayer_player_runtime.h"
 #include "mtype.h"
 #include "npc.h"
 #include "options.h"
@@ -103,6 +108,47 @@ static const ter_str_id ter_t_lava( "t_lava" );
 static const ter_str_id ter_t_pit( "t_pit" );
 static const ter_str_id ter_t_pit_glass( "t_pit_glass" );
 static const ter_str_id ter_t_pit_spiked( "t_pit_spiked" );
+
+static avatar *living_avatar_at_monster_destination( const monster &mon )
+{
+    if( !mon.has_dest() ) {
+        return nullptr;
+    }
+    return g->multiplayer_players().find_living_world_avatar_at( mon.get_dest() );
+}
+
+bool monster::is_locked_on_to( const Creature &target ) const
+{
+    const Character *const character = target.as_character();
+    if( !target.is_avatar() || character == nullptr ||
+        !has_effect( effect_monster_locked_on ) ) {
+        return false;
+    }
+    const std::optional<character_id> source_id =
+        get_effect( effect_monster_locked_on ).get_source().get_character_id();
+    if( source_id ) {
+        return *source_id == character->getID();
+    }
+    // Old saves have no source on this short-lived effect.  Preserve the single-avatar
+    // behavior without allowing an unkeyed lock to match any avatar in a multiplayer world.
+    return g != nullptr && g->multiplayer_players().living_world_avatar_count() == 1 &&
+           &target == &get_player_character();
+}
+
+static void refresh_monster_lock_on( monster &mon, const avatar &target )
+{
+    if( mon.has_effect( effect_monster_locked_on ) ) {
+        const std::optional<character_id> source_id =
+            mon.get_effect( effect_monster_locked_on ).get_source().get_character_id();
+        if( source_id && *source_id != target.getID() ) {
+            return;
+        }
+        if( !source_id ) {
+            mon.remove_effect( effect_monster_locked_on );
+        }
+    }
+    mon.add_effect( effect_source( &target ), effect_monster_locked_on, 2_minutes );
+}
 
 bool monster::is_immune_field( const field_type_id &fid ) const
 {
@@ -276,8 +322,8 @@ bool monster::know_danger_at( map *here, const tripoint_bub_ms &p ) const
             }
 
             // Some things are only avoided if we're not attacking
-            if( get_player_character().pos_abs() != get_dest() ||
-                attitude( &get_player_character() ) != MATT_ATTACK ) {
+            avatar *const destination_target = living_avatar_at_monster_destination( *this );
+            if( destination_target == nullptr || attitude( destination_target ) != MATT_ATTACK ) {
                 // Sharp terrain is ignored while attacking
                 if( avoid_sharp && here->has_flag( ter_furn_flag::TFLAG_SHARP, p ) &&
                     !( type->size == creature_size::tiny || flies() ||
@@ -525,17 +571,53 @@ void monster::plan()
     std::bitset<OVERMAP_LAYERS> seen_levels = here.get_inter_level_visibility( posz() );
     monster_attitude mood = attitude();
     Character &player_character = get_player_character();
-    // If this monster locks on via LoS, refresh the locked-on tracking effect
-    if( has_flag( mon_flag_LOCKS_ON ) &&
-        sees( here, player_character.pos_bub( here ), true ) ) {
-        add_effect( effect_monster_locked_on, 2_minutes );
+    const bool single_world_avatar =
+        g->multiplayer_players().living_world_avatar_count() == 1;
+    avatar *best_human_target = nullptr;
+    float best_human_rating = FLT_MAX;
+    int best_human_target_count = 0;
+    for( const shared_ptr_fast<multiplayer_player_runtime> &runtime :
+         g->multiplayer_players().all() ) {
+        if( runtime == nullptr || !runtime->is_living_world_avatar() ) {
+            continue;
+        }
+        avatar &candidate = runtime->player();
+        if( single_world_avatar &&
+            has_flag( mon_flag_LOCKS_ON ) && sees_avatar_position( here, candidate ) ) {
+            refresh_monster_lock_on( *this, candidate );
+        }
+        const bool sees_candidate = sees( here, candidate );
+        if( friendly != 0 || !seen_levels.test( candidate.posz() + OVERMAP_DEPTH ) ||
+            !sees_candidate ) {
+            continue;
+        }
+        // Preserve the exact legacy single-avatar target-rating boundary.  Multi-avatar
+        // selection needs an uncapped rating so every visible human can be compared fairly.
+        const float rating = rate_target( candidate,
+                                          single_world_avatar ? mon_plan.dist : FLT_MAX,
+                                          mon_plan.smart_planning );
+        if( rating < best_human_rating ) {
+            best_human_rating = rating;
+            best_human_target = &candidate;
+            best_human_target_count = 1;
+        } else if( rating == best_human_rating ) {
+            ++best_human_target_count;
+            if( best_human_target_count == 1 || one_in( best_human_target_count ) ) {
+                best_human_target = &candidate;
+            }
+        }
     }
-    // If we can see the player, move toward them or flee.
-    if( friendly == 0 && seen_levels.test( player_character.posz() + OVERMAP_DEPTH ) &&
-        sees( here, player_character ) ) {
-        mon_plan.dist = rate_target( player_character, mon_plan.dist, mon_plan.smart_planning );
-        mon_plan.fleeing = mon_plan.fleeing || is_fleeing( player_character );
-        mon_plan.target = &player_character;
+    // If we can see a living player, move toward the best target or flee from them.
+    if( best_human_target != nullptr ) {
+        mon_plan.dist = best_human_rating;
+        mon_plan.fleeing = mon_plan.fleeing || is_fleeing( *best_human_target );
+        mon_plan.target = best_human_target;
+        // Direct position visibility deliberately excludes the tracking shortcut, so a lock
+        // cannot refresh itself after line of sight is lost or transfer to another avatar.
+        if( has_flag( mon_flag_LOCKS_ON ) &&
+            sees_avatar_position( here, *best_human_target ) ) {
+            refresh_monster_lock_on( *this, *best_human_target );
+        }
         if( !mon_plan.fleeing && anger <= 20 ) {
             anger += mon_plan.angers_hostile_seen;
         }
@@ -575,7 +657,8 @@ void monster::plan()
         return;
     }
 
-    int valid_targets = ( mon_plan.target == nullptr ) ? 0 : 1;
+    int valid_targets = mon_plan.target == nullptr ? 0 :
+                        ( mon_plan.target->is_avatar() ? best_human_target_count : 1 );
     for( npc &who : g->all_npcs() ) {
         mf_attitude faction_att = faction.obj().attitude( who.get_monster_faction() );
         if( faction_att == MFA_NEUTRAL || faction_att == MFA_FRIENDLY ) {
@@ -1042,11 +1125,12 @@ void monster::move()
             return; // don't move if friendly and passenger in a moving vehicle
         }
     }
-    // Set attitude to attitude to our current target
+    creature_tracker &creatures = get_creature_tracker();
+    // Set attitude to attitude to our current target.
     monster_attitude current_attitude = attitude( nullptr );
     if( !is_wandering() ) {
-        if( get_dest() == player_character.pos_abs() ) {
-            current_attitude = attitude( &player_character );
+        if( avatar *const destination_target = living_avatar_at_monster_destination( *this ) ) {
+            current_attitude = attitude( destination_target );
         } else {
             for( const npc &guy : g->all_npcs() ) {
                 if( get_dest() == guy.pos_abs() ) {
@@ -1079,7 +1163,6 @@ void monster::move()
     tripoint_bub_ms destination;
 
     bool try_to_move = false;
-    creature_tracker &creatures = get_creature_tracker();
 
     // Check z-level neighbors too so creatures on stairs aren't falsely stuck
     for( const tripoint_bub_ms &dest : here.points_in_radius( pos_bub(), 1, 1 ) ) {
@@ -1959,12 +2042,12 @@ std::map<damage_type_id, int> monster::group_bash_skill( const tripoint_bub_ms &
 bool monster::attack_at( const tripoint_bub_ms &p )
 {
     const map &here = get_map();
+    creature_tracker &creatures = get_creature_tracker();
 
     // Aquatic monsters that are underwater should not be able to attack
     // through the surface above them, except they may attack other monsters
     // that are also underwater (fish fighting under the ice).
     if( is_underwater() && here.has_flag( ter_furn_flag::TFLAG_SWIM_UNDER, pos_bub() ) ) {
-        creature_tracker &creatures = get_creature_tracker();
         monster *target_mon = creatures.creature_at<monster>( p );
         if( !( target_mon != nullptr && target_mon->is_underwater() ) ) {
             return false;
@@ -1975,20 +2058,18 @@ bool monster::attack_at( const tripoint_bub_ms &p )
         return false;
     }
 
-    Character &player_character = get_player_character();
-    const bool sees_player = sees( here, player_character );
-    // Targeting player location
-    if( p == player_character.pos_bub() &&
+    avatar *const target_player =
+        g->multiplayer_players().find_living_world_avatar_at( here.get_abs( p ) );
+    if( target_player != nullptr &&
         ( p.z() == pos_bub().z() || here.on_matching_stairs( pos_bub(), p ) ) ) {
-        if( sees_player ) {
-            return melee_attack( player_character );
+        if( sees( here, *target_player ) ) {
+            return melee_attack( *target_player );
         } else {
             // Creature stumbles into a player it cannot see, briefly becoming aware of their location
-            return stumble_invis( player_character );
+            return stumble_invis( *target_player );
         }
     }
 
-    creature_tracker &creatures = get_creature_tracker();
     if( monster *mon_ = creatures.creature_at<monster>( p, is_hallucination() ) ) {
         monster &mon = *mon_;
 
@@ -2026,6 +2107,8 @@ bool monster::attack_at( const tripoint_bub_ms &p )
     }
 
     // Attack last known position despite empty
+    Character &player_character = get_player_character();
+    const bool sees_player = sees( here, player_character );
     if( has_effect( effect_stumbled_into_invisible ) &&
         here.has_field_at( p, field_fd_last_known ) && !sees_player &&
         attitude_to( player_character ) == Attitude::HOSTILE ) {

@@ -173,6 +173,16 @@ multiplayer_player_status multiplayer_player_runtime::status() const
     return impl_->status;
 }
 
+bool multiplayer_player_runtime::is_living_world_avatar() const
+{
+    const bool simulation_thread = g != nullptr && g->is_simulation_thread();
+    cata_assert( simulation_thread );
+    return simulation_thread &&
+           ( impl_->status == multiplayer_player_status::active ||
+             impl_->status == multiplayer_player_status::offline ) &&
+           !player().is_dead_state();
+}
+
 bool multiplayer_player_runtime::begin_session()
 {
     if( impl_->status != multiplayer_player_status::importing &&
