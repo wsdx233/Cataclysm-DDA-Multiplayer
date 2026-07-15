@@ -25,6 +25,7 @@ on:
       - 'android/**'
       - 'build-scripts/**'
       - 'data/**'
+      - '!data/mods/TEST_DATA/**'
       - 'gfx/**'
       - 'lang/**'
       - 'msvc-full-features/**'
@@ -67,6 +68,7 @@ on:
       - 'android/**'
       - 'build-scripts/**'
       - 'data/**'
+      - '!data/mods/TEST_DATA/**'
       - 'gfx/**'
       - 'lang/**'
       - 'msvc-full-features/**'
@@ -214,6 +216,8 @@ jobs:
                     ;;
                   build-scripts/*)
                     select_all
+                    ;;
+                  data/mods/TEST_DATA/*)
                     ;;
                   data/*|lang/*|src/get_version.h|src/version.cpp)
                     select_all
