@@ -2,14 +2,17 @@
 
 - 更新日期：2026-07-15
 - 分支：`multiplayer/main`
-- 当前 implementation source：`6fe9be5ce8a6cca137b04b08002184c8ec8b0eb6`
+- 当前 implementation source：`53a81955f54f5517e58f5ab1b2e92c76d0ff034b`
+- 当前 workflow sources：`d83d94e96caf37862d2152b1adcce697367ec350`、
+  `ba041c23b219b14df8918093f40c82fd761451cf`
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
 - 当前阶段：**Phase 3，第二玩家/shared scheduler**
 - 当前 active gate：**Gate 3，two-runtime owner 与共享规则矩阵**
 - 已关闭 gate：Gate 1 selected-root lifecycle contract；Gate 2 production single-root lifecycle
 - Gate 3 已关闭 slice：slice 1 inner barrier owner contract；slice 2 thin command router/basic move isolation；
-  slice 3 typed human collision/order authority；4A.1 ordinary hostile monster target/basic melee
-- ADR 状态：ADR-0001 至 ADR-0011 均已接受
+  slice 3 typed human collision/order authority；4A.1 ordinary hostile monster target/basic melee；
+  4A.2a.1 candidate-specific instantaneous human attitude/basic non-hostile melee guard
+- ADR 状态：ADR-0001 至 ADR-0011 已接受；ADR-0012 monster provocation scope 待决策
 - 配置约束：`players.max = 1`；Gate 3 owner/rule/process gates 关闭前不得提高
 - 当前验证策略：**Tier 1 Linux-first + production reachability**；internal/test-only slice 不强制 process smoke，
   baseline 手工入口默认 `target=linux`，只有完成的关键平台/公共/发布批次才升级对应平台
@@ -106,11 +109,28 @@ Gate 3 **4A.1** 由 source `6fe9be5ce8a6cca137b04b08002184c8ec8b0eb6` 收口，�
   另一 avatar 或显露无关隐身玩家；Tindalos teleport 只消费当前 target 的 exact lock。
 
 4A.1 仅关闭 ordinary hostile target candidate、target-specific visibility、equal-rating fairness、basic
-`attack_at()`/`move()` melee 和 exact target-keyed `LOCKS_ON` consumer。direct special attacks、last-known-invisible
-行为与差异化 per-target attitude/hostility 仍属 4A.2；observer-filtered messages/SFX 保留在后续 dedicated
-isolation gate；death/game-over 及 save/fail-stop 属 4B。
+`attack_at()`/`move()` melee 和 exact target-keyed `LOCKS_ON` consumer。
 
-前三个 Gate 3 slices 仍只是 inner barrier/rule contracts；4A.1 的 generic gameplay source 会链接进 Linux native
+Gate 3 **4A.2a.1** 由 source `53a81955f54f5517e58f5ab1b2e92c76d0ff034b` 收口，但不代表完整 4A.2 或
+per-target hostility 完成：
+
+- 多 living-avatar `monster::plan()` 先从 visible living humans 中以 rating/公平 tie 选择一个 observer，shared
+  anger/morale triggers 每次 plan 只执行一次；trigger 完成后再独立计算每个 exact candidate 的
+  `attitude()`/`is_fleeing()`，ignored human 不再覆盖 actionable target；
+- flee threat class 优先于普通 `MATT_ATTACK` class，同类内再按 rating/公平 tie；`KEEP_DISTANCE` 使用 exact
+  candidate position，而不是其他玩家留下的 `get_dest()`；
+- 最终 Character target 重新拥有其 flee disposition；后续 monster target replacement 清除 human-specific fear，
+  避免 pre-plan global mood 或较早 human 候选污染最终目标；
+- 多 living-avatar basic `attack_at()` 对非 HOSTILE living avatar 在 moves、HP 和 action side effect 前返回 false；
+  single living-avatar neutral attack routing 保持 legacy；unique multi candidate case 不额外消费 RNG。
+
+当前 shared trigger observer 与最终 target 是两个独立公平 reservoir，observer 不保证是目标，也没有实现 all-human
+trigger aggregation。`aggro_character` 仍是 monster-wide serialized bool；玩家 A 的挑衅是否授权攻击 B 属
+ADR-0012 待决策的 4A.2a.2。direct specials、gun exact target lock、projectile actual hit、last-known-invisible exact
+identity、fixed-root hardcoded specials、forced movement、interactive/targetless/AoE 和 messages/SFX 均未关闭。
+`living_world_avatar_count() > 1` 才进入新分支；只剩一个存活玩家时回退 legacy，4B 必须重审 one-survivor policy。
+
+前三个 Gate 3 slices 仍只是 inner barrier/rule contracts；4A.1/4A.2a.1 的 generic gameplay source 会链接进 Linux native
 binary，但本批 process smoke 只执行 CLI `--version`，没有运行 client gameplay。single-avatar gameplay 与
 two-runtime behavior 都由 in-process tests 覆盖，后者仍为 `test-only`。production 继续使用 **single-root** owner；
 没有 actual two-runtime bubble、session/resume owner、第二 client routing 或 save transaction。`players.max` 必须
@@ -122,12 +142,12 @@ two-runtime behavior 都由 in-process tests 覆盖，后者仍为 `test-only`�
 | --- | --- | --- |
 | Transport/lobby | connection、token mirror、pending admission、typed ordered close/rejection、closing priority | 双连接 admission/routing 仍未开放 |
 | Session directory | stable identity/binding/generation、two-stage commit/confirmation、graceful pending、exact offline/reactivation | multi-runtime roster transition 尚未接入 production owner |
-| Registry/runtime | 地址稳定 avatar/runtime、active/offline/dead、active-player guard、plain-move tracker identity、other-human/living-human exact-position lookup、living world eligibility | 4A.2 direct-special policy、death transition、forced-movement collision 与复杂规则 selected-context |
+| Registry/runtime | 地址稳定 avatar/runtime、active/offline/dead、active-player guard、plain-move tracker identity、other-human/living-human exact-position lookup、living world eligibility | ADR-0012 provocation identity、direct-special policy、death transition、forced-movement collision 与复杂规则 selected-context |
 | Scheduler | immutable roster、round-robin、disconnect grace、forced-wait pending、world ticket、fault latch | production two-runtime roster/routing；inner move/wait fairness 已验证 |
 | Phase adapter | scoped action/wait/bookkeeping、world claim callback、post-effect fail-stop、blocked collision 不记 action | 第二 runtime 的 monster/death 与其余规则矩阵 |
 | Multi-runtime barrier owner | immutable/pinned roster、persistent fairness、two-runtime wait/forced wait/plain move、explicit player-end pending receipt | 无 production caller、actual bubble、session/resume/root-selection/outer save owner |
 | Multi-runtime command router | exact-current owner callback、shared basic executor、typed disposition、verified adjacent empty-ground move、typed human block/exact blocker/order conflict | 无 outer visibility/revision/dedup/transport/admission；monster/NPC 与复杂 movement 未关闭 |
-| Monster world rules | 4A.1 ordinary hostile living-human candidates、target-specific visibility、equal-rating fairness、basic melee routing、target-keyed `LOCKS_ON`/Tindalos consumer | 4A.2 direct specials、last-known invisible、差异化 per-target attitude/hostility；observer-filtered messages/SFX 属后续 isolation；无 production multi-runtime caller |
+| Monster world rules | 4A.1 ordinary hostile living-human candidates/visibility/basic melee/target-keyed lock；4A.2a.1 candidate-specific instantaneous attitude、flee priority、candidate `KEEP_DISTANCE`、basic non-hostile guard | ADR-0012 global/target-keyed provocation scope/persistence；specials、gun/projectile、last-known invisible、fixed-root/forced/AoE；observer-filtered messages/SFX；无 production multi-runtime caller |
 | Single-root owner | directory/scheduler/lifecycle/adapter、dormant/resume、safe save disposition | 固定拒绝 `maximum_players != 1`，不得直接扩容 |
 | Dedicated server | outer/active pump、completed-scene cache、typed fatal/no-save、真实 curses/headless loop | test-only 双连接开关和双 client smoke/soak 尚未实现 |
 
@@ -275,7 +295,103 @@ terminal 后才可作为 workflow/artifact 证据，不能外推为 Gate 3 gamep
 workflow 文件自身仍会 `select_all`，所以本 source 推送后可能有一次全 package run；后续 CI-cost slice 应把纯
 dispatch/selector control 变更分流到轻量静态 gate，真正 package-job 变化仍保留全矩阵。
 
+### 4A workflow safe-boundary 与 TEST_DATA 路由修复
+
+source `a7225e28f91a1bc52992d05b67b93d35aaaa712a` 的 baseline run
+[`29437215379`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29437215379) 已 terminal
+`success`：selector/resources/Linux curses/Windows MSVC/Android arm64 package 全绿。它是当前最近兼容 package
+evidence，不是 4A.2a.1 gameplay source 的 Windows/Android 编译证据。
+
+同 source 的 transport run
+[`29437215518`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29437215518) 在 Linux job 的
+`Run actual headless server command/resume smoke` 失败；此前 production build 与完整 `[multiplayer]` 已成功，
+Windows/Android isolated probes 按 routine source policy skipped。复现确认 client 以 `0` 完成最终 changed-payload
+sequence-conflict 后，server 已打开新的 owned turn，连接进入默认 30 秒 `disconnected_grace`；workflow 立即发送
+SIGTERM，因此没有 exact player-end receipt。server 按 ADR-0011 正确返回 `save_refused(disposition=2)`、
+`runtime_failed` 和 exit `1`，不是 gameplay assertion 或 save-boundary 实现错误。
+
+workflow source `d83d94e96caf37862d2152b1adcce697367ec350` 将该 smoke 的
+`disconnect_grace_seconds` 固定为 `3`，client 完成后等待 `5` 秒再请求 shutdown。两次失败复现和一次修复验证分别在
+`/tmp/cdda-step11-monitor-20260715T182235Z`、`/tmp/cdda-step11-repeat-explicit-20260715T182556Z`、
+`/tmp/cdda-step11-proposed-fix-20260715T182808Z`；修复后 client/server 均 exit `0`，generation 4 disconnect、
+`save_completed` 和 `shutdown` 存在，无 `save_refused`/`runtime_failed`，stderr 为空。process smoke 的 durable
+contract 是：open-turn disconnect 必须先让 grace/forced-wait/world/player-end 到达 clean boundary，再请求可保存退出；
+不得删除 exit/save assertions 来掩盖 race。
+
+workflow source `ba041c23b219b14df8918093f40c82fd761451cf` 修复自动成本路由：baseline push/PR paths 排除
+`data/mods/TEST_DATA/**`，selector 也先忽略该路径；transport workflow 将 TEST_DATA 以及当前/后续 monster
+4A source 明确路由到 automatic Linux production gate。actionlint 1.7.12、PyYAML mapping assertions、两个 selector
+run block 的 `bash -n` 和临时 Git history 动态测试通过：TEST_DATA-only transport 输出
+`linux=true windows=false android=false`，TEST_DATA + `Makefile` baseline 输出
+`linux=true windows=false android=false`。workflow source 自身变化仍按 CI-contract 触发一次 Windows/Android gate；
+新 hosted runs terminal 前只能记录为 pending，不能声称修复已 hosted 接受。
+
 ## 当前 source 验证证据
+
+### Gate 3 4A.2a.1 Linux release、规则回归、完整多人 suite 与格式
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+make -j"$(nproc)" AUTO_BUILD_PREFIX=1 \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 ASTYLE=0 \
+  tests release-local-back-cataclysm
+
+./tests/release-local-back-cata_test \
+  '[multiplayer][monster_target]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-gate3-monster-attitude-focused6
+
+./tests/release-local-back-cata_test \
+  'monster_attack' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-gate3-monster-attitude-final2-attack
+
+./tests/release-local-back-cata_test '[multiplayer]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-gate3-monster-attitude-final2-full
+
+./release-local-back-cataclysm --version
+make \
+  ASTYLE_BINARY="$HOME/.cache/cdda-tools/astyle-3.1-3build1/root/usr/bin/astyle" \
+  astyle-check
+tools/format/json_formatter.cgi data/mods/TEST_DATA/monsters.json
+git diff --check
+```
+
+结果：
+
+- GCC 13 incremental release game/tests 与 curses binary 编译链接成功；`--version` 当时报告
+  `a7225e2-dirty`、multiplayer build id `a7225e2...-dirty`、`-tiles, -sound`。该 CLI 只证明相同源码内容已进入
+  Linux native binary，不证明 client gameplay 或当前 clean commit build ID；
+- focused monster target/attitude：15 cases / 452 assertions，全过；包含 nearer ignored root vs farther hostile
+  secondary、unique target no-extra-RNG、selected flee disposition、flee priority、candidate `KEEP_DISTANCE`、shared
+  trigger-before-filter、basic neutral zero-side-effect 和 single-avatar legacy regression；
+- 既有 `monster_attack`：1 case / 1,170 assertions，全过；
+- 完整 `[multiplayer]`：158 cases；156 passed + 2 个既有 `[!mayfail]` full-avatar move-swap identity 负面对照；
+  8,805 assertions 中 8,802 passed + 3 expected failures；exit 0；
+- AStyle 3.1、TEST_DATA JSON formatter 和 `git diff --check` 通过；最终 source review 无 blocker
+  或 medium-risk finding。
+
+changed generic gameplay source 的 product reachability 为 `client`，但本次 multi-runtime attitude behavior 仍为
+`test-only`：production 只有 single-root owner，没有 actual two-runtime bubble/route。本批未增加不能到达新分支的
+伪 headless/two-client process gate；single-avatar compatibility 由 focused in-process tests 覆盖。
+
+### Gate 3 4A.2a.1 Linux sanitizer
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+CXXFLAGS='-Wno-array-bounds -Wno-stringop-overread -Wno-maybe-uninitialized' \
+  make -j"$(nproc)" AUTO_BUILD_PREFIX=1 \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 ASTYLE=0 \
+  SANITIZE=address,undefined tests
+
+ASAN_OPTIONS='detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1:abort_on_error=1' \
+UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1' \
+./tests/release-local-back-sanitize-cata_test \
+  '[multiplayer][monster_target]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-gate3-monster-attitude-final-sanitize
+```
+
+结果：final-source rebuild 后 15 cases / 452 assertions 全过；无 ASan、UBSan、LSan 或
+stack-use-after-return finding。warning suppression 沿用 GCC 13 对 unchanged-source/libstdc++ 的既有 sanitizer
+构建处理，sanitizer 与 fail-fast flags 始终启用。
 
 ### Gate 3 4A.1 Linux release、规则回归、完整多人 suite 与格式
 
@@ -848,19 +964,31 @@ gameplay command。
 
 ## 最近关闭 slice 的平台判定
 
-本批选择 Tier 1，因为 Gate 3 4A.1 修改的是 backend-neutral gameplay rule、registry/runtime 内部 policy、TEST_DATA
-fixture 与 tests。收口后使用下述 current-source diff 审计：
+当前 gameplay batch 选择 Tier 1，因为 Gate 3 4A.2a.1 修改的是 backend-neutral internal gameplay `.cpp`、
+TEST_DATA fixture 与 tests。workflow boundary 必须与 gameplay source 分开审计。current gameplay diff 为：
 
 ```bash
 git diff --name-status \
-  4f7fed7d9455d767fee37e6aba39e14c68dd8d2d..6fe9be5ce8a6cca137b04b08002184c8ec8b0eb6
+  ba041c23b219b14df8918093f40c82fd761451cf..53a81955f54f5517e58f5ab1b2e92c76d0ff034b
 ```
 
 审计未发现 Android/Windows-owned source、platform conditional、wire schema/version/capability、public DTO/
-serialization、external ABI、shared source list、workflow、artifact 或 pinned toolchain 变化。`creature.h`、
-`monster.h` 与 multiplayer registry/runtime header 的新增声明都是 repo-internal gameplay API，不是公共 wire/ABI
-boundary，也没有平台分支。因此本批不运行 Windows MSVC package、Android APK/NDK 或 emulator/device；这是按策略
-未运行，不是 blocker，也不构成当前 4A.1 source 的 Windows/Android 编译或运行证据。
+serialization、external ABI、shared source list、workflow、artifact 或 pinned toolchain 变化；只有
+`src/monmove.cpp`、`src/monster.cpp`、multiplayer monster tests 和 TEST_DATA fixture。因此 gameplay batch 不要求
+Windows MSVC package、Android APK/NDK 或 emulator/device；这是按策略未运行，不是 blocker，也不构成
+`53a81955...` 的 Windows/Android 编译或运行证据。
+
+workflow diff 单独为：
+
+```bash
+git diff --name-status \
+  a7225e28f91a1bc52992d05b67b93d35aaaa712a..ba041c23b219b14df8918093f40c82fd761451cf
+```
+
+它只修改两个 GitHub Actions workflow：`d83d94e...` 修复 Linux headless safe-boundary wait，`ba041c2...` 修复
+TEST_DATA/package selector 与 monster Linux gate 路由。actionlint、selector syntax/dynamic assertions 和本地真实
+headless/client reproduction 已通过；由于 workflow 自身是 CI-contract boundary，push 后按规则会运行一次相应 hosted
+gates。在 terminal 结果写回前，该 boundary 保持 hosted pending，不能与 gameplay Tier 1 证据合并宣称。
 
 前一 Gate 3 slice 3 的平台判定沿用下述历史 diff 审计：
 
@@ -878,10 +1006,10 @@ ABI/header、source list 或平台 owned code，必须重新分类并补第 20.6
 
 最近兼容的历史证据：
 
-- source `4f7fed7d9455d767fee37e6aba39e14c68dd8d2d` 的 baseline run `29428814425` terminal
-  `success`，selector/resource/Linux/Windows/Android package jobs 全绿。该 run 由 workflow-control 变化触发，发生在
-  4A.1 source 之前；它只说明未变化的平台/产物边界有兼容证据，不证明
-  `6fe9be5ce8a6cca137b04b08002184c8ec8b0eb6` 已在 Windows/Android 编译或运行。
+- source `a7225e28f91a1bc52992d05b67b93d35aaaa712a` 的 baseline run `29437215379` terminal
+  `success`，selector/resource/Linux/Windows/Android package jobs 全绿。它只说明未变化的平台/产物边界有兼容
+  evidence，不证明 `53a81955...` 已在 Windows/Android 编译或运行；同 source transport run `29437215518` 的
+  safe-boundary workflow failure 与修复状态见上文。
 - Gate 1 source `cbd19b48d652be735a3c83fe841d2d7c831aecba` 的 Linux production run `29392575820` terminal
   `success`；Windows/Android jobs 精确 skipped。
 - protocol minor `1` public-boundary source `eb990c4ad9975915336f3acd65431b47d123e842` 的 baseline run
@@ -897,10 +1025,12 @@ ABI/header、source list 或平台 owned code，必须重新分类并补第 20.6
 - production wait/move 都消耗完整 standard move budget。owner exact test 已覆盖
   `accepted_remains_eligible -> second command`；未来任何自然保留 moves 的 executor 启用前，必须增加真实 process
   回归。
-- 4A.1 只关闭 ordinary hostile planner、basic melee 与 exact-target `LOCKS_ON`。direct special、
-  last-known-invisible、candidate-specific attitude/hostility、messages/SFX 和 production two-runtime caller 仍未关闭；
-  不能据此宣称 production server 中怪物已能正确攻击任一玩家。production game-over/death 当前仍进入 typed
-  fatal/no-save；player death 和可证明的 death save boundary 属 4B。
+- 4A.1 只关闭 ordinary hostile planner/basic melee/exact-target `LOCKS_ON`；4A.2a.1 只关闭 candidate-specific
+  instantaneous attitude、flee disposition 与 basic non-hostile `attack_at()` guard。shared trigger 仍只使用一个 fair
+  observer，`aggro_character` 仍为 global bool，direct specials/gun/projectile/last-known/fixed-root/forced/AoE 和
+  production two-runtime caller 均未关闭；不能据此宣称 production server 中怪物已能正确攻击任一玩家。
+  production game-over/death 当前仍进入 typed fatal/no-save；player death、one-survivor fallback 和可证明的 death
+  save boundary 属 4B。
 - adjacent semantic move 的 human occupied destination 已关闭为 typed authoritative block，但没有批准 implicit swap/PvP，
   也没有证明 teleport/knockback/fling/vehicle/phasing 或直接 `place_player()` 等 forced-movement path 的全局 collision
   invariant。monster direct-special/NPC attack、door/furniture/vehicle/grab/phasing/swim、field/trap/effect 等复杂
@@ -926,20 +1056,35 @@ ABI/header、source list 或平台 owned code，必须重新分类并补第 20.6
 - 4A.1 已关闭 ordinary hostile human candidate、target-specific visibility、equal-rating fixed-root bias、basic
   `attack_at()`/`move()` melee 和 exact target-keyed `LOCKS_ON`；eligible world avatars 是 living `active`/`offline`，
   importing、runtime-dead 与 avatar-dead 不参与。
-- `monattack.cpp` 中其余 direct special、`attack_at()` 的 last-known-invisible fixed-root branch 与差异化 per-target
-  attitude/hostility 没有被 4A.1 覆盖，继续作为 4A.2；observer-filtered messages/SFX 保留在后续 dedicated
-  isolation gate。不能用 Tindalos exact-lock consumer 的证据外推为全部 monster special 已关闭。
+- 4A.2a.1 已关闭 static candidate attitude/flee/`KEEP_DISTANCE` 和 basic non-hostile melee guard；shared trigger
+  observer 与最终 target 分离，未聚合 all humans。`aggro_character` 的 global vs target-keyed provocation 是
+  ADR-0012 决策门，不能用当前 static attitude 证据外推。
+- `monattack.cpp` 中 generic non-forced melee/bite/EOC/leap 可以形成 explicit-target regression slice；
+  `gun_actor::try_target()` 的 unkeyed `effect_targeted`、`sting_shoot`/`para_sting` 的 intended-vs-actual projectile hit、
+  last-known-invisible fixed-root branch、fungus/grenadier/nurse 等 hardcoded root special、forced movement 和
+  interactive/targetless/AoE 必须分别关闭。observer-filtered messages/SFX 保留在 dedicated isolation gate。
 - `game::is_game_over()`、`turn_handler::cleanup_at_end()` 和全局 `uquit` 都是 single-avatar/global UI 语义，不能复用为
   单玩家死亡。4B 必须单独定义“一个玩家死亡但 world 继续”“全员死亡 terminal”及 runtime/save/fail-stop boundary。
 - `multiplayer_player_runtime::mark_dead()` 已有状态转换，但当前 game wrapper 拒绝标记 active runtime；4B 在修改前要
   明确 transition owner 和 exact safe point，不能先用全局 game-over 流程拼接。
 
-首个具体动作是 4A.2：枚举 direct special、last-known-invisible 与 remaining target/attitude fixed-root seams，先按
-是否能携带 explicit `Creature` target 分类，再决定逐项适配或 fail-closed。首个命令：
+当前首个操作是完成 workflow boundary 的 hosted acceptance：推送本批后取得 baseline/transport run ID，等待两者
+terminal，并把 job/result/artifact 或失败根因写回 `STATUS.md` 与 build baseline。首个命令：
 
 ```bash
-rg -n 'get_player_character\(\)|get_avatar\(\)|monster_locked_on|attack_target\(' \
-  src/monattack.cpp src/monmove.cpp src/monster.cpp
+git push origin multiplayer/main
+curl -fsSL --retry 3 \
+  'https://api.github.com/repos/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs?branch=multiplayer%2Fmain&per_page=10' | \
+  jq '.workflow_runs[] | {id, name, status, conclusion, head_sha, html_url}'
+```
+
+hosted boundary 关闭后的首个 gameplay 动作才是 4A.2a.2：用现有写入/读取点补全 ADR-0012 的 A 挑衅/B 未挑衅、
+active/offline/dead、join/remove 和 save/load 矩阵，再选择保留 global 或引入稳定 `character_id` provocation。
+首个代码审计命令：
+
+```bash
+rg -n 'aggro_character|angers_hostile|fears_hostile|attitude\(' \
+  src/monster.cpp src/monmove.cpp src/monattack.cpp src/mattack_actors.cpp tests
 ```
 
 Gate 3 的 ordered slices：
@@ -953,16 +1098,27 @@ Gate 3 的 ordered slices：
 4. **已关闭 4A.1，source `6fe9be5ce8a6cca137b04b08002184c8ec8b0eb6`：** ordinary hostile living-human
    candidates、target-specific visibility、equal-rating fairness、basic movement melee 和 exact target-keyed
    `LOCKS_ON`/Tindalos consumer。generic source 为 `client` 可达，two-runtime behavior 仍为 `test-only`。
-5. **当前 4A.2：monster direct special/remaining target policy。** 关闭 direct special、last-known-invisible 与差异化
-   per-target attitude/hostility；不把 observer-filtered messages/SFX 的完整隔离扩进本 slice，也不为无 production
-   caller 的路径跑伪 process gate。
-6. **4B：death/game-over safe boundary。** 覆盖单玩家死亡、仍有存活玩家、全员死亡、runtime transition 与
+5. **已关闭 4A.2a.1，source `53a81955f54f5517e58f5ab1b2e92c76d0ff034b`：** fair observer/shared trigger、
+   exact actionable attitude、flee priority、candidate `KEEP_DISTANCE`、final-target disposition、basic non-hostile guard；
+   multi-runtime behavior 仍为 `test-only`。
+6. **当前 4A.2a.2：ADR-0012 provocation scope。** 先选 global 或 target-keyed stable-ID semantics，再修改
+   serialized state/authorization；未接受前保持实现冻结。
+7. **4A.2b：generic non-forced explicit-target specials。** 为 melee/bite/EOC/leap 等直接携带 Creature target 的路径
+   增加 exact target、single execution、no fixed-root regression。
+8. **4A.2c：gun exact target lock。** 将 `effect_targeted` acquisition/refresh/clear 绑定 exact Character source。
+9. **4A.2d：projectile actual-hit ownership。** status/damage 只作用于 projectile authoritative actual hit，不作用于
+   intended target。
+10. **4A.2e：exact last-known-invisible identity。** 使用稳定 source ID/registry lookup；不得回落 fixed root。
+11. **4A.2f：fixed-root hardcoded specials。** 分批迁移 fungus、grenadier、nurse 等审计命中的 root seams。
+12. **4A.2g：forced movement、interactive、targetless/AoE policy。** 分别显式适配或 fail-closed，不能共享一个宽泛
+    “specials complete”声明；messages/SFX 仍不扩入本 gate。
+13. **4B：death/game-over safe boundary。** 覆盖单玩家死亡、仍有存活玩家、全员死亡、runtime transition 与
    save/fail-stop disposition。默认增加完整 `[multiplayer]` 和定向 sanitizer；只有接入 production shutdown/save 路径
    后才跑 Linux headless/native-client process regression。
-7. field/scent/NPC。
-8. tether/group shift。
-9. messages/safe-mode/stats/player-scoped cache isolation。
-10. 仅在上述 owner/rule gates 绿色后，增加 test-only 双连接 routing；运行 Linux headless server + 两个 Linux native
+14. field/scent/NPC。
+15. tether/group shift。
+16. messages/safe-mode/stats/player-scoped cache isolation。
+17. 仅在上述 owner/rule gates 绿色后，增加 test-only 双连接 routing；运行 Linux headless server + 两个 Linux native
    clients smoke，再完成 60 分钟 soak；之后才评估开放
    `players.max > 1`。
 

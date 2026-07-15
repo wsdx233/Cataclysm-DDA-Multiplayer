@@ -9,7 +9,7 @@
 1. [`AGENTS.md`](../../AGENTS.md)：操作约束、当前阶段门禁、工具链和交接规则。
 2. [`STATUS.md`](STATUS.md)：最近一次工作快照、验证结果、阻塞项和下一步。
 3. [`MULTIPLAYER_REFACTOR_PLAN.md`](MULTIPLAYER_REFACTOR_PLAN.md)：完整产品范围、目标架构、阶段路线和测试策略。
-4. [`adr/README.md`](adr/README.md)：与当前任务相关的已接受或待验证决策。
+4. [`adr/README.md`](adr/README.md)：与当前任务相关的已接受、待决策或待验证决策。
 5. [`MULTIPLAYER_BUILD_BASELINE.md`](MULTIPLAYER_BUILD_BASELINE.md)：涉及构建、CI、依赖或发布产物时必读。
 6. [`DO_TURN_PHASE_AUDIT.md`](DO_TURN_PHASE_AUDIT.md)：涉及 turn loop、scheduler、world phase 或
    活动玩家 getter 时必读。

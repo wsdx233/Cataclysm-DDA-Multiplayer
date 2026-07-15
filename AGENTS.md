@@ -109,22 +109,33 @@ Gate 3 source `6fe9be5ce8a6cca137b04b08002184c8ec8b0eb6` closes only **4A.1**, t
 melee slice. World rules now enumerate explicit living `active`/`offline` registry avatars, exclude importing,
 runtime-dead and avatar-dead entries, use each target's visibility, select equal-rated humans without fixed-root bias,
 and route `attack_at()`/`move()` melee to the exact selected avatar. `LOCKS_ON` is bound to the exact target character
-and Tindalos consumes only that target's lock. Direct special attacks, last-known-invisible behavior, differentiated
-per-target attitude/hostility, messages/SFX and all death/game-over policy remain outside 4A.1.
+and Tindalos consumes only that target's lock.
+
+Gate 3 source `53a81955f54f5517e58f5ab1b2e92c76d0ff034b` closes only **4A.2a.1**, candidate-specific
+instantaneous human attitude for the ordinary planner/basic-melee seam. Multi-avatar planning selects one fair visible
+observer for once-per-plan shared triggers, then independently filters actionable exact targets; flee threats precede
+ordinary attack targets, `KEEP_DISTANCE` uses the candidate position, and a final Character target owns its flee
+disposition. Multi-avatar `attack_at()` rejects non-hostile humans before moves or damage. The serialized
+`aggro_character` flag remains monster-wide, single-living-avatar behavior remains legacy, and direct specials,
+projectile actual-hit ownership, last-known-invisible identity, forced movement, messages/SFX and death/game-over remain
+open. ADR-0012 is `待决策` and blocks target-keyed provocation implementation.
 
 The first owner slice has local Linux focused/full-multiplayer and ASan/UBSan/LSan evidence plus a Linux curses client
 version smoke. Slice 2 has Linux focused/full-multiplayer, targeted sanitizer and native curses PTY regression evidence
 recorded precisely in `STATUS.md`; the PTY protects the unchanged single-root route, not a two-runtime production
 caller. Slice 3 has Linux focused/full-multiplayer, targeted sanitizer and format evidence recorded in
-`STATUS.md`; it has no production caller, so no process/PTY rerun is required. 4A.1 has Linux release/focused/full,
-targeted ASan/UBSan/LSan, format and native curses `--version` evidence. Its generic gameplay source is client-reachable,
-but the process smoke proves only Linux native binary compile/link and the CLI version path; single-avatar gameplay
-behavior is covered by in-process focused regressions, and the two-runtime behavior remains test-only. Gate 2 retains
-its open-turn save-hash evidence. These Gate 3 diffs do not change wire/schema/version,
+`STATUS.md`; it has no production caller, so no process/PTY rerun is required. 4A.1 and 4A.2a.1 have Linux
+release/focused/full, targeted ASan/UBSan/LSan, format and native curses `--version` evidence. Their generic gameplay
+source is client-reachable, but the process smoke proves only Linux native binary compile/link and the CLI version path;
+single-avatar behavior is covered by in-process regressions, and multi-runtime behavior remains test-only. Gate 2
+retains its open-turn save-hash evidence. These gameplay diffs do not change wire/schema/version,
 serialization, external ABI, platform conditionals, shared build lists, pinned toolchains or Windows/Android-owned code,
 so Windows/Android remain intentionally unrun. The latest compatible hosted package evidence is successful baseline
-run `29428814425` for source `4f7fed7d9455d767fee37e6aba39e14c68dd8d2d`; it is not current 4A.1 platform
-evidence. Routine Phase 3 work remains Linux-first under the validation policy below.
+run `29437215379` for source `a7225e28f91a1bc52992d05b67b93d35aaaa712a`; it is not current 4A.2a.1 platform
+evidence. Workflow sources `d83d94e96caf37862d2152b1adcce697367ec350` and
+`ba041c23b219b14df8918093f40c82fd761451cf` wait for the headless disconnect grace boundary and route monster
+source/tests/`TEST_DATA` through Linux production gates while excluding test fixtures from package selection. Their
+hosted acceptance must be recorded only after the new runs are terminal. Routine Phase 3 work remains Linux-first.
 
 The active work, in order, is:
 
@@ -132,9 +143,12 @@ The active work, in order, is:
    `2eccb92087991966423c18b63f6ef707462b1428`, `3204f8f45606a20ea6ab0892369b9806f89c4353` and
    `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` as inner barrier/rule contracts only; do not wire them directly into the
    production single-root loop or mistake their lambda world callback for actual bubble evidence. Treat
-   `6fe9be5ce8a6cca137b04b08002184c8ec8b0eb6` as the scoped 4A.1 rule seam, not a production multi-runtime caller.
-2. Close 4A.2 direct monster specials, last-known-invisible behavior and differentiated per-target attitude/hostility,
-   then close 4B death/game-over safe-boundary policy. After that close
+   `6fe9be5ce8a6cca137b04b08002184c8ec8b0eb6` and
+   `53a81955f54f5517e58f5ab1b2e92c76d0ff034b` as scoped 4A.1/4A.2a.1 rule seams, not production multi-runtime callers.
+2. Resolve ADR-0012 before adding target-keyed provocation. Then close 4A.2 in bounded slices: generic non-forced
+   explicit-target specials; gun exact target lock; projectile actual-hit ownership; exact last-known-invisible identity;
+   fixed-root hardcoded specials; and forced-movement/interactive/targetless-AoE policy. Then close 4B
+   death/game-over safe-boundary policy. After that close
    field/scent/NPC; tether/group shift; and dedicated messages/safe-mode/stats/player-scoped cache isolation. Preserve
    one shared bubble and single simulation thread. Each slice uses Linux incremental/focused tests; authority/lifecycle
    risk selects full `[multiplayer]` or sanitizer, and a process smoke is added only after the changed production route
@@ -162,7 +176,8 @@ The workflow runs manually and on relevant changes pushed to, or proposed agains
 default to `target=linux`; select `windows`, `android` or `all` only when a completed platform/public/release batch has
 that acceptance target. Automatic runs compare changed paths and select only affected packages. Ordinary backend-
 neutral internal gameplay/policy files do not trigger the package baseline; protocol,
-public-header and client/platform exceptions are listed in the build baseline. Windows-owned paths select Windows,
+public-header and client/platform exceptions are listed in the build baseline. `data/mods/TEST_DATA/**` fixtures are
+excluded from package selection and routed to the Linux production workflow. Windows-owned paths select Windows,
 Android-owned paths select Android, shared graphical/platform adapters select their affected targets, and shared
 artifact/toolchain paths select their required matrix. `Makefile` is Linux-only; root CMake/version generation uses a
 targeted Linux configure; public protocol/schema/transport/crypto boundaries temporarily use actual-source Windows/

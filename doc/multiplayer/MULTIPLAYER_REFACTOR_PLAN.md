@@ -418,9 +418,20 @@ world avatar，排除 `importing`、runtime-dead 和 avatar-dead；`monster::pla
 candidates，使用每个 target 自身的 visibility/LoS，并在 equal rating 时公平选择而不固定偏向
 root。`attack_target()`、`attack_at()` 和 `move()` 将 basic melee/stumble 路由到 exact selected living avatar。
 `LOCKS_ON` 以 exact target `character_id` 为 effect source，Tindalos teleport 只能消费当前 target 的 lock；
-丢失 direct LoS 的 lock 不能自我刷新或转移到另一 avatar。direct special attacks、last-known-invisible
-行为和差异化 per-target attitude/hostility 留给 4A.2；observer-filtered messages/SFX 留给后续 dedicated
-isolation gate；death/game-over 留给 4B。
+丢失 direct LoS 的 lock 不能自我刷新或转移到另一 avatar。
+
+Gate 3 source `53a81955f54f5517e58f5ab1b2e92c76d0ff034b` 关闭 **4A.2a.1** candidate-specific
+instantaneous human attitude，但不代表完整 per-target hostility。多 living-avatar planner 先从所有可见 living
+humans 中公平选择一个 observer，使 shared anger/morale triggers 每次 `plan()` 只执行一次；trigger 完成后再按 exact
+candidate 的 `MATT_ATTACK`/`is_fleeing()` 过滤 actionable target。flee threat 优先于普通 attack target，同类内再按
+rating 和公平 tie 选择；`KEEP_DISTANCE` 使用候选位置，最终 Character target 重新拥有其 flee disposition，后续
+monster target replacement 不继承 human-specific fear。多 living-avatar `attack_at()` 在 moves/HP side effect 前拒绝
+非 HOSTILE human。单 living-avatar 路径保持 legacy。
+
+`aggro_character` 仍是 monster-wide serialized bool；玩家 A 的挑衅是否授权攻击玩家 B 由待决策 ADR-0012 阻塞，
+不得在 special 适配中静默决定。direct specials、gun target lock、projectile actual hit、last-known-invisible exact
+identity、fixed-root hardcoded specials、forced movement、interactive/targetless/AoE policy 仍属后续 4A.2；
+observer-filtered messages/SFX 留给 dedicated isolation，death/game-over 留给 4B。
 这些改动没有 production multi-runtime caller，不改变 single-root owner 或 `players.max = 1`。
 
 ### 8.2 公平顺序
@@ -536,9 +547,11 @@ movement 前裁决为 typed block，并验证公平首位也轮换 contested-til
 avatar，但这不代表完整 movement tree 或全局 collision invariant 已适配：绕过 router 的 forced movement、
 monster direct-special attack、door/furniture/vehicle/grab/phasing/swim、field/trap/effect 等分支仍须逐项验证或
 拒绝。source `6fe9be5ce8a6cca137b04b08002184c8ec8b0eb6` 只关闭 4A.1 ordinary hostile target/basic
-melee 与 exact target-keyed `LOCKS_ON`；不能按 trace label 机械切块，也不能把 inner owner/router
-直接当作 production session owner。当前下一规则 slice 是 4A.2 direct specials/last-known-invisible/
-per-target attitude-hostility，随后是 4B death/game-over safe boundary。
+melee 与 exact target-keyed `LOCKS_ON`；source `53a81955f54f5517e58f5ab1b2e92c76d0ff034b` 只关闭
+4A.2a.1 candidate-specific instantaneous attitude/basic non-hostile melee guard。不能按 trace label 机械切块，也不能把
+inner owner/router 直接当作 production session owner。下一决策门是 ADR-0012 的 provocation scope；随后按 explicit
+target specials、gun lock、projectile actual hit、last-known-invisible identity、fixed-root specials 和
+forced/interactive/targetless-AoE policy 分片，最后进入 4B death/game-over safe boundary。
 
 迁移时要逐项处理当前只对 `u` 执行的逻辑，至少包括：
 
@@ -1266,6 +1279,11 @@ world_runtime
 - monster 4A.1 覆盖 living `active`/`offline` human eligibility、`importing`/runtime-dead/avatar-dead 排除、
   target-specific visibility、equal-rating 无 fixed-root bias、basic `attack_at()`/`move()` 只伤害 selected avatar，
   以及 exact target-keyed `LOCKS_ON` 的 acquisition、lost-LoS no-refresh、no-transfer 和 Tindalos exact consumer。
+- monster 4A.2a.1 覆盖 shared trigger 的 once-per-plan fair observer、trigger 后 exact candidate attitude filter、
+  flee-threat priority、同类 rating/tie fairness、candidate-position `KEEP_DISTANCE`、final-target flee disposition、
+  multi-avatar basic non-hostile melee zero-side-effect rejection、single-avatar legacy routing，以及 unique multi
+  candidate no-extra-RNG。该矩阵不得冒充
+  all-human trigger aggregation、target-keyed provocation 或 direct-special authorization。
 - session directory/lobby 的 pending -> prepare/pre-encode -> simulation commit -> transport enqueue -> publish 顺序、
   重复/stale completion、同 token 并发 claim、exact generation、accepted resume response 丢失后的同代 replay、
   首个 application frame 的 exact-tuple directory confirmation 与显式 lobby ack、fresh/terminal token record 回收、
@@ -1310,6 +1328,11 @@ world_runtime
   secondary avatar。这些 two-runtime 断言仍是 `test-only`；Linux native client `--version` 只证明 generic
   gameplay source 已编译链接进 binary 且 CLI version path 正常。single-avatar gameplay 由 in-process focused
   regression 覆盖；这些证据都不是 production multi-runtime/bubble 证据。
+- 4A.2a.1 in-process tests 已证明 nearer ignored root 不会覆盖 farther hostile secondary、flee threat 优先于普通
+  attack target、`KEEP_DISTANCE` 与最终 flee disposition 绑定 exact candidate、shared trigger 在过滤前执行一次、
+  multi-avatar basic neutral melee 不扣 moves/HP、single-avatar legacy attack routing 不变，且 unique multi candidate
+  不额外消费 RNG。observer 与最终 target 可不同，
+  shared triggers 也尚未聚合所有 humans；这些断言仍为 `test-only`。
 - production integration 必须把实际 legacy bubble/world callback 放在 `claim_world()` 后运行并验证恰好一次；只
   调用 policy 的 `record_automatic_wait_executed()`/`claim_world()` 或只计数测试 lambda 不能算最终 gameplay evidence。
 - 两玩家相邻移动并互相阻挡：inner owner contract 已覆盖；production two-client/actual bubble 仍待完成。
@@ -1626,18 +1649,25 @@ session ownership、two-phase admission、selected-root lifecycle、scheduler/ad
   显式遍历 living `active`/`offline` humans，排除 importing/runtime-dead/avatar-dead，使用 target-specific
   visibility 和 equal-rating fair selection，basic `attack_at()`/`move()` 攻击 exact selected avatar，`LOCKS_ON`
   与 Tindalos consumer 绑定 exact target。Linux release/full-multiplayer、定向 sanitizer 和 client-version
-  回归已有证据；其 two-runtime behavior 仍为 test-only，无 production multi-runtime caller。Gate 3 仍继续
-  拒绝外部 `players.max > 1`。下一步是 **4A.2** direct special attacks、last-known-invisible 和差异化
-  per-target attitude/hostility；observer-filtered messages/SFX 仍在后续 dedicated isolation。随后是 **4B**
-  death/game-over safe boundary，明确单玩家死亡、
+  回归已有证据；其 two-runtime behavior 仍为 test-only，无 production multi-runtime caller。
+  **4A.2a.1** 已由 source `53a81955f54f5517e58f5ab1b2e92c76d0ff034b` 关闭：shared triggers 先由一个
+  fair visible observer 执行一次，再按 exact candidate attitude 选择 actionable human；flee threat priority、
+  candidate-position `KEEP_DISTANCE`、final-target flee disposition 和 multi-avatar basic non-hostile melee guard 已有
+  Linux release/full-multiplayer、定向 sanitizer、single-avatar compatibility 和 client-version 证据。其
+  multi-runtime behavior 同样为 test-only。
+  Gate 3 仍继续拒绝外部 `players.max > 1`。下一步先关闭 **4A.2a.2 决策门**：ADR-0012 必须选择 global 或
+  target-keyed provocation scope；在此之前不修改 serialized `aggro_character`。其后按 generic non-forced
+  explicit-target specials、gun exact target lock、projectile actual-hit ownership、last-known-invisible exact identity、
+  fixed-root hardcoded specials、forced movement/interactive/targetless-AoE policy 分片。observer-filtered messages/SFX
+  仍在后续 dedicated isolation。随后是 **4B** death/game-over safe boundary，明确单玩家死亡、
   仍有存活玩家、全员死亡、runtime transition 和 save/fail-stop disposition。之后依次
   关闭 field/scent/NPC、tether/group shift，以及 messages/safe-mode/stats/player-scoped cache isolation。全部 owner/rule gates
   绿色后，先开放仅供 integration/process test 使用的双连接 routing 并完成 Linux 双 client smoke/soak；该测试开关
   不得作为用户配置发布。只有这些证据也绿色后，才评估允许用户配置 `players.max > 1`。
 
-后续 Gate 3 编辑循环继续只跑 Linux incremental/focused tests。4A.1 已按 authority 风险增加完整
-`[multiplayer]` 和定向 sanitizer；4A.2 继续以 Linux focused rule tests 起步，按其实际 invariant/reachability
-升级。4B 属 lifecycle/save 高风险切片，收口时
+后续 Gate 3 编辑循环继续只跑 Linux incremental/focused tests。4A.1 与 4A.2a.1 已按 authority 风险增加完整
+`[multiplayer]` 和定向 sanitizer；后续 4A.2 子切片继续以 Linux focused rule tests 起步，按其实际
+invariant/reachability 升级。4B 属 lifecycle/save 高风险切片，收口时
 增加完整 `[multiplayer]` 和定向 sanitizer，只有接入 production shutdown/save 路径后才增加 Linux headless/native-
 client process gate。field/scent/NPC、tether/group shift 和 player-scoped isolation 同样按 changed-source reachability
 选门禁。真实双 client routing 接通时再运行 Linux headless server + 两个 Linux native clients smoke，并完成 60

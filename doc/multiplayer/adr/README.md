@@ -5,6 +5,7 @@
 ## 状态
 
 - `已接受`：当前实现必须遵守，修改时需要新增替代 ADR 或更新现有 ADR，并同步重构计划。
+- `待决策`：问题和候选方案已明确，但方向尚未选择；相关实现必须停在 ADR 写明的安全边界。
 - `待验证`：方向已确定，但该 ADR 写明的接受门禁尚未闭合，不能作为生产实现的既成事实。
 - `已取代`：由后续 ADR 替代，保留用于说明历史原因。
 - `已拒绝`：方案经过评估后不采用。
@@ -24,11 +25,13 @@
 | [0009](0009-single-reality-bubble-v1.md) | v1 单 reality bubble 与距离约束 | 已接受 |
 | [0010](0010-authoritative-session-directory.md) | 权威 session directory、两阶段 admission 与 generation ownership | 已接受 |
 | [0011](0011-owned-turn-event-pump-boundary.md) | Owned turn outer/active-player-input 双层事件泵边界 | 已接受 |
+| [0012](0012-monster-provocation-scope.md) | 怪物玩家挑衅作用域与持久化身份 | 待决策 |
 
 ## ADR 维护规则
 
-每个 ADR 至少包含状态、背景、决策、替代方案、后果和验证要求。处于 `待验证` 状态的 ADR 必须写明 go/no-go 条件
-和失败退路。完成对应验证与接受门禁后，应在同一改动中更新状态、记录证据，并同步重构计划和已知限制。
+每个 ADR 至少包含状态、背景、决策、替代方案、后果和验证要求。处于 `待决策` 状态的 ADR 必须写明实现冻结边界、
+候选方案和选型所需证据；处于 `待验证` 状态的 ADR 必须写明 go/no-go 条件和失败退路。完成决策或对应验证与接受
+门禁后，应在同一改动中更新状态、记录证据，并同步重构计划和已知限制。
 
 ADR 不替代测试，但 ADR 的验证要求也不表示每个中间提交都要重跑所有平台。具体节奏与平台选择遵循重构计划
 第 20.6 节：编辑循环使用 Linux incremental/focused tests，slice 收口时按风险增加 full/sanitizer/PTY，关键

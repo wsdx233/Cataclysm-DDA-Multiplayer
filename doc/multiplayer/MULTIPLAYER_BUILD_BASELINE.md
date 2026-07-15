@@ -38,6 +38,11 @@ package 的 release/artifact/兼容性里程碑才使用它。自动 push/PR run
 Android job 只在 standalone spike/workflow 自身变化或显式 target 时运行。standalone spike 本身仍不构成生产
 transport 或 TLS，生产边界位于 `src/multiplayer_*`。
 
+headless command/resume smoke 的关闭顺序也是产物契约的一部分：最终 sequence-conflict 可能在一个新 opened owned
+turn 中关闭连接；workflow 必须使用短且确定的 disconnect grace，并等待 grace -> forced wait -> world -> player-end
+到达 clean boundary 后才请求 shutdown/save。立即 SIGTERM 导致 typed fatal/no-save 是正确实现行为，不能通过删除
+exit/save assertions 让 smoke 变绿。
+
 ### 2.1 验证节奏与平台构建
 
 本文件保留三平台产物契约，但不要求每个 shared C++ 提交都完成整套 package。具体测试内容遵循重构计划
@@ -63,6 +68,9 @@ transport 或 TLS，生产边界位于 `src/multiplayer_*`。
 
 - 普通 `src/multiplayer_*` gameplay/policy source 不触发 package baseline；它由 Linux production workflow 和
   Tier 1 本地验证负责。
+- `data/mods/TEST_DATA/**` 是 test-only fixture：push/PR path filter 明确从 package baseline 排除，selector 在宽泛
+  `data/*` 规则前忽略它；transport workflow 将它与当前 monster 4A source 路由到 automatic Linux production gate。
+  该例外不适用于会进入实际 package 的其他 `data/**`。
 - `src/multiplayer_transport.cpp`、`src/multiplayer_crypto.cpp`、server config/log 和混合的 `src/main.cpp` 视为
   routine shared 或需要人工判断的 generic path，不再仅凭文件名触发 Windows/Android package；若 diff 修改其中
   的 platform conditional，提交者必须显式选择受影响的 Tier 2 target。
@@ -89,7 +97,7 @@ changed-path selector 只是自动化优化，不替代工程判断。新增或�
 无法自动识别；修改已有 platform conditional/branch 也同样如此。应显式运行受影响的 Tier 2 gate，并决定扩展
 selector 或在 `STATUS.md` 记录继续手工触发的理由。
 
-CI 成本优化 backlog：generic `build-scripts/*` 与 `data/*|lang/*` 目前仍可能选择全矩阵。不要在没有 package input
+CI 成本优化 backlog：除已分流的 `data/mods/TEST_DATA/**` 外，generic `build-scripts/*` 与 `data/*|lang/*` 目前仍可能选择全矩阵。不要在没有 package input
 依赖清单和 selector 回归断言时直接缩窄；后续以独立 CI-contract 批次审计真实消费者，把仅影响 Linux 或单个平台的
 路径拆出。该优化不阻塞 Phase 3 backend-neutral rule/session 工作。
 
@@ -678,5 +686,26 @@ Windows job
 均为 terminal `success`，并通过各自 package/provenance smoke。这些结果关闭本次 public compile boundary，但
 不增加 Windows UI 或 Android emulator/device lifecycle 运行结论，也不要求后续 internal session/scheduler
 `.cpp` 改动日常重跑 package matrix。
+
+### Gate 3 4A safe-boundary 与 test-fixture routing batch
+
+source `a7225e28f91a1bc52992d05b67b93d35aaaa712a` 的 baseline run
+[`29437215379`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29437215379) 已 terminal
+`success`，selector/resources/Linux/Windows/Android package 全绿。该 run 是未变化 package/platform boundary 的
+最近兼容证据，不是后续 4A gameplay `.cpp` 的 Windows/Android portability 证据。
+
+同 source 的 transport run
+[`29437215518`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29437215518) 在 Linux headless
+command/resume smoke 失败；production build 和完整 `[multiplayer]` 已绿色。根因是 client 完成 sequence-conflict
+后连接进入默认 30 秒 grace，workflow 立即 SIGTERM，server 因缺少 exact player-end receipt 正确 fail-stop/no-save。
+source `d83d94e96caf37862d2152b1adcce697367ec350` 把 smoke grace 固定为 3 秒并等待 5 秒；本地真实
+client/server 均 exit 0，记录 disconnect、`save_completed`、`shutdown`，stderr 为空。
+
+source `ba041c23b219b14df8918093f40c82fd761451cf` 将 `data/mods/TEST_DATA/**` 从 baseline package path/filter
+排除，并把 TEST_DATA、`monmove`/`monster`/`monattack`/`mattack_actors` 路由到 automatic Linux production
+workflow。本地 actionlint 1.7.12、PyYAML mapping、Bash syntax 和临时 Git history selector 测试通过；
+TEST_DATA-only transport 精确选择 Linux，TEST_DATA 与 `Makefile` 同批不会把 Linux package 扩大到 Windows/Android。
+由于两个 workflow 自身发生变化，本批 push 仍会触发一次 CI-contract hosted gate；只有 terminal 结果写回后才可
+将 `d83d94e...`/`ba041c2...` 标为 hosted accepted。
 
 本地生成物位于仓库默认的忽略目录中，不作为源码提交。规范产物和 hash 以 fork 上的 `multiplayer-baseline` workflow 为准。
