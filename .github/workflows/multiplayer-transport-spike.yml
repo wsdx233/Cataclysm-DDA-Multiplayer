@@ -341,6 +341,7 @@ jobs:
               config = json.load(source)
           assert config["players"]["max"] == 1
           assert config["players"]["character_policy"] == "server_owned"
+          config["players"]["disconnect_grace_seconds"] = 3
           assert config["save"]["keep_generations"] == 1
           with socket.socket() as listener:
               listener.bind(("127.0.0.1", 0))
@@ -379,6 +380,10 @@ jobs:
           build/multiplayer-smoke/headless_client_smoke \
             127.0.0.1 "$port" "$root/server-auth-token.txt" \
             | tee "$root/client.stdout"
+          # The final sequence conflict closes the transport while an owned turn is open.
+          # Let the configured grace expire so the simulation reaches player-end before
+          # asking the process to prove a graceful save boundary.
+          sleep 5
           kill -TERM "$server_pid"
           wait "$server_pid"
           trap - EXIT
