@@ -2,14 +2,15 @@
 
 ## 1. 目的
 
-在修改运行模式、网络协议或玩家状态之前，先证明同一个提交能够稳定生成三类原版产物：
+Phase 0 已先证明同一个提交能够稳定生成三类原版产物，并把它们保留为长期 package/artifact 契约：
 
 - Windows x64 MSVC 图形客户端，SDL3、tiles 和 sound 均启用。
 - Android arm64 图形客户端 APK。
 - Linux x64 curses 包，作为后续 headless server target 的构建前身。
 
-Linux curses 包仍是无 SDL 的打包基线；同一 binary 已有显式 `--server` 运行路径，但在 hosted evidence、运维文档
-和后续 release gate 完成前仍不能当作生产 dedicated-server 包发布。
+这项历史三端基线不是每次 shared-code 修改的验收要求。Linux curses 包仍是无 SDL 的打包基线；同一 binary 已有
+显式 `--server` 运行路径，但在 hosted evidence、运维文档和后续 release gate 完成前仍不能当作生产
+dedicated-server 包发布。
 
 初始上游基线固定为 `d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`。
 
@@ -22,10 +23,9 @@ Linux curses 包仍是无 SDL 的打包基线；同一 binary 已有显式 `--se
 - 面向 `multiplayer/main` 的 pull request 修改构建相关文件。
 
 工作流不创建 GitHub Release，不需要 Android keystore，也不会使用正式发布凭据。每个产物旁边包含构建 manifest、源码提交和 SHA-256。
-`workflow_dispatch` 的界面当前仍默认 `target=all`，但该默认值不是验证策略。手工运行者必须根据已经完成的
-platform-owned/public-boundary/release 批次显式选择 `linux`、`windows`、`android` 或 `all`；phase exit 本身不要求
-选择 `all`。界面描述中的 Tier 3 milestone 在这里仅指明确需要 all-platform package 的 release/artifact/兼容性
-里程碑，不包括每个普通 phase exit。自动 push/PR run 先由
+`workflow_dispatch` 默认 `target=linux`。手工运行者只在已经完成的 platform-owned/public-boundary/release 批次
+需要对应 package 时选择 `windows`、`android` 或 `all`；phase exit 本身不要求选择 `all`，只有明确需要 all-platform
+package 的 release/artifact/兼容性里程碑才使用它。自动 push/PR run 先由
 `Select affected platform packages` 比较 event base 与当前 commit，再只启用受影响的平台 package；若无法可靠
 解析 base 或 diff，则快速失败并要求用明确的 manual target 重跑，不再静默消耗全矩阵。
 
@@ -44,12 +44,15 @@ transport 或 TLS，生产边界位于 `src/multiplayer_*`。
 第 20.6 节的三层策略：
 
 - Tier 1 编辑循环只做 Linux incremental build 和 changed-area focused tests。一个 coherent slice 准备收口时，
-  再按生命周期、所有权、协议和进程风险增加完整 `[multiplayer]`、sanitizer 与真实 Linux PTY loopback；portable
-  scheduler/game-rule/protocol routine 的 Linux native client/server 结果可作为 backend-neutral 功能证据。
+  无 production caller 的 internal/test-only contract 按 invariant/ownership 风险选择完整 `[multiplayer]` 或
+  sanitizer；只有 changed route 能被 production process 实际调用时才增加对应 Linux gate：client-only 使用 native
+  client，server-only 使用 headless process，end-to-end 才使用两端 PTY/loopback。Linux curses client 是非图形共享
+  行为的默认代表，renderer/tiles 行为才使用 Linux SDL client。
 - Tier 2 只在关键 platform-owned 或跨平台公共边界批次完成后运行一次定向证据：Windows-owned MSVC/project/
   batch/PowerShell/windist/Win32/SDL 批次跑 Windows；Android Gradle/CMake/manifest/Java/JNI/ABI/resource/touch/
-  lifecycle 批次跑 Android；schema/public header/ABI boundary 只跑能实际编译 changed production source 的最小
-  MSVC/NDK gate。shared internal `.cpp` 本身不自动触发两端 package 要求，也不为每个中间提交重复平台门禁。
+  lifecycle 批次跑 Android；schema/public header/ABI boundary 只跑受影响消费者中能实际编译 changed production
+  source 的最小 MSVC 和/或 NDK gate。shared internal `.cpp` 本身不自动触发两端 package 要求，也不为每个中间提交
+  重复平台门禁。
 - Tier 3 是 phase/release milestone evidence review。phase exit 先核对产品声明、当前候选新证据和最近兼容平台证据，
   不自动运行全平台；当前 Linux 候选仍运行阶段要求的 headless/native-client、integration 和 sanitizer 主门禁。
   未变化的平台边界可以引用最近 evidence commit，并记录到当前候选的显式 diff audit 与兼容理由；必须同时注明
@@ -78,14 +81,17 @@ transport 或 TLS，生产边界位于 `src/multiplayer_*`。
   它的 Linux package。root `CMakeLists.txt`/`src/version.cmake` 不再触发无关 package，而由 Linux production
   workflow 的定向 root-CMake configure + `get_version` target 验证。其余共享 build scripts、data/lang/version、
   baseline workflow 和真正的 artifact-contract path 才选择相应矩阵。
-- 手工 baseline 界面虽然默认 `target=all`，操作者仍必须按本批验收目标显式选择 target；不要把 UI 默认值当成
-  phase-exit 或日常验证要求。自动 selector 无法解析 event base/diff 时失败并要求显式重跑，不能把分类失败转换成
-  昂贵的隐式全矩阵。
+- 手工 baseline 默认 `target=linux`；`all` 只用于明确的 all-platform package/release/artifact/兼容性目标。自动
+  selector 无法解析 event base/diff 时失败并要求显式重跑，不能把分类失败转换成昂贵的隐式全矩阵。
 
 changed-path selector 只是自动化优化，不替代工程判断。新增或重命名 platform-owned file 时，必须在同一改动中
 同步维护 push/PR 的两份 path list 与 selector case mapping。若普通路径内部新增 platform conditional，路径匹配
 无法自动识别；修改已有 platform conditional/branch 也同样如此。应显式运行受影响的 Tier 2 gate，并决定扩展
 selector 或在 `STATUS.md` 记录继续手工触发的理由。
+
+CI 成本优化 backlog：generic `build-scripts/*` 与 `data/*|lang/*` 目前仍可能选择全矩阵。不要在没有 package input
+依赖清单和 selector 回归断言时直接缩窄；后续以独立 CI-contract 批次审计真实消费者，把仅影响 Linux 或单个平台的
+路径拆出。该优化不阻塞 Phase 3 backend-neutral rule/session 工作。
 
 自动 selector 若因中间 push 启动平台 package，只表示该提交命中了路径规则，不会把每个后续中间提交变成必须
 重复的平台门禁。关键批次冻结后，应使用最后一次修改该平台/公共边界的候选证据；若最终候选只追加了可审计的
@@ -626,6 +632,19 @@ Linux Tier 1；Windows/Android transport artifacts 只证明 isolated spike/tool
 外推为 adapter 的平台 portability 或 production routing evidence。后续普通 backend-neutral source 提交继续使用
 Linux incremental/focused loop；slice 收口按风险增加 Linux 门禁，完成关键平台/公共边界批次或提出需要新证据的
 release/platform 行为声明时再升级。
+
+### Baseline 手工入口 Linux 默认值
+
+workflow source `25347cc3d5538657e67790e3d7a83aaae25b796c` 把 baseline `workflow_dispatch` 的默认 target 与表达式
+fallback 从 `all` 改为 `linux`，并把 `all` 放到显式选择末尾。automatic changed-path selector、package job、artifact
+内容和 pinned toolchain 均未改变。
+
+本地用 actionlint `1.7.12`（官方 release archive checksum 已校验）检查 workflow，通过 PyYAML parse 和 selector
+run-block `bash -n`；动态执行 `linux|windows|android|all` 四种 manual target，分别得到精确单平台或三平台 true
+输出。该验证只关闭 dispatch/selector control contract，不构成 Linux/Windows/Android package 或 runtime 证据；
+hosted run 只有 terminal 后才可追加记录。当前 automatic selector 仍把 baseline workflow 自身的任何修改归为
+all-platform CI-contract，因此该 source 推送后可能触发一次全 package matrix；后续应把纯 dispatch/selector 静态
+控制变更拆到轻量 workflow-control gate，避免再为这类改动构建产物，同时保留真正 package-job 修改的全矩阵门禁。
 
 ### Authoritative session directory / protocol minor 1 hosted gate
 

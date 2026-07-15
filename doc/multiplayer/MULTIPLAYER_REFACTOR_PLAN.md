@@ -1340,9 +1340,11 @@ contract。
 
 - **编辑循环**：开发中的中间提交或本地修改只运行能快速暴露当前问题的 Linux compile/focused tests。除非正在
   诊断平台专属失败，不为同一未收口切片的每个提交重复 Windows package、Android APK 或设备测试。
-- **切片收口**：一组可交接的 scheduler、rule、session、protocol、client 或 server 行为完成后，以当前 Linux
-  候选 source 运行 native client + headless server 默认闭环，并按风险增加完整 `[multiplayer]`、sanitizer 和真实
-  PTY/loopback。`STATUS.md` 的日常证据以这个频率记录，而不是把每条编辑命令写成独立平台门禁。
+- **切片收口**：一组可交接的 scheduler、rule、session、protocol、client 或 server 行为完成后，先按 changed
+  source 的 production reachability 选择 Linux 门禁。无 production caller 的 internal/test-only contract 使用
+  compile/focused tests，并按 invariant/ownership 风险选择完整 `[multiplayer]` 或 sanitizer；只有 changed route 能
+  被真实 client/server 进程调用时才增加 PTY/loopback。`STATUS.md` 的日常证据以这个频率记录，并标明 reachability
+  为 `test-only`、`client`、`server` 或 `end-to-end`。
 - **平台里程碑**：Windows/Android owned code、公共 wire/ABI/toolchain 边界或平台产品声明形成一个完整关键批次后，
   对冻结的该批候选补受影响平台证据。同一关键批次的中间提交不逐个重跑平台；平台门禁之后若又修改该边界，才
   需要对新的候选重跑。
@@ -1351,8 +1353,12 @@ contract。
 transport 变更的默认层级，前提是没有修改 wire schema/version、public header 或平台 adapter：
 
 - 编辑循环在 Linux GCC 上构建受影响的 native client/server 或 tests，并运行 changed-area focused tests。
-- 切片收口时，Linux headless `--server` 与 Linux native client（curses 或 SDL）是 backend-neutral client/server
-  功能的默认验收组合；接通 production transport、session、command 或 UI 路径时运行真实 PTY/loopback smoke。
+- internal/test-only contract 没有 production caller 时，以 Linux compile/focused tests 收口，不为不可达代码运行
+  process smoke；必要时增加完整 `[multiplayer]` 或 sanitizer。一个没有执行 changed source 的 process smoke 不能
+  作为该切片的证据。
+- changed production 路径实际可达时按 reachability 运行最小 Linux process gate：`client` 使用能命中 changed code
+  的 native client smoke/harness，`server` 使用 headless `--server` process/harness，`end-to-end` 才同时运行两端
+  PTY/loopback。phase exit 仍按 Tier 3 运行该阶段要求的两端主门禁。
 - 共享 turn、authority、session、protocol、visibility、save 或 transport invariant 改变时，增加完整
   `[multiplayer]` suite；涉及地址、生命周期、线程或内存所有权时按风险增加 ASan/UBSan/LSan。
 - 触及 SDL/tiles renderer 时使用 Linux graphical client；否则 curses client 足以验证共享 semantic executor 和
@@ -1368,8 +1374,9 @@ transport 变更的默认层级，前提是没有修改 wire schema/version、pu
   pause/resume/reconnect。按验收对象运行 NDK compile、目标 ABI APK/resource smoke；触及 lifecycle/runtime 行为时
   必须再跑 emulator 或 device，compile-only APK 不能替代运行证据。
 - 跨平台公共边界：wire schema/version/capability/build ID、公开 DTO/serialization layout、compiler/ABI-sensitive
-  public header、共享 source-list 或 pinned toolchain contract。Linux 主门禁仍必须运行，再选择能实际编译 changed
-  production source 的 MSVC/NDK 最小 gate；package/resource/runtime 不是验收目标时，不升级为完整包。
+  public header、共享 source-list 或 pinned toolchain contract。先运行能实际编译或执行 changed boundary 的最小
+  Linux gate，再只选择实际消费该边界的受影响平台编译器；Windows 和 Android 都消费或验收声明同时覆盖两端时，
+  才同时运行 MSVC 与 NDK。package/resource/runtime 不是验收目标时，不升级为完整包。
 - backend-neutral `src/multiplayer_*` 内部 `.cpp` policy/rule/phase-adapter 实现、测试或不改变接口/协议的重构仍属
   Tier 1；若新增或修改 platform conditional、compiler-sensitive ABI/header 或平台 adapter，只补受影响平台。
 - MinGW/NDK 等廉价 cross-compile smoke 只证明该编译边界；它不能关闭 MSVC package、Android APK resource 或
@@ -1396,15 +1403,17 @@ transport 变更的默认层级，前提是没有修改 wire schema/version、pu
 | 频率/变更类别 | 默认验证 |
 | --- | --- |
 | 编辑循环；内部 shared rule/scheduler/adapter 实现 | Linux compile + focused tests |
-| 切片收口；backend-neutral client/server 行为 | 当前 Linux native client + headless server；按风险增加 full `[multiplayer]`/sanitizer/PTY |
-| 完成的公共 header/schema/ABI/toolchain 关键批次 | Linux 主门禁 + 实际编译 changed source 的 MSVC/NDK 最小定向 gate |
+| internal/test-only contract 收口；无 production caller | Linux compile + focused tests；按 invariant/ownership 风险增加 full `[multiplayer]` 或 sanitizer；不要求 process smoke |
+| 已接通 backend-neutral production route | 上述 Linux 门禁 + 按 `client`/`server`/`end-to-end` 选择能实际到达 changed route 的最小 process smoke；仅 end-to-end 要求两端 PTY/loopback |
+| 完成的公共 header/schema/ABI/toolchain 关键批次 | 最小 Linux 门禁 + 实际消费 changed boundary 的受影响编译器定向 gate |
 | 完成的 Windows 或 Android owned build/runtime/UI/lifecycle 批次 | Linux 回归（若影响 shared code）+ 受影响平台的 compile/package/runtime gate |
 | phase exit | 当前 Linux 候选必跑；平台边界有变化则补新证据，否则记录最近兼容 evidence commit + diff audit |
 | release、artifact/signing 或显式跨版本/跨平台产品里程碑 | 与声明匹配的同候选必要平台矩阵 |
 
-CI automation 与该策略对应：日常 Tier 1 使用 production transport workflow 的 `target=linux`，不调用 package
-baseline。baseline workflow 的手工 dispatch 技术默认仍是 `target=all`，但只用于显式 package/release 矩阵；任何
-手工 baseline 都必须按已完成批次的验收目标显式确认 Linux、Windows、Android 或 `all`。自动 push/PR 先按
+CI automation 与该策略对应：编辑循环默认只在本地运行 Linux incremental compile/focused tests；需要形成可交接
+的 hosted production evidence 时才运行 transport workflow 的 `target=linux`，不把它的 full/process job 变成每个
+中间提交的前置。baseline workflow 的手工 dispatch 默认 `target=linux`；只有显式 package/release/跨平台验收目标
+才选择 Windows、Android 或 `all`。自动 push/PR 先按
 changed path 选择 package target：Windows-owned path 只跑 Windows，Android-owned path 只跑 Android，共享
 graphical/platform adapter 跑受影响端，共享
 build/resource/toolchain contract 跑全矩阵，普通 backend-neutral `src/multiplayer_*` 不触发 package baseline。
@@ -1592,18 +1601,26 @@ session ownership、two-phase admission、selected-root lifecycle、scheduler/ad
   native curses PTY 证据。第三个 inner rule sub-gate 已由 source `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` 关闭：adjacent semantic move
   的 typed human block、exact blocker、symmetric retry 和两 turn contested-tile winner rotation 已有 Linux
   release/full-multiplayer/定向 sanitizer 证据；该 slice 无 production caller，因此未重复 process/PTY。Gate 3 仍继续
-  拒绝外部 `players.max > 1`。下一步依次关闭 monster target/attack 与 death/game-over、field/scent/NPC、tether/group
-  shift，以及 messages/safe-mode/stats/player-scoped cache isolation。全部 owner/rule gates
+  拒绝外部 `players.max > 1`。下一步把原 monster/death 大切片拆成两个独立 gate：4A monster target/attack，明确
+  eligible human candidates、死亡/离线状态、visibility/tie selection、movement attack routing 与实际受击对象；4B
+  death/game-over safe boundary，明确单玩家死亡、仍有存活玩家、全员死亡、runtime transition 和 save/fail-stop
+  disposition。之后依次
+  关闭 field/scent/NPC、tether/group shift，以及 messages/safe-mode/stats/player-scoped cache isolation。全部 owner/rule gates
   绿色后，先开放仅供 integration/process test 使用的双连接 routing 并完成 Linux 双 client smoke/soak；该测试开关
   不得作为用户配置发布。只有这些证据也绿色后，才评估允许用户配置 `players.max > 1`。
 
-后续 Gate 3 编辑循环继续只跑 Linux incremental/focused tests；改变 shared-turn/authority invariant 的切片收口按
-风险增加完整 `[multiplayer]` 和 sanitizer，真实双 client routing 接通时再增加 Linux process smoke。只有已完成
-批次修改公共 wire/ABI/toolchain 或明确的 Windows/Android owned boundary 时，才补受影响平台证据。
+后续 Gate 3 编辑循环继续只跑 Linux incremental/focused tests。4A 预期先以 Linux focused rule tests 收口，只有其
+实现改变 shared-turn/authority invariant 时才增加完整 `[multiplayer]`；4B 属 lifecycle/save 高风险切片，收口时
+增加完整 `[multiplayer]` 和定向 sanitizer，只有接入 production shutdown/save 路径后才增加 Linux headless/native-
+client process gate。field/scent/NPC、tether/group shift 和 player-scoped isolation 同样按 changed-source reachability
+选门禁。真实双 client routing 接通时再运行 Linux headless server + 两个 Linux native clients smoke，并完成 60
+分钟 soak。只有已完成批次修改公共 wire/ABI/toolchain 或明确的 Windows/Android owned boundary 时，才补受影响
+平台证据。
 
 退出标准：两个 test client 能在同一 bubble 中连续游戏 60 分钟，怪物可正确攻击任一玩家，ASan/UBSan 无错误。
-Phase 3 内部 scheduler/rule/session 切片默认由 Linux headless server + native client 收口；阶段出口对当前候选运行
-第 20.6 节规定的 Linux 主门禁。Windows/Android 仅在 Phase 3 修改对应 owned code、公共 wire/ABI/toolchain 边界或
+Phase 3 内部 scheduler/rule/session contract 先按第 20.6 节以 Linux tests/full/sanitizer 收口；只有 production route
+可达时才增加 Linux headless server + native client。阶段出口对当前候选运行第 20.6 节规定的 Linux 主门禁。
+Windows/Android 仅在 Phase 3 修改对应 owned code、公共 wire/ABI/toolchain 边界或
 改变平台产品声明时补当前候选证据；否则记录最近兼容 evidence commit/run 与到当前候选的 diff audit，不得称为
 当前候选已在该平台编译。若未改变 Android lifecycle，无需重复 Phase 2 的完整设备 lifecycle 剧本。
 

@@ -27,11 +27,12 @@
 
 验证层级的规范性判定只在重构计划第 20.6 节维护；构建基线只负责把该判定映射到具体 workflow/job/path 和说明
 各类产物能够证明什么。`AGENTS.md` 只保留操作摘要，`STATUS.md` 只记录当前批次实际选择与证据，避免多处复制后
-逐渐产生不同规则。
+逐渐产生不同规则；`AGENTS.md` 的摘要不得扩张第 20.6 节要求的门禁。
 
 验证节奏分为三种操作频率，另有 phase-exit 证据复核：编辑期间只做 Linux 增量构建和 changed-area focused tests；
-一个 coherent slice 收口时才按生命周期、所有权、协议和进程风险追加完整 `[multiplayer]`、sanitizer 或 Linux
-server/native-client PTY；关键 platform-owned/public-boundary 批次完成后，对受影响平台运行一次最小充分门禁；
+一个 coherent slice 收口时按风险追加完整 `[multiplayer]` 或 sanitizer，只有 changed production route 能由进程实际
+到达时才追加 Linux process gate：`client` 只跑 native client，`server` 只跑 headless process，`end-to-end` 才跑
+两端 PTY/loopback；关键 platform-owned/public-boundary 批次完成后，对受影响平台运行一次最小充分门禁；
 phase exit 只复核证据覆盖，不自动重跑全平台，但当前 Linux 候选仍须完成该阶段要求的 server/client、integration
 和 sanitizer 主门禁。未变化平台可以引用最近兼容 evidence commit 加显式 diff audit，但必须明确当前候选没有在
 该平台编译或运行。release、toolchain/artifact/signing 变化和新的平台行为声明仍要求对应平台的新证据。
@@ -42,7 +43,8 @@ phase exit 只复核证据覆盖，不自动重跑全平台，但当前 Linux �
 - 构建依赖、runner、ABI、产物名或验证状态变化时，同步更新构建基线。
 - 每次完成可交接的工作单元时更新 `STATUS.md`，写明所选 Tier、选择原因、命令、实际结果和按策略未运行的
   平台，不只写“已测试”；同时注明本批属于 routine shared、cross-platform public boundary、platform-owned 或
-  milestone，并确认所引用的 job 确实编译/运行了 changed production source。
+  milestone，记录 changed-source reachability 为 `test-only`、`client`、`server` 或 `end-to-end`，并确认所引用的
+  job 确实编译/运行了 changed production source。因无 production caller 而未跑 process smoke 时要明确记录。
 - 引用旧平台证据时，`STATUS.md` 必须写出 evidence commit、当前候选、两者之间的平台/公共边界 diff audit 和兼容
   理由；这种引用只能证明未变化边界已有兼容证据，不能写成当前候选已在该平台编译或运行。
 - `STATUS.md` 保持单一当前快照。重要历史通过 Git 和 ADR 保留，不堆积流水账。

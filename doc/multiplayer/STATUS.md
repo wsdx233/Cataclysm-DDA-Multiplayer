@@ -11,7 +11,8 @@
   slice 3 typed human collision/order authority
 - ADR 状态：ADR-0001 至 ADR-0011 均已接受
 - 配置约束：`players.max = 1`；Gate 3 owner/rule/process gates 关闭前不得提高
-- 当前验证策略：**Tier 1 Linux-first**；本批 Windows/Android 按策略未运行
+- 当前验证策略：**Tier 1 Linux-first + production reachability**；internal/test-only slice 不强制 process smoke，
+  baseline 手工入口默认 `target=linux`，只有完成的关键平台/公共/发布批次才升级对应平台
 
 ## 当前结论
 
@@ -191,6 +192,66 @@ two-runtime bubble、session/resume owner、第二 client routing 或 save trans
   bookkeeping，以及每 turn world lambda/receipt exact-once。
 - 本 slice 没有定义 swap 或 PvP；也没有审计 teleport、knockback、fling、vehicle、phasing 或其他绕过 router 的 forced
   movement。production 仍无 multi-runtime caller，blocker key 也尚未进入 visibility-filtered wire result。
+
+## 验证策略与 CI 入口优化
+
+workflow source `25347cc3d5538657e67790e3d7a83aaae25b796c` 把 baseline 手工默认 target/fallback 从 `all` 改为
+`linux`；本次文档同时把 closure 规则改为 production reachability 驱动，并将当前 monster/death 工作拆成 4A/4B。
+变更类别为 `workflow-control + documentation`，changed-source reachability 为 `test-only`；没有修改 game、protocol、
+package content、platform-owned source、pinned toolchain 或 `players.max`。
+
+本地验证：
+
+```bash
+tmp=$(mktemp -d)
+base=https://github.com/rhysd/actionlint/releases/download/v1.7.12
+curl -fsSL --retry 3 "$base/actionlint_1.7.12_linux_amd64.tar.gz" -o "$tmp/actionlint.tar.gz"
+curl -fsSL --retry 3 "$base/actionlint_1.7.12_checksums.txt" -o "$tmp/checksums.txt"
+expected=$(awk '$2 == "actionlint_1.7.12_linux_amd64.tar.gz" { print $1 }' "$tmp/checksums.txt")
+printf '%s  %s\n' "$expected" "$tmp/actionlint.tar.gz" | sha256sum -c -
+tar -xzf "$tmp/actionlint.tar.gz" -C "$tmp" actionlint
+"$tmp/actionlint" .github/workflows/multiplayer-baseline.yml
+
+selector=$(python3 - <<'PY'
+from pathlib import Path
+import yaml
+
+doc = yaml.safe_load(Path( '.github/workflows/multiplayer-baseline.yml' ).read_text())
+workflow_dispatch = doc.get( 'on', doc.get( True ) )['workflow_dispatch']
+target = workflow_dispatch['inputs']['target']
+assert target['default'] == 'linux'
+assert target['options'] == ['linux', 'windows', 'android', 'all']
+step = next( step for step in doc['jobs']['changes']['steps']
+             if step.get( 'name' ) == 'Select package targets' )
+assert "inputs.target || 'linux'" in step['env']['MANUAL_TARGET']
+print( step['run'] )
+PY
+)
+bash -n <<<"$selector"
+for target in linux windows android all; do
+  out=$(mktemp)
+  run_tmp=$(mktemp -d)
+  EVENT_NAME=workflow_dispatch MANUAL_TARGET="$target" \
+    BASE_SHA= GITHUB_SHA=$(git rev-parse HEAD) \
+    GITHUB_OUTPUT="$out" RUNNER_TEMP="$run_tmp" bash -c "$selector"
+  case "$target" in
+    linux) expected='linux=true windows=false android=false' ;;
+    windows) expected='linux=false windows=true android=false' ;;
+    android) expected='linux=false windows=false android=true' ;;
+    all) expected='linux=true windows=true android=true' ;;
+  esac
+  test "$(tr '\n' ' ' < "$out" | sed 's/ $//')" = "$expected"
+done
+
+git diff --check
+```
+
+结果：actionlint/YAML parse/Bash syntax 全过；manual selector 精确输出 `linux=true`、`windows=true`、
+`android=true` 的对应单平台组合，`all` 输出三者全 true；旧的全平台默认值和文档描述已无残留。未运行本地 game build、
+Windows package 或 Android APK，因为该 control/docs 变更不修改它们的源码或产物；任何自动 hosted package run 只有
+terminal 后才可作为 workflow/artifact 证据，不能外推为 Gate 3 gameplay 证据。现有 automatic selector 对 baseline
+workflow 文件自身仍会 `select_all`，所以本 source 推送后可能有一次全 package run；后续 CI-cost slice 应把纯
+dispatch/selector control 变更分流到轻量静态 gate，真正 package-job 变化仍保留全矩阵。
 
 ## 当前 source 验证证据
 
@@ -694,7 +755,7 @@ rg -q '"event":"runtime_failed".*owned turn did not reach an exact player-end li
 `server-user/save/coop-world` 全部文件 SHA-256 清单完全一致。client 在 server half-close 后由 harness 清理，未产生
 gameplay command。
 
-## 平台选择与未运行证据
+## 最近关闭 slice 的平台判定
 
 本批选择 Tier 1，因为 Gate 3 slice 3 只修改 backend-neutral internal registry/router policy 与 owner tests。收口后
 使用下述 diff 审计：
@@ -746,21 +807,28 @@ ABI/header、source list 或平台 owned code，必须重新分类并补第 20.6
 当前 active gate 是 Gate 3。inner owner-contract、basic move/wait isolation 和 typed human collision/order authority
 分别由 source `2eccb92087991966423c18b63f6ef707462b1428`、
 `3204f8f45606a20ea6ab0892369b9806f89c4353` 和 `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` 关闭；下一步仍不得修改 single-root owner 的
-`maximum_players == 1` 约束。当前 slice 是 monster target/attack 与 death/game-over safe boundary，首个调查命令：
+`maximum_players == 1` 约束。原 monster/death 大切片拆成 4A 和 4B，避免把 rule selection 与 lifecycle/save policy
+混在一次实现和一次高成本验证中。
+
+已完成的 source audit 结论：
+
+- `monster::plan()` 仍先取固定 `get_player_character()`，hostile target/LOCKS_ON 只把 root avatar 放入候选；NPC 和
+  monster 候选随后独立处理。`monster::attack_target()` 与 `melee_attack( Creature & )` 能沿 explicit target/tracker
+  命中 secondary avatar，但 movement 使用的 `monster::attack_at()` 仍只特判固定 root，再查 monster/NPC；因此 4A
+  必须同时关闭 authoritative human candidate selection 和 actual movement attack routing，不扩散到 message/SFX 隔离。
+- `game::is_game_over()`、`turn_handler::cleanup_at_end()` 和全局 `uquit` 都是 single-avatar/global UI 语义，不能复用为
+  单玩家死亡。4B 必须单独定义“一个玩家死亡但 world 继续”“全员死亡 terminal”及 runtime/save/fail-stop boundary。
+- `multiplayer_player_runtime::mark_dead()` 已有状态转换，但当前 game wrapper 拒绝标记 active runtime；4B 在修改前要
+  明确 transition owner 和 exact safe point，不能先用全局 game-over 流程拼接。
+
+首个具体动作是 4A：确认 planner/`attack_at()` 的固定-root seam 和 registry 的稳定 runtime/avatar 枚举，再定义无
+root bias 的 human candidate contract 与 actual attack route。首个命令：
 
 ```bash
-rg -n 'get_player_character\(\)|get_avatar\(\)|active_avatar\(\)|monster::plan\(|rate_target\(|attack_target\(|attitude_to\(|check_dead_state\(|is_dead_state\(|is_game_over\(|QUIT_DIED|QUIT_WATCH|cleanup_at_end\(|cleanup_dead\(|mark_multiplayer_player_dead\(' \
-  src/monmove.cpp src/monster.cpp src/monster.h \
-  src/do_turn.cpp src/game.cpp src/game.h \
-  src/creature_tracker.cpp \
-  src/multiplayer_player_registry.* src/multiplayer_player_runtime.* \
-  src/multiplayer_multi_runtime_barrier_owner.* \
-  tests/multiplayer_*
-
-sed -n '350,750p' src/monmove.cpp
-sed -n '1620,1735p;2180,2370p' src/monster.cpp
-sed -n '3049,3137p;4245,4280p' src/game.cpp
-sed -n '100,165p;620,665p;769,905p' src/do_turn.cpp
+sed -n '390,525p;1325,1415p;1935,2035p' src/monmove.cpp
+rg -n 'attack_at\(|attack_target\(|melee_attack\(|monster::plan\(|rate_target\(|multiplayer_players\(\)' \
+  src/monmove.cpp src/monster.cpp src/game.cpp \
+  src/multiplayer_player_registry.* src/multiplayer_player_runtime.* tests/multiplayer_*
 ```
 
 Gate 3 的 ordered slices：
@@ -771,13 +839,20 @@ Gate 3 的 ordered slices：
    move，以及 round-robin move/move/wait/wait 的 position/moves/action-bookkeeping isolation。
 3. **已关闭，source `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e`：** adjacent human occupied destination 的 typed
    `blocked_by_player`、exact blocker、symmetric block 与 contested-tile winner rotation；无 implicit swap/PvP。
-4. **当前：** monster target/attack 与 death/game-over safe boundary。
-5. field/scent/NPC。
-6. tether/group shift。
-7. messages/safe-mode/stats/player-scoped cache isolation。
-8. 仅在上述 owner/rule gates 绿色后，增加 test-only 双连接 routing 和 Linux two-client smoke/soak；之后才评估开放
+4. **当前 4A：monster target/attack。** 明确 eligible human candidates、死亡/离线状态、visibility/tie selection、
+   `attack_at()` movement routing 和 actual damaged avatar。Linux client build 覆盖 production source 编译，focused
+   tests 覆盖 two-runtime 行为；后者 reachability 仍为 `test-only`。若改变 authority invariant 再加完整
+   `[multiplayer]`，不为尚无 two-runtime production caller 的路径跑伪 process gate。
+5. **4B：death/game-over safe boundary。** 覆盖单玩家死亡、仍有存活玩家、全员死亡、runtime transition 与
+   save/fail-stop disposition。默认增加完整 `[multiplayer]` 和定向 sanitizer；只有接入 production shutdown/save 路径
+   后才跑 Linux headless/native-client process regression。
+6. field/scent/NPC。
+7. tether/group shift。
+8. messages/safe-mode/stats/player-scoped cache isolation。
+9. 仅在上述 owner/rule gates 绿色后，增加 test-only 双连接 routing；运行 Linux headless server + 两个 Linux native
+   clients smoke，再完成 60 分钟 soak；之后才评估开放
    `players.max > 1`。
 
-每个编辑循环只运行 Linux incremental build 和 changed-area focused tests。只有 coherent authority/lifecycle slice
-收口时才增加完整 `[multiplayer]`、定向 sanitizer 或 Linux process smoke；只有已完成批次实际触及 Windows/Android
-owned code、公共 wire/ABI/toolchain 或平台产品声明时，才运行对应平台的最小必要 gate。
+后续 slice 按重构计划第 20.6 节记录 `test-only/client/server/end-to-end` reachability。Windows/Android 仅在冻结的
+完成批次实际触及对应 owned code、公共 wire/ABI/toolchain 或平台产品声明时运行最小必要 gate；普通 Gate 3 internal
+`.cpp`/tests 保持 Linux-only。

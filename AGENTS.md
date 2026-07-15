@@ -123,10 +123,11 @@ The active work, in order, is:
    `2eccb92087991966423c18b63f6ef707462b1428`, `3204f8f45606a20ea6ab0892369b9806f89c4353` and
    `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` as inner barrier/rule contracts only; do not wire them directly into the
    production single-root loop or mistake their lambda world callback for actual bubble evidence.
-2. The current slice is monster target/attack and death/game-over safe-boundary policy. Then close field/scent/NPC;
-   tether/group shift; and dedicated messages/safe-mode/stats/player-scoped cache
-   isolation. Preserve one shared bubble and single simulation thread. Each slice uses Linux incremental/focused tests;
-   only coherent authority/lifecycle slices add full `[multiplayer]`, sanitizer or process smoke.
+2. Split the current work into 4A monster target/attack and 4B death/game-over safe-boundary policy. Then close
+   field/scent/NPC; tether/group shift; and dedicated messages/safe-mode/stats/player-scoped cache isolation. Preserve
+   one shared bubble and single simulation thread. Each slice uses Linux incremental/focused tests; authority/lifecycle
+   risk selects full `[multiplayer]` or sanitizer, and a process smoke is added only after the changed production route
+   is actually reachable.
 3. After owner/rule gates are green, expose two connections only behind an integration/process-test switch and run a
    Linux two-client smoke/soak. Do not publish `players.max > 1` until that evidence exists. Portable characters,
    durable restart resume, multiple save generations and Phase 4 replica/rendering remain out of scope.
@@ -146,10 +147,10 @@ The fork-specific workflow is [`.github/workflows/multiplayer-baseline.yml`](.gi
 - Pinned default tileset, soundpack, desktop shaders, and compiled translations.
 - Per-artifact provenance, SHA-256, CLI/resource and smoke-test output.
 
-The workflow runs manually and on relevant changes pushed to, or proposed against, `multiplayer/main`. Its current UI
-default is `target=all`, but that default is not a validation policy: select `linux`, `windows`, `android` or `all`
-explicitly from the completed batch's acceptance target. Automatic runs compare changed paths and select only affected
-packages. Ordinary backend-neutral internal gameplay/policy files do not trigger the package baseline; protocol,
+The workflow runs manually and on relevant changes pushed to, or proposed against, `multiplayer/main`. Manual runs
+default to `target=linux`; select `windows`, `android` or `all` only when a completed platform/public/release batch has
+that acceptance target. Automatic runs compare changed paths and select only affected packages. Ordinary backend-
+neutral internal gameplay/policy files do not trigger the package baseline; protocol,
 public-header and client/platform exceptions are listed in the build baseline. Windows-owned paths select Windows,
 Android-owned paths select Android, shared graphical/platform adapters select their affected targets, and shared
 artifact/toolchain paths select their required matrix. `Makefile` is Linux-only; root CMake/version generation uses a
@@ -305,10 +306,11 @@ is the acceptance target. Backend-neutral internal shared C++ changes do not req
 Use the three verification tiers defined by the refactor plan and mapped to concrete jobs by the build baseline:
 
 1. **Tier 1 — Linux edit loop and slice closure.** During implementation, use incremental Linux builds and the focused
-   tests for the changed area. Do not turn every edit into a full-suite gate. When a coherent slice is ready to close,
-   add the complete `[multiplayer]` suite, sanitizers and/or a real Linux headless-server/native-client PTY loopback in
-   proportion to lifecycle, ownership, protocol and process risk. A Linux curses or SDL client and Linux `--server`
-   process are valid functional evidence for backend-neutral shared code.
+   tests for the changed area. Do not turn every edit into a full-suite gate. Classify closure by production
+   reachability: an internal/test-only contract may close with Linux compile/focused tests plus risk-selected full or
+   sanitizer coverage. For reachable production code, `client` uses a Linux native-client smoke, `server` uses a Linux
+   headless process, and only `end-to-end` requires both sides in a PTY/loopback. Use a Linux SDL client only for
+   graphical/rendering behavior; otherwise the curses client is the default representative client.
 2. **Tier 2 — completed platform/public-boundary batch.** Run platform evidence once the relevant Windows-owned,
    Android-owned or cross-platform public-boundary batch is complete enough to accept. Wire/schema/version/capability,
    public DTO/serialization layout, compiler-sensitive public headers and shared toolchain/source contracts require
@@ -333,6 +335,11 @@ with the incremental Linux edit loop, close the slice with risk-selected Linux g
 platform/public-boundary batch or a milestone claim that requires fresh evidence. A job that did not compile or run
 the changed production source is not evidence for that change; in particular, the isolated Windows/Android
 transport-spike jobs do not prove scheduler, phase-adapter or other production `src/multiplayer_*` portability.
+
+For every closure, record the changed-source reachability in `STATUS.md` as `test-only`, `client`, `server` or
+`end-to-end`. A skipped process gate is valid when the production binary cannot reach the changed code; a process smoke
+that never reaches it is not evidence. Platform gates remain claim-driven: compile-only, package and native lifecycle
+results are not interchangeable.
 
 The baseline changed-path selector is an optimization, not an authority oracle. When a platform-owned file is added
 or renamed, update both push/pull-request path lists and the selector mapping in the same change. If a generic path
