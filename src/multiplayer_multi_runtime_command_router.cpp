@@ -9,6 +9,8 @@
 #include "game.h"
 #include "map.h"
 #include "mapdata.h"
+#include "multiplayer_player_registry.h"
+#include "multiplayer_player_runtime.h"
 #include "trap.h"
 #include "type_id.h"
 
@@ -93,6 +95,14 @@ multiplayer_command_execution rejected_unsupported_move()
     return execution;
 }
 
+multiplayer_command_execution rejected_player_collision()
+{
+    multiplayer_command_execution execution;
+    execution.rejection = multiplayer_protocol_rejection::invalid_state;
+    execution.message = "destination is occupied by another player";
+    return execution;
+}
+
 std::optional<multiplayer_turn_action_disposition> disposition_for_execution(
     const multiplayer_command_execution &execution, const avatar &player )
 {
@@ -131,14 +141,36 @@ multiplayer_route_multi_runtime_basic_command(
             const tripoint_rel_ms direction( command.direction->dx,
                                              command.direction->dy,
                                              command.direction->dz );
-            if( is_valid_adjacent_direction( direction ) &&
-                !is_verified_plain_multi_runtime_move( owner.simulation_, player,
-                        get_map(), direction ) ) {
-                result.execution = rejected_unsupported_move();
+            if( is_valid_adjacent_direction( direction ) ) {
+                const multiplayer_player_registry &registry =
+                owner.simulation_.multiplayer_players();
+                avatar *const blocking_player = registry.find_other_at(
+                    player.pos_abs() + direction, player );
+                if( blocking_player != nullptr ) {
+                    const shared_ptr_fast<multiplayer_player_runtime> blocking_runtime =
+                    registry.find_runtime( *blocking_player );
+                    if( blocking_runtime == nullptr ) {
+                        return std::nullopt;
+                    }
+                    result.resolution =
+                        multiplayer_multi_runtime_command_resolution::blocked_by_player;
+                    result.blocking_player = multiplayer_turn_participant_key{
+                        blocking_runtime->player_id(),
+                        blocking_runtime->session_generation()
+                    };
+                    result.execution = rejected_player_collision();
+                } else if( !is_verified_plain_multi_runtime_move(
+                               owner.simulation_, player, get_map(), direction ) ) {
+                    result.resolution =
+                        multiplayer_multi_runtime_command_resolution::unsupported_move;
+                    result.execution = rejected_unsupported_move();
+                }
             }
         }
         if( !result.execution )
         {
+            result.resolution =
+                multiplayer_multi_runtime_command_resolution::executor_result;
             result.execution = multiplayer_execute_basic_command(
                                    owner.simulation_, player, command );
         }

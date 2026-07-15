@@ -177,6 +177,21 @@ avatar *multiplayer_player_registry::find_at( const tripoint_abs_ms &position ) 
            found->second.empty() ? nullptr : found->second.front();
 }
 
+avatar *multiplayer_player_registry::find_other_at(
+    const tripoint_abs_ms &position, const avatar &excluded ) const
+{
+    rebuild_indexes();
+    const auto found = players_by_position.find( position );
+    if( found == players_by_position.end() ) {
+        return nullptr;
+    }
+    const auto other = std::find_if( found->second.begin(), found->second.end(),
+    [&excluded]( const avatar * candidate ) {
+        return candidate != &excluded;
+    } );
+    return other == found->second.end() ? nullptr : *other;
+}
+
 shared_ptr_fast<avatar> multiplayer_player_registry::shared_from( const avatar &player ) const
 {
     const shared_ptr_fast<multiplayer_player_runtime> runtime = find_runtime( player );

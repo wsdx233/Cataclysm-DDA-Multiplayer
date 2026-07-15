@@ -45,6 +45,9 @@ class multiplayer_player_registry
         shared_ptr_fast<multiplayer_player_runtime> runtime_from_owner(
             const shared_ptr_fast<avatar> &player ) const;
         avatar *find_at( const tripoint_abs_ms &position ) const;
+        /** Finds another physical registry avatar, regardless of runtime status. */
+        avatar *find_other_at( const tripoint_abs_ms &position,
+                               const avatar &excluded ) const;
         shared_ptr_fast<avatar> shared_from( const avatar &player ) const;
         bool contains( const avatar &player ) const;
         bool owns( const shared_ptr_fast<avatar> &player ) const;
