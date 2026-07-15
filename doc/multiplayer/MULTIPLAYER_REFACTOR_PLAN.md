@@ -396,12 +396,22 @@ identity；一个 persistent scheduler 跨 turn 保留公平首位轮换。sched
 `player_end_pending` 和 exact process-local receipt 才能开始下一 turn。该 owner 尚未组合 transport/session directory、
 selected-root 切换、actual legacy bubble、outer lifecycle 或 canonical save，因此不改变 production single-root 路径。
 
+Gate 3 source `3204f8f45606a20ea6ab0892369b9806f89c4353` 在该 inner owner 与既有 semantic executor 之间增加 thin
+`multiplayer_multi_runtime_command_router`。router 不拥有 transport、admission、revision 或 dedup，只允许 owner 已验证
+的 exact current participant 在 active-player guard 内调用 `multiplayer_execute_basic_command()`；accepted execution
+按目标 avatar 执行后的 moves 映射为 `accepted_remains_eligible`/`accepted_finished`，无 action 的
+rejected/duplicate 不推进 cursor，不一致的 result/action 组合返回无 disposition 并沿 adapter 既有 fault path
+fail-stop。multi-runtime move 暂时 fail-closed 为已审计的同层相邻空地子集，其他 legacy movement branch 在规则执行前
+拒绝。这是可逐步扩展的 rule boundary，不是 production command/session owner，也不放宽 `players.max = 1`。
+
 ### 8.2 公平顺序
 
 - 每个 turn 只执行每名玩家一个命令，然后轮到下一名仍有 moves 的玩家。
 - 首位玩家按稳定 `player_id` 轮换；当前 policy 选择上个已完成 turn 首位的字典序后继并在末尾回绕，避免 host、
   先加入者或 roster churn 造成永久冲突优先权。
 - current slot 没有命令时必须保持稳定；rejected/duplicate 结果不消耗轮次，accepted 结果才推进。
+- owner-level basic rule matrix 必须验证 exact `first move -> second move -> first wait -> second wait`，并证明每次只
+  修改目标 avatar；non-current、malformed、unsupported 或 occupied-destination move 不消费当前 slot。
 - 同时拾取同一物品时，第一个合法命令成功，第二个收到 `state_changed`，并立即获得增量更新。
 - 服务器日志记录 deterministic ordering key，便于复现。
 
@@ -496,8 +506,10 @@ proof 的 fail-stop，以及现有 moves replenishment 顺序；`check_safe_mode
 
 这些边界关闭了 single-root compatibility route，但 trace label 仍只是观察点。Gate 3 source
 `2eccb92087991966423c18b63f6ef707462b1428` 已把已有 two-runtime wait-only contract 提升到独立 inner
-multi-runtime owner，且没有放宽 `multiplayer_single_root_owner`。下一步按规则矩阵逐项迁移当前只对 `u` 生效的逻辑，
-不能按 trace label 机械切块，也不能把 inner owner 直接当作 production session owner。
+multi-runtime owner；source `3204f8f45606a20ea6ab0892369b9806f89c4353` 又增加 thin command router、verified adjacent empty-ground move 和
+move/move/wait/wait 隔离。plain-walk 直接链已改为读取 active avatar，但这不代表完整 movement tree 已适配：human
+collision、monster/NPC attack、door/furniture/vehicle/grab/phasing/swim、field/trap/effect 等分支仍须逐项验证或拒绝。
+不能按 trace label 机械切块，也不能把 inner owner/router 直接当作 production session owner。
 
 迁移时要逐项处理当前只对 `u` 执行的逻辑，至少包括：
 
@@ -560,6 +572,11 @@ server command executor
 - `string_input_popup`
 - inventory selector 的阻塞输入
 - 任何 SDL/curses/ImGui API
+
+共享 rule seam 必须显式传播 `allow_interactive_ui = false` 或等价的 server execution mode。若 legacy branch 会进入
+危险地形确认、NPC menu、物品选择或其他 popup，router 必须在 gameplay side effect 前拒绝，不能依赖 headless
+suppression 假装该动作可执行。Gate 3 的 verified adjacent empty-ground move 已按此约束把 non-interactive mode 传入
+plain-walk seam；这不自动批准其他 movement branch。
 
 复杂交互改为：
 
@@ -1199,6 +1216,9 @@ world_runtime
   guard engagement/恢复、目标 action bookkeeping、真实 forced `pause()` before record、active-avatar safe-mode
   permission gate，以及
   callback/wait/world/record failure 后 scheduler 永久 fail-stop；替换 adapter 也不得重试已可能发生副作用的工作。
+- multi-runtime command router 的 exact-current owner entry、共享 basic executor、post-action moves 到 scheduler
+  disposition 的映射，以及 malformed/non-current/unsupported/occupied move 的 rejected-without-advance；任何
+  status/action 不一致都必须 fail-stop，不能猜测一个 accepted disposition。
 - session directory/lobby 的 pending -> prepare/pre-encode -> simulation commit -> transport enqueue -> publish 顺序、
   重复/stale completion、同 token 并发 claim、exact generation、accepted resume response 丢失后的同代 replay、
   首个 application frame 的 exact-tuple directory confirmation 与显式 lobby ack、fresh/terminal token record 回收、
@@ -1220,6 +1240,9 @@ world_runtime
 - ASan、UBSan、LSan 下无错误。
 - Phase 0 player snapshot 保存/加载后，两个角色身份与玩家级状态一致，且不复制或修改共享
   world/map/vehicle 状态。完整 world restart、RNG 和 generation fallback 由 ADR-0007/Phase 5 验证。
+- 两个 runtime 通过同一 command router 执行 `move -> move -> wait -> wait` 后，只有目标 avatar 的 position、moves、
+  tracker index、`nv_cached` 和 action bookkeeping 改变；另一 avatar、root grab state、runtime owner 与 guard 外 root
+  context 必须保持。当前只对 verified adjacent empty-ground subset 作正向声明。
 
 完整 avatar move-swap 的引用失败测试作为对照保留。稳定地址方案若仍有核心不变量失败，先停止生产扩展并更新 ADR，不通过分散的 cache 修复掩盖问题。
 
@@ -1228,9 +1251,9 @@ world_runtime
 构建 in-process loopback harness：
 
 - 一个 server、两个无 UI test clients。
-- 当前 in-process source test 已通过 existing registry/guard 让两个 runtime 完成 wait-only barrier，对真实
-  automatic wait 和一个 world lambda 计数，并覆盖 wait/callback 失败与替换 adapter 的 fail-stop；它不是两个
-  client，也没有执行真实 bubble gameplay callback。
+- 当前 in-process source tests 已通过 existing registry/guard 让两个 runtime 完成 wait/forced-wait barrier，并经 thin
+  router 执行 exact `move -> move -> wait -> wait`，验证目标 position/moves/bookkeeping 与 tracker/root-context 隔离；
+  world 仍只对一个 lambda 计数。它们不是两个 client，也没有执行真实 bubble gameplay callback。
 - production integration 必须把实际 legacy bubble/world callback 放在 `claim_world()` 后运行并验证恰好一次；只
   调用 policy 的 `record_automatic_wait_executed()`/`claim_world()` 或只计数测试 lambda 不能算最终 gameplay evidence。
 - 两玩家相邻移动并互相阻挡。
@@ -1528,11 +1551,13 @@ session ownership、two-phase admission、selected-root lifecycle、scheduler/ad
 - **Gate 3：two-runtime owner 与规则矩阵。** 首个 inner owner-contract sub-gate 已由 source
   `2eccb92087991966423c18b63f6ef707462b1428` 关闭：in-process two-runtime wait-only case 已提升为 owner-level
   integration，immutable roster 的 pinned runtime/avatar identity、persistent fairness、explicit player-end pending receipt
-  和 fail-stop 已有 Linux release/sanitizer 证据，但仍继续拒绝外部 `players.max > 1`。下一步依次关闭
-  round-robin wait/move 与 basic position/moves/action-bookkeeping isolation、human collision、monster/death、
-  field/scent/NPC、tether/group shift，以及 messages/safe-mode/stats/player-scoped cache isolation。全部 owner/
-  rule gates 绿色后，先开放仅供 integration/process test 使用的双连接 routing 并完成 Linux 双 client smoke/soak；
-  该测试开关不得作为用户配置发布。只有这些证据也绿色后，才评估允许用户配置 `players.max > 1`。
+  和 fail-stop 已有 Linux release/sanitizer 证据。第二个 inner rule sub-gate 已由 source
+  `3204f8f45606a20ea6ab0892369b9806f89c4353` 关闭：thin router、verified adjacent empty-ground move、active-avatar plain-walk seam 和 exact
+  move/move/wait/wait position/moves/action-bookkeeping isolation 已有 Linux release/full-multiplayer、定向 sanitizer 与
+  native curses PTY 证据，但仍继续拒绝外部 `players.max > 1`。下一步依次关闭 human collision、monster/death、
+  field/scent/NPC、tether/group shift，以及 messages/safe-mode/stats/player-scoped cache isolation。全部 owner/rule gates
+  绿色后，先开放仅供 integration/process test 使用的双连接 routing 并完成 Linux 双 client smoke/soak；该测试开关
+  不得作为用户配置发布。只有这些证据也绿色后，才评估允许用户配置 `players.max > 1`。
 
 后续 Gate 3 编辑循环继续只跑 Linux incremental/focused tests；改变 shared-turn/authority invariant 的切片收口按
 风险增加完整 `[multiplayer]` 和 sanitizer，真实双 client routing 接通时再增加 Linux process smoke。只有已完成
@@ -1661,6 +1686,8 @@ src/multiplayer_player_registry.h/.cpp
 src/multiplayer_player_context.h/.cpp
 src/multiplayer_turn_scheduler.h/.cpp
 src/multiplayer_single_root_owner.h/.cpp
+src/multiplayer_multi_runtime_barrier_owner.h/.cpp
+src/multiplayer_multi_runtime_command_router.h/.cpp
 src/multiplayer_command.h/.cpp
 src/multiplayer_command_executor.h/.cpp
 src/multiplayer_snapshot.h/.cpp
@@ -1673,6 +1700,8 @@ src/server_main.cpp
 tests/multiplayer_protocol_test.cpp
 tests/multiplayer_scheduler_test.cpp
 tests/multiplayer_player_slot_test.cpp
+tests/multiplayer_multi_runtime_barrier_owner_test.cpp
+tests/multiplayer_multi_runtime_command_router_test.cpp
 tests/multiplayer_scene_test.cpp
 tests/multiplayer_character_import_test.cpp
 tests/multiplayer_save_test.cpp

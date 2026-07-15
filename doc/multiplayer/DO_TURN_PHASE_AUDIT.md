@@ -62,8 +62,9 @@ remote 路径不执行 renderer recovery、music/SFX、autosave、截图、block
 - production `src/main.cpp` 仍只路由固定 root player，但已由 `multiplayer_single_root_owner` 编排 directory、scheduler、
   lifecycle 和 adapter；command replay/cache 与 completed-scene revision 仍属于该单 root session。它不是
   round-robin multi-player owner。
-- `game::walk_move()` 仍直接使用固定 `game::u`，human-human collision、monster/death/field/scent/NPC target、
-  tether/group-centered shift 和 player-scoped message/state 隔离都不是纯调度器能够补齐的能力。
+- 本次审计发现 `game::walk_move()` 直接使用固定 `game::u`。Gate 3 source `3204f8f45606a20ea6ab0892369b9806f89c4353` 后续只把已审计的
+  plain-walk 直接链改为读取 `active_avatar()`；human-human collision、复杂 movement、monster/death/field/scent/NPC
+  target、tether/group-centered shift 和 player-scoped message/state 隔离仍不是纯调度器能够补齐的能力。
 
 复核没有推翻 ADR-0002，但证明五个 trace range 不能直接作为实现边界。Gate 2 已把保持单人行为的 owned action/
 world seams 和 phase adapter 接入 production single-root routing；五个 label 仍不能机械变成逐玩家 ownership。
@@ -151,9 +152,34 @@ owner-level contract。它不是新的 production session owner，也没有把�
 production transport/session directory，也没有实现 multi-runtime resume/replay/repair、selected-root re-selection、
 逐玩家 begin/end、outer lifecycle commit、scene publish 或 canonical save proof。production `do_turn()` 仍由
 single-root owner 驱动 actual bubble，`players.max` 必须保持 `1`；因此该 inner contract 不表示 two-player routing、
-Gate 3 关闭或 Phase 3 完成。下一步仍需在 outer multi-runtime owner 中组合这些边界，再按 round-robin wait/move 与
-basic position/moves/action-bookkeeping isolation、collision、monster/death、field/scent/NPC、tether/group shift 和
+Gate 3 关闭或 Phase 3 完成。下述第二个 inner rule slice 关闭 basic wait/move isolation；后续仍需在 outer
+multi-runtime owner 中组合这些边界，再按 collision、monster/death、field/scent/NPC、tether/group shift 和
 messages/safe-mode/stats/player-scoped cache isolation 的顺序关闭规则矩阵。
+
+## Gate 3 第二个 command-router/basic-move inner rule contract
+
+Gate 3 source `3204f8f45606a20ea6ab0892369b9806f89c4353` 新增 thin `multiplayer_multi_runtime_command_router`，把 exact-current inner owner
+entry 与既有 `multiplayer_execute_basic_command()` 组合起来，但不接管 transport、admission、revision、dedup、scene
+或 canonical save：
+
+- owner 先完成 participant/generation/pinned runtime identity 与 root-context 验证，再在目标 active-player guard 内
+  调用 router callback。non-current command 在 executor 前拒绝，router 不自行重选 runtime。
+- accepted execution 根据目标 avatar 执行后的 moves 映射为 `accepted_remains_eligible` 或
+  `accepted_finished`；无 action 的 rejected/duplicate 不推进 scheduler。status/action 不一致时不猜测 disposition，
+  而是沿 adapter callback-failure path fail-stop。
+- move 只允许已审计的同层相邻空地子集。occupied creature、vehicle/mount/grab/activity、field/trap/furniture/item、
+  water/ramp/rough/sharp/unstable、小通道、door/open-air 和其他特殊 branch 在 gameplay 前拒绝。
+- `game::walk_move()`、`get_dangerous_tile()`、`grabbed_move()` 和 `on_move_effects()` 的直接玩家读取改为
+  `active_avatar()`。`avatar_action::move()` 继续向 walk seam 传递 `allow_interactive_ui`，因此 remote move 遇到危险
+  terrain 时不会进入 prompt/ledge UI。该改动只证明直接 plain-walk 链，不代表完整 movement tree 已迁移。
+- owner-level case 真实执行 exact `first move -> second move -> first wait -> second wait`，验证每次只有目标 position、
+  moves、tracker index、`nv_cached` 和 action bookkeeping 改变；另一 avatar、root grab sentinel、runtime ownership 与
+  guard 外 root context 保持。non-current、malformed、grabbed 和 human-occupied move rejected 且不推进 cursor。
+- 所有 participant terminal 后 world callback 仍只是一次测试 lambda，随后 exact process-local player-end receipt 才
+  返回 idle。它不是 actual legacy bubble 或 production two-client evidence。
+
+production 仍由 single-root owner 路由，`players.max` 保持 `1`。下一 slice 必须先定义 human-human
+occupied-destination 的服务器权威语义与 typed result，不能简单删除当前 creature preflight 造成 avatar 重叠。
 
 ## Phase 0 基线
 

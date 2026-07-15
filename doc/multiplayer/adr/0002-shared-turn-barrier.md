@@ -97,6 +97,22 @@ canonical save transaction。它的 world 仍只是测试 lambda，没有调用 
 single-root owner，配置继续拒绝 `players.max > 1`。因此这不是 production two-player routing、Gate 3 关闭或 Phase 3
 退出证据；monster/death 和其余共享规则矩阵仍待后续 slices 完成。
 
+Gate 3 source `3204f8f45606a20ea6ab0892369b9806f89c4353` 增加第二个 inner rule slice，并保持上述 ownership 决策不变：
+
+- thin `multiplayer_multi_runtime_command_router` 只组合 owner 的 exact-current callback 与既有
+  `multiplayer_execute_basic_command()`；transport、admission、revision、dedup 和 scene 不下沉到该 router。
+- accepted action 依据目标 avatar 执行后的 moves 产生 `accepted_remains_eligible` 或 `accepted_finished`；无 action 的
+  rejected/duplicate 不推进 cursor。无法证明一致的 status/action 组合返回无 disposition，并由 adapter fail-stop。
+- multi-runtime movement 暂时只批准已审计的同层相邻空地子集。unsupported legacy branch 在 gameplay side effect 前
+  rejected；human-occupied destination 保持 fail-closed，等待独立 collision policy。
+- plain-walk 直接链的玩家读取使用 `active_avatar()`，remote call 显式禁止 interactive terrain prompt。这不是完整
+  movement tree、human collision 或 monster/NPC attack 的关闭证据。
+- owner-level integration 真实执行 exact `move -> move -> wait -> wait`，并验证目标唯一 position/moves/tracker/
+  bookkeeping 变化与 root context 恢复；world 仍只是测试 lambda。
+
+因此该 slice 仍不是 production two-player routing，也不允许提高 `players.max`。下一规则 slice 必须先定义
+human-human occupied-destination 的服务器权威结果，不能靠取消 creature check 允许两个 avatar 占用同一位置。
+
 ## 替代方案
 
 - 世界按墙钟持续运行：拒绝。与长活动、复杂菜单和回合制风险判断不兼容。
@@ -131,6 +147,10 @@ single-root owner，配置继续拒绝 `players.max > 1`。因此这不是 produ
   `player_end_pending` 对下一 turn/world 的阻塞，以及 opaque completion receipt 的 exact/duplicate/default-forged/stale/
   cross-owner 处理。exact-current identity 丢失和外层 completion record divergence 必须永久 fail-stop。当前 owner-level
   world callback 仍是计数 lambda，不是 actual bubble gameplay evidence。
+- multi-runtime command router 测试覆盖 exact `first move -> second move -> first wait -> second wait`，目标唯一
+  position/moves/tracker/action-bookkeeping/cache 变化、另一 avatar 与 root grab state 不变、root context 恢复，以及
+  non-current、malformed、grabbed 和 human-occupied move 的 rejected-without-advance。任何 status/action 不一致必须
+  fail-stop；verified adjacent empty-ground 正向 case 不能被描述为完整 movement 或 collision evidence。
 - single-root production 集成已把真实 legacy bubble callback 放在 claim 后计数，并覆盖 failure 后的 typed
   fail-stop/shutdown；后续 two-runtime production integration 必须保留同一门禁。单测只观察到一次
   `claim_world()` 或 lambda 不足以证明 world phase exactly-once。

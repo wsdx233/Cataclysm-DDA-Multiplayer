@@ -2,12 +2,12 @@
 
 - 更新日期：2026-07-15
 - 分支：`multiplayer/main`
-- 当前 implementation source：`2eccb92087991966423c18b63f6ef707462b1428`
+- 当前 implementation source：`3204f8f45606a20ea6ab0892369b9806f89c4353`
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
 - 当前阶段：**Phase 3，第二玩家/shared scheduler**
 - 当前 active gate：**Gate 3，two-runtime owner 与共享规则矩阵**
 - 已关闭 gate：Gate 1 selected-root lifecycle contract；Gate 2 production single-root lifecycle
-- Gate 3 已关闭 slice：slice 1 inner barrier owner contract
+- Gate 3 已关闭 slice：slice 1 inner barrier owner contract；slice 2 thin command router/basic move isolation
 - ADR 状态：ADR-0001 至 ADR-0011 均已接受
 - 配置约束：`players.max = 1`；Gate 3 owner/rule/process gates 关闭前不得提高
 - 当前验证策略：**Tier 1 Linux-first**；本批 Windows/Android 按策略未运行
@@ -51,8 +51,28 @@ Gate 3 的首个 inner owner-contract slice 已由 source
 - callback/world/outer record divergence 永久 latch fault，并保留 gameplay side-effect uncertainty。exact receipt 只证明
   caller-reported player-end 顺序，不证明 outer lifecycle 或 canonical save safety。
 
-这仍只是 inner barrier contract。production 继续使用 **single-root** owner；没有 actual two-runtime bubble、session/
-resume owner、第二 client routing 或 save transaction。`players.max` 必须保持 `1`。
+Gate 3 的第二个 inner rule slice 由 source `3204f8f45606a20ea6ab0892369b9806f89c4353` 收口：
+
+- 新增 thin `multiplayer_multi_runtime_command_router`。它不拥有 transport、admission、revision 或 dedup，只在
+  `multiplayer_multi_runtime_barrier_owner` 已验证 exact current participant 后调用既有
+  `multiplayer_execute_basic_command()`；
+- router 只接受一致的 authoritative execution/disposition 组合：accepted action 根据目标 avatar 执行后的 moves
+  映射为 `accepted_remains_eligible` 或 `accepted_finished`，无 action 的 rejected/duplicate 不推进 cursor；不一致
+  组合返回无 disposition 并沿既有 adapter callback-failure path fail-stop；
+- multi-runtime move 暂时 fail-closed 为已审计的同层相邻空地子集。vehicle/mount/grab/activity、creature occupied、
+  field/trap/furniture/item、water/ramp/rough/sharp/unstable、小通道、door/open-air 和其他 legacy 特殊分支都在规则
+  执行前拒绝；
+- `game::walk_move()`、`get_dangerous_tile()`、`grabbed_move()` 和 `on_move_effects()` 的直接玩家读取改为
+  `active_avatar()`；`avatar_action::move()` 把 `allow_interactive_ui` 传入 walk seam，remote path 遇到危险地形不进入
+  `query_yn()`/ledge UI；
+- owner-level case 以 exact `first move -> second move -> first wait -> second wait` 顺序执行真实共享 executor，验证
+  只有目标 position、moves、tracker index、`nv_cached` 和全局 action counter 改变；另一 avatar、root grab sentinel、
+  runtime owner 与 root active context 保持不变；
+- non-current、缺失 direction、grabbed 和 human-occupied move 均 rejected 且不改变 position/moves/bookkeeping、slot
+  或 fault state。world 仍只执行测试 lambda，再由 exact player-end receipt 回到 idle。
+
+这两个 Gate 3 slices 仍只是 inner barrier/rule contracts。production 继续使用 **single-root** owner；没有 actual
+two-runtime bubble、session/resume owner、第二 client routing 或 save transaction。`players.max` 必须保持 `1`。
 
 ## 当前 ownership 快照
 
@@ -60,10 +80,11 @@ resume owner、第二 client routing 或 save transaction。`players.max` 必须
 | --- | --- | --- |
 | Transport/lobby | connection、token mirror、pending admission、typed ordered close/rejection、closing priority | 双连接 admission/routing 仍未开放 |
 | Session directory | stable identity/binding/generation、two-stage commit/confirmation、graceful pending、exact offline/reactivation | multi-runtime roster transition 尚未接入 production owner |
-| Registry/runtime | 地址稳定 avatar/runtime、active/offline/dead、active-player guard | 多 runtime 的安全 selected-context 切换与 death policy |
-| Scheduler | immutable roster、round-robin、disconnect grace、forced-wait pending、world ticket、fault latch | production two-runtime roster 与公平 command routing |
-| Phase adapter | scoped action/wait/bookkeeping、world claim callback、post-effect fail-stop | 第二 runtime 的完整规则矩阵 |
-| Multi-runtime barrier owner | immutable/pinned roster、persistent fairness、two-runtime wait/forced wait、explicit player-end pending receipt | 无 production caller、actual bubble、session/resume/root-selection/outer save owner |
+| Registry/runtime | 地址稳定 avatar/runtime、active/offline/dead、active-player guard、plain-move tracker identity | human collision、复杂规则 selected-context 与 death policy |
+| Scheduler | immutable roster、round-robin、disconnect grace、forced-wait pending、world ticket、fault latch | production two-runtime roster/routing；inner move/wait fairness 已验证 |
+| Phase adapter | scoped action/wait/bookkeeping、world claim callback、post-effect fail-stop | human collision及第二 runtime 的其余规则矩阵 |
+| Multi-runtime barrier owner | immutable/pinned roster、persistent fairness、two-runtime wait/forced wait/plain move、explicit player-end pending receipt | 无 production caller、actual bubble、session/resume/root-selection/outer save owner |
+| Multi-runtime command router | exact-current owner callback、shared basic executor、typed disposition、verified adjacent empty-ground move | 无 outer revision/dedup/transport/admission；human collision与复杂 movement 未关闭 |
 | Single-root owner | directory/scheduler/lifecycle/adapter、dormant/resume、safe save disposition | 固定拒绝 `maximum_players != 1`，不得直接扩容 |
 | Dedicated server | outer/active pump、completed-scene cache、typed fatal/no-save、真实 curses/headless loop | test-only 双连接开关和双 client smoke/soak 尚未实现 |
 
@@ -116,7 +137,152 @@ resume owner、第二 client routing 或 save transaction。`players.max` 必须
   未来 outer owner 需要该能力，先改成独立 durable owner tag。
 - 旧 adapter-level two-runtime wait-only case 已移除，等价且更强的 owner-level integration 现在是唯一证据位置。
 
+## Gate 3 第二个 command-router/basic-move slice
+
+- 新增 `src/multiplayer_multi_runtime_command_router.h/.cpp`。router 是 owner 与既有 semantic executor 之间的薄层；
+  revision、client sequence dedup、transport connection、admission 和 scene publish 仍属于未来 outer owner。
+- exact-current participant 由 barrier owner 建立 guard。router 不自行选择 runtime，也不绕过 owner 的 pinned owner
+  identity 复核；non-current command 在 executor callback 前拒绝。
+- wait 沿用 `multiplayer_execute_basic_command()`；move 只有通过 audited adjacent empty-ground preflight 才进入同一
+  executor。合法执行结果再按目标 post-action moves 产生 scheduler disposition，rejected/duplicate 不消费当前 slot。
+- plain-walk 直接链改为 active-avatar-aware，并显式禁止 remote dangerous-terrain prompt。这只批准已测试子集，不能
+  推导 door、attack、grab、vehicle、phasing、swim、field/trap 或其他 legacy movement branch 已安全。
+- `tests/multiplayer_multi_runtime_command_router_test.cpp` 覆盖 exact `move/move/wait/wait` round-robin、目标唯一
+  position/moves/action bookkeeping、registry/tracker identity、root grab 隔离、root context 恢复，以及 non-current、
+  malformed、grabbed 和 human-occupied destination 的 fail-closed rejection。
+- world callback 仍是 owner-level count lambda；本 slice 没有 production caller，也不构成 actual bubble、two-client 或
+  canonical save evidence。
+
 ## 当前 source 验证证据
+
+### Gate 3 slice 2 Linux release、完整多人 suite 与格式
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+./build-scripts/check-multiplayer-build-env.sh linux
+
+make -j"$(nproc)" AUTO_BUILD_PREFIX=1 \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 ASTYLE=0 \
+  tests
+
+./tests/release-local-back-cata_test \
+  '[multiplayer][multi_runtime_command_router],[multiplayer][command_executor]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-gate3-router-command-focused-final
+
+./tests/release-local-back-cata_test '[multiplayer]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-gate3-router-full
+
+rm -f release-local-back-obj/version.o
+make -j"$(nproc)" AUTO_BUILD_PREFIX=1 \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 ASTYLE=0 \
+  release-local-back-cataclysm
+./release-local-back-cataclysm --version
+
+make \
+  ASTYLE_BINARY="$HOME/.cache/cdda-tools/astyle-3.1-3build1/root/usr/bin/astyle" \
+  astyle-check
+git diff --check
+```
+
+结果：
+
+- router + command executor focused：7 cases / 225 assertions，全过；
+- 完整 `[multiplayer]`：141 cases；139 passed + 2 个既有 `[!mayfail]` full-avatar move-swap identity 负面对照；
+  7,736 assertions 中 7,733 passed + 3 expected failures；exit 0；
+- source commit 后的 curses client/server binary 报告 build ID
+  `3204f8f45606a20ea6ab0892369b9806f89c4353-dirty` 和 exact `-tiles, -sound`；`dirty` 仅来自本次未提交文档；
+- AStyle 3.1 与 `git diff --check` 通过。
+
+### Gate 3 slice 2 Linux sanitizer
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+CXXFLAGS='-Wno-array-bounds -Wno-stringop-overread' \
+  make -j"$(nproc)" AUTO_BUILD_PREFIX=1 \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 ASTYLE=0 \
+  SANITIZE=address,undefined tests
+
+ASAN_OPTIONS='detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1:abort_on_error=1' \
+UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1' \
+./tests/release-local-back-sanitize-cata_test \
+  '[multiplayer][multi_runtime_command_router],[multiplayer][command_executor],[multiplayer][multi_runtime_barrier_owner],[multiplayer][phase_adapter],[multiplayer][scheduler]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-gate3-router-sanitize-final
+```
+
+结果：47 cases / 1,568 assertions，全过；无 ASan、UBSan、LSan 或 stack-use-after-return finding。未加 suppressions
+的首次全量重编译先被 unchanged `character_inventory.cpp` 的 GCC 13 `-Warray-bounds` 阻断；仅抑制该诊断后又被
+unchanged `character_inventory.cpp`/`editmap.cpp` 的 `-Wstringop-overread` 阻断。上面的最终命令同时抑制这两个
+`-Werror` diagnostics，sanitizer flags 仍保持启用；这不是 sanitizer finding，也没有关闭 sanitizer。
+
+### Gate 3 slice 2 Linux native curses client PTY regression
+
+配置根：`build/multiplayer-gate3-router-ui-20260715`，backend port `43235`。
+
+```bash
+set -euo pipefail
+root="$PWD/build/multiplayer-gate3-router-ui-20260715"
+port=43235
+test ! -e "$root"
+if ss -ltn | rg -q ":${port}\\b"; then
+  echo "port $port already in use" >&2
+  exit 99
+fi
+mkdir -p "$root"
+./release-local-back-cataclysm \
+  --userdir "$root/server-user" --init-server-config "$root/server.json" \
+  >"$root/init.stdout" 2>"$root/init.stderr"
+jq --arg listen "127.0.0.1:$port" \
+  '.network.listen = $listen | .players.disconnect_grace_seconds = 3' \
+  "$root/server.json" >"$root/server.json.tmp"
+mv "$root/server.json.tmp" "$root/server.json"
+
+stdbuf -oL -eL ./release-local-back-cataclysm \
+  --userdir "$root/server-user" --server "$root/server.json" \
+  >"$root/server.stdout" 2>"$root/server.stderr" &
+server_pid=$!
+cleanup() {
+  if kill -0 "$server_pid" 2>/dev/null; then
+    kill -TERM "$server_pid" 2>/dev/null || true
+    wait "$server_pid" || true
+  fi
+}
+trap cleanup EXIT
+for _ in $(seq 1 600); do
+  rg -q '"event":"listening"' "$root/server.stdout" && break
+  kill -0 "$server_pid"
+  sleep 0.1
+done
+rg -q '"event":"listening"' "$root/server.stdout"
+
+python3 tools/multiplayer/network_client_ui_smoke.py \
+  --client "$PWD/release-local-back-cataclysm" \
+  --backend-port "$port" \
+  --token-file "$root/server-auth-token.txt" \
+  --user-dir "$root/client-user" \
+  --transcript "$root/client.transcript" \
+  --event-log "$root/client-events.txt" \
+  --timeout-seconds 60 \
+  >"$root/client.stdout" 2>"$root/client.stderr"
+sleep 1
+kill -TERM "$server_pid"
+wait "$server_pid"
+trap - EXIT
+
+test "$(jq -r 'select(.event == "command_result") | .status' \
+  "$root/server.stdout" | paste -sd, -)" = '0,2,0'
+test "$(rg -c '"event":"player_resumed"' "$root/server.stdout")" -eq 1
+rg -q 'sent local quit input' "$root/client.stdout"
+rg -q 'client exited with status 0' "$root/client.stdout"
+rg -q 'scene_sync_events=3' "$root/client.stdout"
+rg -q '"event":"save_completed".*"revision":"4"' "$root/server.stdout"
+rg -q '"event":"shutdown"' "$root/server.stdout"
+! rg -q '"event":"save_refused"|"event":"runtime_failed"' "$root/server.stdout"
+```
+
+结果：command statuses `0,2,0`，`player_resumed = 1`，client exit `0`，`scene_sync_events = 3`；server 记录
+`save_completed(revision=4)` 与 `shutdown`，无 `save_refused`/`runtime_failed`。这证明 unchanged production single-root
+headless/native-client path 在 active-avatar walk seam 修改后仍正常；router 本身仍无 production caller，不能把本 PTY
+描述为 two-runtime process evidence。
 
 ### Gate 3 Linux release、完整多人 suite 与格式
 
@@ -438,17 +604,20 @@ gameplay command。
 
 ## 平台选择与未运行证据
 
-本批选择 Tier 1，因为 Gate 3 source diff 是 backend-neutral internal scheduler/owner policy 与 tests。审计命令：
+本批选择 Tier 1，因为 Gate 3 slice 2 是 backend-neutral internal rule/router、active-player walk seam 与 tests。收口后
+使用下述 diff 审计：
 
 ```bash
 git diff --name-status \
-  541beb321a25dd13ad7371ce20ca40a2565be53d..2eccb92087991966423c18b63f6ef707462b1428
+  ccf8440933aec1ca3949f3d640e746b9095a616d..3204f8f45606a20ea6ab0892369b9806f89c4353
 ```
 
 审计未发现 Android/Windows-owned source、platform conditional、wire schema/version/capability、generated protocol、
-transport/crypto public boundary、shared source list、workflow、artifact 或 pinned toolchain 变化。新增 header 只暴露
-repo-internal barrier owner contract，不改变 wire/serialization ABI，也没有平台分支。故本批未运行 Windows
-MSVC package、Android APK/NDK 或 emulator/device；这是按策略未运行，不是 blocker，也不构成当前 source 的平台证据。
+transport/crypto public boundary、shared source list、workflow、artifact 或 pinned toolchain 变化。新增 router header 和
+`game.h` 的 walk default parameter 都是 repo-internal C++ 调用 seam，不改变 wire/public DTO/serialization ABI，也没有
+平台分支。故本批不运行 Windows MSVC package、Android APK/NDK 或 emulator/device；这是按策略未运行，不是 blocker，
+也不构成 `3204f8f45606a20ea6ab0892369b9806f89c4353` 的平台证据。若 source commit 前又加入 platform conditional、公共 ABI/header、source
+list 或平台 owned code，必须重新分类并补第 20.6 节要求的最小 Tier 2 gate。
 
 最近兼容的历史证据：
 
@@ -460,7 +629,7 @@ MSVC package、Android APK/NDK 或 emulator/device；这是按策略未运行，
 
 ## 已知限制
 
-- `players.max = 1`；现有 multi-runtime owner 只是 inner barrier contract，没有 production outer session owner、第二
+- `players.max = 1`；现有 multi-runtime owner/router 只是 inner barrier/rule contract，没有 production outer session owner、第二
   client routing、actual two-runtime bubble 或 shared round-robin process evidence。
 - multi-runtime owner 尚未组合 directory resume/replay/repair、selected-root re-selection、逐玩家 begin/end、scene
   publish 或 canonical save transaction。process-local completion receipt 只允许在 owner 存活期同步使用。
@@ -469,8 +638,9 @@ MSVC package、Android APK/NDK 或 emulator/device；这是按策略未运行，
   回归。
 - production game-over/death 当前进入 typed fatal/no-save；monster targeting、player death 和可证明的 death save
   boundary 属 Gate 3。
-- `game::walk_move()` 等路径仍有固定 `game::u` 假设；human collision、field/scent/NPC、tether/group shift、messages/
-  safe-mode/stats/player-scoped cache isolation 未关闭。
+- audited adjacent empty-ground plain-walk chain 已改为读取 active avatar，但 human occupied destination 仍故意拒绝；
+  monster/NPC attack、door/furniture/vehicle/grab/phasing/swim、field/trap/effect 等复杂 movement branch 未批准。human
+  collision、field/scent/NPC、tether/group shift、messages/safe-mode/stats/player-scoped cache isolation 仍未关闭。
 - 当前远程动作只有 wait 和八方向平面 move；其他动作必须 typed unsupported，不能进入 blocking UI。
 - scene 仍为 full snapshot；items、fields、vehicles、overlays、messages、sound、avatar replica/panels 和完整 visibility
   leak matrix 属 Phase 4/后续 gate。
@@ -480,29 +650,31 @@ MSVC package、Android APK/NDK 或 emulator/device；这是按策略未运行，
 
 ## 下一门禁与首个动作
 
-当前 active gate 是 Gate 3。首个 inner owner-contract sub-gate 已由 source
-`2eccb92087991966423c18b63f6ef707462b1428` 关闭；下一步仍不得修改 single-root owner 的
-`maximum_players == 1` 约束。当前 slice 是 round-robin wait/move 与 basic position/moves/action-bookkeeping
-isolation，首个调查命令：
+当前 active gate 是 Gate 3。inner owner-contract 与 basic move/wait isolation 分别由 source
+`2eccb92087991966423c18b63f6ef707462b1428` 和 `3204f8f45606a20ea6ab0892369b9806f89c4353` 关闭；下一步仍不得修改 single-root owner 的
+`maximum_players == 1` 约束。当前 slice 是 human-human collision 与 occupied-destination authority，首个调查命令：
 
 ```bash
-rg -n 'multiplayer_execute_(wait|move)|accepted_remains_eligible|record_turn_player_action|position|moves' \
-  src/multiplayer_command_executor.* \
-  src/multiplayer_multi_runtime_barrier_owner.* \
-  tests/multiplayer_command_executor_test.cpp \
-  tests/multiplayer_multi_runtime_barrier_owner_test.cpp \
+rg -n 'creature_at<.*avatar|creature_at\(|attacking|monster \*const mon_ptr|npc \*const np_|walk_move\(|place_player\(|swap_critters' \
+  src/avatar_action.cpp \
+  src/creature_tracker.cpp \
+  src/creature_tracker.h \
+  src/game.cpp \
+  src/multiplayer_multi_runtime_command_router.* \
+  tests/multiplayer_multi_runtime_command_router_test.cpp \
   tests/multiplayer_player_slot_test.cpp
 
-sed -n '1,260p' src/multiplayer_command_executor.cpp
-sed -n '320,520p' tests/multiplayer_multi_runtime_barrier_owner_test.cpp
+sed -n '350,445p' src/avatar_action.cpp
+sed -n '300,340p' src/creature_tracker.cpp
 ```
 
 Gate 3 的 ordered slices：
 
 1. **已关闭，source `2eccb92087991966423c18b63f6ef707462b1428`：** 独立 multi-runtime inner barrier owner 与
    owner-level two-runtime wait-only integration；外部配置继续拒绝 `players.max > 1`。
-2. **当前：** round-robin wait/move 与 basic position/moves/action-bookkeeping isolation。
-3. human collision。
+2. **已关闭，source `3204f8f45606a20ea6ab0892369b9806f89c4353`：** thin multi-runtime command router、verified adjacent empty-ground
+   move，以及 round-robin move/move/wait/wait 的 position/moves/action-bookkeeping isolation。
+3. **当前：** human collision。
 4. monster target/attack 与 death/game-over safe boundary。
 5. field/scent/NPC。
 6. tether/group shift。

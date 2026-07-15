@@ -88,24 +88,35 @@ runtime/avatar roster, rejects same-key owner replacement before action/wait/wor
 directory, selected-root changes, actual legacy bubble execution, outer lifecycle/save proof or production command
 routing.
 
-The Gate 3 owner slice has local Linux focused/full-multiplayer and ASan/UBSan/LSan evidence plus a Linux curses client
-version smoke. It has no production caller, so no process smoke was added. Gate 2 retains its headless process, native
-curses PTY and open-turn save-hash evidence. Neither diff changes wire/schema/version, platform conditionals, shared
-build lists, pinned toolchains or Windows/Android-owned code, so Windows/Android were intentionally not run. The latest
-compatible public-boundary evidence remains run `29385561653` for protocol-minor-1 source
+Gate 3 source `3204f8f45606a20ea6ab0892369b9806f89c4353` closes the second inner rule slice. A thin
+`multiplayer_multi_runtime_command_router` routes only the exact current barrier participant through the existing
+basic command executor, maps the authoritative execution result and target moves to a scheduler disposition, and
+fail-closes movement to the audited same-z adjacent empty-ground subset. Owner-level tests cover
+`move -> move -> wait -> wait`, target-only position/moves/action bookkeeping, tracker ownership and root-context
+restoration. The directly reached legacy walk seams now resolve `active_avatar()` and remote movement cannot enter a
+dangerous-terrain prompt. This still does not provide production transport, revision/dedup, session ownership, actual
+bubble execution or two-client routing.
+
+The first owner slice has local Linux focused/full-multiplayer and ASan/UBSan/LSan evidence plus a Linux curses client
+version smoke. Slice 2 has Linux focused/full-multiplayer, targeted sanitizer and native curses PTY regression evidence
+recorded precisely in `STATUS.md`; the PTY protects the unchanged single-root route, not a two-runtime production
+caller. Gate 2 retains its open-turn save-hash evidence. These Gate 3 diffs do not change wire/schema/version, platform
+conditionals, shared build lists, pinned toolchains or Windows/Android-owned code, so Windows/Android remain
+intentionally unrun. The latest compatible
+public-boundary evidence remains run `29385561653` for protocol-minor-1 source
 `eb990c4ad9975915336f3acd65431b47d123e842`; it is not current Gate 3 platform evidence. Routine Phase 3 work remains
 Linux-first under the validation policy below.
 
 The active work, in order, is:
 
 1. Keep `players.max = 1` and keep `multiplayer_single_root_owner::create()` fixed at exactly one player. Treat source
-   `2eccb92087991966423c18b63f6ef707462b1428` as an inner barrier contract only; do not wire it directly into the
-   production single-root loop or mistake its lambda world callback for actual bubble evidence.
-2. The current slice is round-robin wait/move plus basic position, moves and action-bookkeeping isolation. Then close
-   human collision; monster target/attack and death/game-over; field/scent/NPC; tether/group shift; and dedicated
-   messages/safe-mode/stats/player-scoped cache isolation. Preserve one shared bubble and single simulation thread.
-   Each slice uses Linux incremental/focused tests; only coherent authority/lifecycle slices add full `[multiplayer]`,
-   sanitizer or process smoke.
+   `2eccb92087991966423c18b63f6ef707462b1428` and `3204f8f45606a20ea6ab0892369b9806f89c4353` as inner barrier/rule contracts only; do not
+   wire them directly into the production single-root loop or mistake their lambda world callback for actual bubble
+   evidence.
+2. The current slice is human-human collision and occupied-destination authority. Then close monster target/attack and
+   death/game-over; field/scent/NPC; tether/group shift; and dedicated messages/safe-mode/stats/player-scoped cache
+   isolation. Preserve one shared bubble and single simulation thread. Each slice uses Linux incremental/focused tests;
+   only coherent authority/lifecycle slices add full `[multiplayer]`, sanitizer or process smoke.
 3. After owner/rule gates are green, expose two connections only behind an integration/process-test switch and run a
    Linux two-client smoke/soak. Do not publish `players.max > 1` until that evidence exists. Portable characters,
    durable restart resume, multiple save generations and Phase 4 replica/rendering remain out of scope.
