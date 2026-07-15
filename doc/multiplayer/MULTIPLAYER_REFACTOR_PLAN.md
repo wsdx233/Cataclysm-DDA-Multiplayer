@@ -334,9 +334,12 @@ ownership。普通移动由 registry 在查询边界验证位置快照，`map::s
 这些是进 Phase 1 的运行时身份基础，但仍不是网络协议或 canonical generation world save。
 Phase 3 的 production single-player path 已接入 authoritative session directory、两阶段 admission 与 canonical
 generation owner；lobby 只保留受控 token/replay mirror，旧 connection/session/generation tuple 不能覆盖新 binding。
-当前仍未把 barrier disconnect、forced wait、runtime offline/dormant、scheduler owner 和 durable save generation
-接到该 directory，
-因此 `players.max` 继续为 `1`，ADR-0010 仍待验证。
+Gate 1 source `cbd19b48d652be735a3c83fe841d2d7c831aecba` 已补齐 pure selected-root lifecycle contract、directory
+exact offline/graceful-pending/commit-owned unpublished cleanup、runtime same-generation reactivation，以及 scheduler
+same-generation replay/disconnected-generation repair。它把 barrier disconnect、forced wait、world completion、runtime
+offline/dormant 和 resume 的跨组件顺序变成 owner/version-bound effect recipe，但不拥有或执行任何外部 effect。
+production dedicated owner、actual world routing、fatal/no-save 与 durable save generation 仍未接通，因此
+`players.max` 继续为 `1`，ADR-0010 仍待验证。
 
 ## 8. 回合与时间模型
 
@@ -376,10 +379,13 @@ safe-mode gate，但仍执行真实 `Character::pause()`；safe-mode 查询也�
 `game::u`。adapter 与 scheduler 都不可复制/移动，任何 callback 异常、已发生副作用后的 record failure 或 context
 恢复失败都会永久 latch scheduler execution fault，阻止新 adapter 或新 turn 重试非幂等工作。
 
-这些仍只是 in-process source/test seam。adapter 目前没有被 `main.cpp`、`do_turn_remote()` 或 production session
-owner 调用；world callback 测试使用可计数 lambda，尚未把真实 legacy bubble helper 放进 `claim_world()` 后执行。
-当前 fault latch 也是进程内 fail-stop，不是 save/shutdown/restart recovery protocol。完成 session directory、真实
-world routing 和下游多人规则门禁前，`players.max` 保持 `1`。
+这些仍只是 in-process source/test seam。Gate 1 已增加不拥有 socket/runtime/scheduler/game object 的
+`multiplayer_selected_root_lifecycle`，用于验证 connected turn、disconnect/graceful departure、timeout/resume、world、
+offline/dormant 和 admission publish/unpublished 的外部执行顺序；directory/runtime/scheduler 的 exact transition 也已
+在 Linux 组合测试中证明。adapter 和 lifecycle 目前都没有被 `main.cpp`、`do_turn_remote()` 或 production session
+owner 编排；world callback 测试仍未把真实 legacy bubble helper 放进 `claim_world()` 后执行。当前 fault latch 也是
+进程内 fail-stop，不是 save/shutdown/restart recovery protocol。完成 production owner、真实 world routing 和下游
+多人规则门禁前，`players.max` 保持 `1`。
 
 ### 8.2 公平顺序
 
@@ -420,9 +426,10 @@ world routing 和下游多人规则门禁前，`players.max` 保持 `1`。
   registry 仍持有且可激活的 runtime 上执行 forced wait -> 记录 barrier terminal state -> session directory 再决定
   runtime 是否进入 offline。不得先调用 runtime disconnect/offline 再尝试自动 wait。
 - 当前 `game::disconnect_multiplayer_player()` 拒绝将 active root runtime 置为 offline，单玩家 server 也没有可切换的
-  第二 active runtime。ADR-0010 已选择把 selected root context 与 runtime online/offline lifecycle 解耦；下一步必须
-  实现并验证 barrier/world 完成后的 offline/dormant 与同一稳定 runtime resume，不能靠跳过 offline transition、在
-  offline root 上继续跑 turn 或引入临时 dummy player 绕过。
+  第二 active runtime。ADR-0010 已选择把 selected root context 与 runtime online/offline lifecycle 解耦；Gate 1
+  已证明 exact safe-point offline、dormant 禁止 guard/turn、同一稳定 runtime reactivation，以及 boundary、terminal、
+  world-processing departure 的合法顺序。下一步必须由 production owner 执行这些 effects，不能靠跳过 offline
+  transition、在 offline root 上继续跑 turn 或引入临时 dummy player 绕过。
 - 安全区服务器可以配置“安全下线后移除实体”，但必须有明确的安全判定和冷却，不能成为战斗逃生手段。
 - 重连必须携带 session resume token、客户端最后接受的 generation 和最后确认 revision/sequence；服务器用 token
   record/runtime 交叉验证。session directory 对新 resume 只允许统一 generation 的精确 `+1`，对上一 accepted
@@ -1480,10 +1487,12 @@ ADR-0002 所需的首轮 source/ownership audit 已完成，未发现需要推�
 地址稳定的 player registry/runtime、active-player guard 和额外 human tracker/query/map-shift 基础；Phase 3 的
 session ownership 与 two-phase admission 已在 ADR-0010 记录为待验证门禁。
 任务是生产集成与补齐规则，不是重新创建这些组件。当前 Phase 3 source slices 已增加纯
-`multiplayer_turn_scheduler`、`multiplayer_turn_phase_adapter` 和保持单人执行次序的 action/world helper seams，
+`multiplayer_turn_scheduler`、`multiplayer_turn_phase_adapter`、`multiplayer_selected_root_lifecycle` 和保持单人执行
+次序的 action/world helper seams，
 覆盖 roster snapshot、公平顺序、typed action result、generation resume、disconnect timeout、forced auto-wait、
 scoped action bookkeeping、root-context restoration、execution fault latch 和 world claim/record 状态。adapter 仍只由
-测试调用；actual legacy bubble helper、`do_turn_remote()` 和 dedicated server 尚未由 scheduler/adapter 编排。
+测试调用；root lifecycle 仍只由测试组合外部 effects；actual legacy bubble helper、`do_turn_remote()` 和 dedicated
+server 尚未由 scheduler/adapter/lifecycle 编排。
 `players.max` 仍必须为 `1`，本切片不构成 Phase 3 gate 完成。
 
 - production session/runtime directory 已成为 canonical generation owner，runtime 由 directory 精确推进，lobby 只保留
@@ -1493,15 +1502,32 @@ scoped action bookkeeping、root-context restoration、execution fault latch 和
   token 回收和 ordered rejection 已有 Linux 单元证据。accepted enqueue failure 只清 binding、不回滚 generation；
   resume 可以用 directory fingerprint 同代重放并修复暂时落后一代的 lobby mirror，fresh auth 则没有同代 replay
   承诺。
-- **Gate 1：selected-root lifecycle contract/API。** 先用状态表和 focused tests 定义 transport disconnected、barrier
-  disconnected grace、forced-wait pending、terminal barrier、world completed、runtime offline、server dormant 与
-  same-runtime resume reactivation。该 gate 只证明 contract/API；在 Gate 2 完成前不得宣称 production dormant 已接通。
+- **Gate 1：selected-root lifecycle contract/API（已关闭，source
+  `cbd19b48d652be735a3c83fe841d2d7c831aecba`）。** 状态表与 real directory/runtime/scheduler 组合已定义并验证
+  transport disconnected、graceful release pending、barrier disconnected grace、forced-wait pending、terminal
+  barrier、world completed、runtime offline、server dormant、same-runtime resume reactivation、same-generation replay
+  和 unpublished `+1` repair。owner-bound ticket/lifecycle-version-bound recipe、guard/save/fault gate、timeout/resume
+  单赢家和 caller-reported ACK-queued/early-close 顺序已有 Linux focused/full/sanitizer 证据。该 gate 只证明
+  contract/API；在 Gate 2 完成前不得宣称 production
+  dormant 已接通。
 - **Gate 2：production single-root lifecycle。** 保持 `players.max = 1`，由 dedicated owner 私有持有
   scheduler/adapter，一次接通 `disconnect -> grace -> forced wait -> terminal record -> actual world claim/completion ->
-  runtime offline -> dormant`，并在 resume 时先激活同一稳定 runtime 再解除 dormant。semantic command 与
-  authoritative wait 必须经 adapter，actual `process_legacy_single_player_bubble_turn()` 必须位于不可绕过的
-  claim/record 路径。定义 typed fatal shutdown：若可能已发生非幂等副作用，不写新的 canonical save；只有明确在
-  gameplay side effect 前失败才允许正常保存。该 gate 收口后运行 Linux headless server + native client PTY。
+  runtime offline -> dormant`，并在 resume 时先激活同一稳定 runtime 再解除 dormant。transport/event/admission pump
+  必须位于 turn/action callback 外，使 initial unbound/dormant server 能处理 auth/resume 而不开始新 turn。
+  semantic command 与 authoritative wait 必须经 adapter；使用显式 owned-remote-turn/bookkeeping seam，不能把 adapter
+  包进当前会重复 `record_turn_player_action()` 的 bool callback。actual
+  `process_legacy_single_player_bubble_turn()` 必须位于不可绕过的 claim/record world hook；另设不可跳过的
+  pre-world/player-phase-complete hook，因为 sleep、activity 或 zero moves 可完全跳过 action callback，owner 仍须把
+  participant terminalize。scheduler 为此提供显式 terminal transition，不能伪造 accepted command result。world hook
+  内记录 scheduler world completion；lifecycle turn-boundary completion 必须等 owned turn 的 player-end 完成并返回后
+  才记录，scene publish、save、runtime offline 和下一 turn 均排在其后。定义 typed fatal shutdown：若可能已发生
+  非幂等副作用，不写新的 canonical save；只有明确在
+  gameplay side effect 前失败才允许正常保存。graceful completion 必须区分 transport ACK 实际 queued 与
+  fallback/early close；任何外部 effect 成功而 matching lifecycle record 非 applied/duplicate 时立即 latch fault。
+  directory plan、root recipe、scheduler/runtime/transport effect 与 lifecycle record 必须由 owner 作为不可交叉的私有
+  事务持有；recipe 不是 directory commit receipt。SIGINT/stop 也必须使用 lifecycle save disposition，open turn 不得
+  normal-save partial state，只有 clean connected boundary 或 dormant safe point 才可写 canonical save。该 gate 收口后
+  运行 Linux headless server + native client PTY。
 - **Gate 3：two-runtime owner 与规则矩阵。** 先把当前已绿色的 in-process two-runtime wait-only case 提升为
   owner-level integration test，但继续拒绝外部 `players.max > 1`；再依次关闭 round-robin move、human collision、
   monster/death、field/scent/NPC、tether/group shift，以及 messages/safe-mode/stats/player-state isolation。全部 owner/

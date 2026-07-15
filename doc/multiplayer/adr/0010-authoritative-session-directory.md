@@ -106,6 +106,40 @@ Disconnect 合约：
 若 scheduler execution fault 可能发生在非幂等 gameplay side effect 后，directory/server owner 必须停止模拟、记录
 诊断并拒绝写新的 canonical save。只有明确发生在副作用前的失败才能正常保存。
 
+### Phase 3 Gate 1 实施证据（2026-07-15）
+
+source `cbd19b48d652be735a3c83fe841d2d7c831aecba` 已完成 selected-root lifecycle contract/API，但没有接入
+production owner：
+
+- `multiplayer_selected_root_lifecycle` 作为 pure cross-component contract 独立记录 connection、barrier、runtime、
+  departure 和 server dormant/fault 状态；它不拥有 socket、runtime、scheduler、callback 或 game object，只在调用方
+  声明 exact external effect 已完成后记录 transition。
+- owner/version/epoch-bound departure ticket 拒绝 stale/cross-owner completion；owner/version-bound admission recipe
+  分开 published 与 unpublished scheduler effect。recipe 不证明 directory commit，production owner 必须私有封装
+  directory plan/commit、recipe、enqueue/publish/cleanup 和 lifecycle record，或未来由 directory 返回 opaque receipt。
+- directory commit 记录 unpublishable admission 应保持 active 还是恢复 offline，调用方不再选择 cleanup mode；
+  graceful-release-pending 保留 exact tuple 但取消 commandability；exact offline 要求 simulation thread、无 active guard、
+  无 commandable binding 和统一 player/character/generation/runtime mirror。
+- runtime 支持 exact-generation offline 与 same-generation reactivation；scheduler 支持 disconnected same-generation
+  replay rebind 和保持 disconnect grace 的 committed `+1` generation repair。
+- 状态表覆盖 boundary、awaiting、terminal 和 world-processing departure，timeout/resume 单赢家，forced wait/world/
+  offline 顺序，caller-reported graceful ACK-queued/early-close，same stable runtime resume，stale/duplicate work，以及
+  dormant guard/save gate。
+  real directory/runtime/scheduler 组合覆盖普通 disconnect 到 dormant/resume、terminal graceful release 和 unpublished
+  grace `+1` repair。
+
+这批 API 是调用方见证型顺序契约，不是跨组件事务证明。Gate 2 必须把“外部 effect 已成功，但对应 `record_*`
+不是 applied/duplicate”统一升级为 `latch_fault()` 和 typed fatal shutdown；不得重试可能已发生的非幂等 side effect。
+只有非幂等 gameplay/world side effect 可能已发生，或 canonical state 已无法证明时才进入 no-save；明确发生在这些
+副作用前的失败仍可走正常 save。
+此外，当前 `multiplayer_dedicated_server::complete_graceful_disconnect()` 只观察 lobby 是否产生
+`send_and_disconnect` action，而 transport enqueue/fallback 结果被忽略。Gate 2 在记录 ACK queued 前必须显式区分
+queued、queue rejection/fallback close 和 peer early close。
+
+Production shutdown/save 同样受 lifecycle safe boundary 约束。当前 remote action wait 若因 SIGINT 返回空结果，可能
+已经执行 turn-begin/player-begin 但尚未执行 world；Gate 2 不能把这种 open partial turn 当作普通保存点。只有 clean
+connected boundary 或 dormant safe point 可 normal-save；open turn 或 canonical state 不可证明时进入 fatal/no-save。
+
 ## 替代方案
 
 - lobby 继续先 accept，再由 simulation 追认：拒绝。simulation 失败时已经向客户端承诺了不存在的 session。
@@ -149,11 +183,17 @@ Disconnect 合约：
   server/native client PTY。保持 wire schema不变时不要求 Windows/Android；若修改 schema/public ABI，按 Tier 2
   补实际编译 changed production source 的 MSVC/NDK evidence。
 
+Gate 1 source 的 Linux evidence：root lifecycle + directory + scheduler 为 36 cases / 1,257 assertions；完整
+`[multiplayer]` 为 104 cases / 6,150 assertions，其中 2 个既有 `[!mayfail]` full-avatar move-swap case 保留 3 个
+expected failures；定向 ASan/UBSan/LSan 为 46 cases / 1,489 assertions，无 finding。该 diff 未修改 wire/schema/
+external public ABI、platform conditional 或 Windows/Android-owned source；新增 lifecycle header 是 internal shared
+C++ API。按第 20.6 节 Tier 1 未重复跨平台 package/runtime。
+
 ## 接受门禁
 
 在以下条件完成前保持“待验证”且 `players.max = 1`：
 
-- selected-context/lifecycle decoupling 的 dormant/root 恢复方案完成测试；
+- Gate 1 selected-context/lifecycle decoupling contract/API 已完成；production owner 仍须实际执行 dormant/root 恢复；
 - 两阶段 lobby admission、directory exact generation API 和 disconnect 状态表测试绿色；
 - 单玩家 production scheduler/adapter/actual world claim 与 Linux PTY regression 绿色；
 - execution-fault no-save 路径有 process-level evidence。

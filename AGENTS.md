@@ -76,10 +76,14 @@ two-runtime wait-only barrier.
 These are not production two-player routing. The single-player production server now owns an authoritative
 simulation-thread session directory and two-stage auth/resume path; protocol minor `1` carries the client's last
 accepted generation, exact lost-response replay is retired only after an exact-tuple application confirmation reaches
-the simulation-thread directory, and stale tuples cannot replace a newer binding. The adapter is still called only by
-tests; `do_turn_impl()` still calls the actual legacy bubble directly rather than through `claim_world()`; barrier
-disconnect is not yet connected to runtime offline/dormant; and fail-stop has no production save/shutdown recovery
-owner. `players.max` must remain `1`.
+the simulation-thread directory, and stale tuples cannot replace a newer binding. Phase 3 Gate 1 is closed by source
+`cbd19b48d652be735a3c83fe841d2d7c831aecba`: the pure `multiplayer_selected_root_lifecycle` contract keeps transport,
+barrier, runtime and dormant states independent; directory/runtime APIs provide exact offline/reactivation,
+graceful-release-pending and commit-owned unpublished cleanup; scheduler APIs provide same-generation replay and
+disconnected `+1` repair. This is contract/API evidence only. The adapter is still called only by tests;
+`do_turn_impl()` still calls the actual legacy bubble directly rather than through `claim_world()`; no production owner
+yet composes the lifecycle effects; and fail-stop has no production save/shutdown recovery owner. `players.max` must
+remain `1`.
 Phase 1/2 hosted platform and Android lifecycle evidence remains valid as recorded in the build baseline and refactor
 plan; do not rerun or restate it as evidence for unrelated Phase 3 shared-code changes. The five `do_turn()` trace
 labels remain observation points, not safe ownership boundaries, and the isolated `tools/` transport spike is not
@@ -89,10 +93,12 @@ The last hosted-green selector source `804101995c175057856529be24439b0d7e87a49a`
 gate and a one-time terminal-green CI-contract package matrix recorded in the build baseline. That closes the
 workflow/selector milestone only; routine backend-neutral Phase 3 work remains Linux-first.
 
-Current authoritative-session source `eb990c4ad9975915336f3acd65431b47d123e842` has terminal-green Linux production
-run `29385561675` and protocol public-boundary baseline run `29385561653`. The latter selected only Windows/Android
-actual-source package fallback and skipped Linux package; this closes the one-time Tier 2 minor-`1` boundary, not the
-Phase 3 exit or a requirement for future internal `.cpp` changes.
+Current Gate 1 source `cbd19b48d652be735a3c83fe841d2d7c831aecba` has local Linux release/full-multiplayer
+and lifecycle ASan/UBSan/LSan evidence plus terminal-green Linux production run `29392575820`; its Windows/Android
+portable-spike jobs were precisely skipped. The most recent protocol public-boundary baseline remains run
+`29385561653` for source `eb990c4ad9975915336f3acd65431b47d123e842`; it selected only Windows/Android actual-source
+package fallback and skipped Linux package. That closes the one-time Tier 2 minor-`1` boundary, not the Phase 3 exit or
+a requirement for future internal `.cpp` changes.
 
 Completed Phase 0 gates:
 
@@ -111,18 +117,29 @@ Completed Phase 0 gates:
 
 The active work, in order, is:
 
-1. Close the selected-root lifecycle contract in state-table and focused tests. Keep transport disconnected, barrier
-   disconnected and runtime offline/dormant as separate states; keep the stable selected root activatable through the
-   required forced wait and world completion; require resume to reactivate the same runtime before command execution.
-   Do not mark ADR-0010 accepted from policy intent alone.
-2. Keep `players.max = 1` while implementing that contract in the production single-root owner. Wire the
+1. Keep `players.max = 1` while implementing the closed Gate 1 contract in the production single-root owner. Wire the
    scheduler/adapter into the command loop, put the actual `process_legacy_single_player_bubble_turn()` call behind the
    world claim, stop new turns while root-dormant and resume the same runtime. Map a latched execution fault to typed
    fatal shutdown; if a non-idempotent side effect may already have happened, stop without writing a new canonical
    save. Only failures proven to precede gameplay side effects may use normal save. Close this slice with the
    risk-selected Linux full/sanitizer/process gates, including the headless-server/native-client PTY regression.
    Replace or bypass legacy `execute_turn_player_action()` bookkeeping when the adapter owns an action; wrapping the
-   adapter inside the current `do_turn_remote()` bool callback would record the action twice.
+   adapter inside the current `do_turn_remote()` bool callback would record the action twice. Move the transport/event/
+   admission pump outside that action callback so an initially unbound or dormant server can authenticate/resume
+   without first entering `turn_begin`/`player_begin`; dormant must remain in the pump without starting a turn. The new
+   owned-turn seam also needs a mandatory pre-world/player-phase-complete hook because sleep, activities or zero moves
+   can skip the action callback entirely; use an explicit scheduler terminal transition, not a fabricated command
+   result. Scheduler world completion occurs inside the world hook, but lifecycle turn-boundary completion must wait
+   until player-end finishes and the owned turn returns. Scene publish, save and the next turn stay after that record.
+   Shutdown/save must consult the lifecycle safe-boundary disposition; an open turn is not a normal-save point.
+2. Before recording graceful completion, distinguish an ACK actually queued by transport from fallback close;
+   `multiplayer_dedicated_server::complete_graceful_disconnect()` currently treats the lobby action as queue success.
+   If any external directory/scheduler/runtime/transport effect succeeds but the matching lifecycle record is neither
+   applied nor duplicate, immediately latch the lifecycle fault and enter typed fatal shutdown. Refuse a new canonical
+   save only when a non-idempotent gameplay/world side effect may have happened or canonical state is otherwise not
+   provable; a failure proven to precede such side effects may use the normal save path. Keep each
+   directory plan, root admission recipe and enqueue result in one private owner transaction; the recipe is not a
+   directory commit receipt.
 3. Promote the already-green in-process two-runtime wait-only case into that production owner, then close movement,
    collision, monster/death, field/scent/NPC, tether/group-shift and player-state isolation gates before enabling a
    second client. Do not pull portable characters, multiple save generations or Phase 4 durable restart resume into

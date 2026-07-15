@@ -2,7 +2,7 @@
 
 - 状态：已接受
 - 日期：2026-07-12
-- Phase 3 实施注记：2026-07-14
+- Phase 3 实施注记：2026-07-15
 - 关联计划：第 8、9、20 节
 - 关联 session ownership：[ADR-0010](0010-authoritative-session-directory.md)（待验证）
 
@@ -56,6 +56,11 @@ execution 之间的最低顺序固定为：
 
 这些 slices 仍不拥有 production session、socket 或 command payload。特别地：
 
+- Gate 1 source `cbd19b48d652be735a3c83fe841d2d7c831aecba` 增加 pure
+  `multiplayer_selected_root_lifecycle`，把 scheduler participant、directory binding/runtime key、departure ticket、
+  shared turn/world ticket 和 dormant/fault gate 组成 owner/version-bound effect contract。scheduler 同时增加 exact
+  same-generation replay rebind 与 disconnected committed `+1` repair；两者都只改变当前 immutable barrier snapshot
+  的 generation metadata，不取得长期 session ownership。
 - adapter 已在 in-process tests 中证明真实 forced wait 的 execute-before-record 和 guard 恢复，但目前只接受
   `active` runtime。断线 orchestration 必须把 transport disconnected、barrier disconnected 和 runtime offline 分开，
   在 forced wait 完成前保持 registry owner 可激活。
@@ -114,6 +119,13 @@ execution 之间的最低顺序固定为：
   two-runtime wait-only test 的 world callback 是计数 lambda，不是 actual bubble gameplay evidence。
 - production 集成测试必须把真实 legacy bubble callback 放在 claim 后计数，并覆盖 failure 后的 typed fail-stop/
   shutdown；单测只观察到一次 `claim_world()` 或 lambda 不足以证明 world phase exactly-once。
+- production owner 测试必须证明 external scheduler/runtime/directory/world effect 成功而 lifecycle record 失败时立即
+  latch fault，并区分 graceful ACK 实际 queued、fallback close 和 peer early close；pure lifecycle 的
+  applied/duplicate 状态本身不是外部 effect 或 transport enqueue 的证明。
+- owned production turn seam 必须在 action callback 被 sleep/activity/zero-moves 跳过时仍发出不可绕过的
+  pre-world/player-phase-complete hook，使 participant terminal state 与 world claim 对齐；不得让 awaiting scheduler
+  直接进入 legacy world，也不得伪造 accepted command result。scheduler world completion 可在 world hook 内记录；
+  lifecycle/owner 的 canonical turn-boundary completion 必须等后续 player-end 完成，scene/save/next turn 均在其后。
 - 两玩家同时拾取同一物品时只成功一次，失败方收到 `state_changed` 和新 revision。
 - 一名玩家制作或睡眠、另一名玩家普通行动时，世界时间和活动进度保持一致。
 - 四客户端 soak test 中不存在饥饿调度、重复 world phase 或无限 barrier 推进。
