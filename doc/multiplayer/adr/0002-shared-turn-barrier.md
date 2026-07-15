@@ -104,14 +104,32 @@ Gate 3 source `3204f8f45606a20ea6ab0892369b9806f89c4353` 增加第二个 inner r
 - accepted action 依据目标 avatar 执行后的 moves 产生 `accepted_remains_eligible` 或 `accepted_finished`；无 action 的
   rejected/duplicate 不推进 cursor。无法证明一致的 status/action 组合返回无 disposition，并由 adapter fail-stop。
 - multi-runtime movement 暂时只批准已审计的同层相邻空地子集。unsupported legacy branch 在 gameplay side effect 前
-  rejected；human-occupied destination 保持 fail-closed，等待独立 collision policy。
+  rejected；该 source 中 human-occupied destination 保持 generic fail-closed，留给下述独立 collision policy。
 - plain-walk 直接链的玩家读取使用 `active_avatar()`，remote call 显式禁止 interactive terrain prompt。这不是完整
   movement tree、human collision 或 monster/NPC attack 的关闭证据。
 - owner-level integration 真实执行 exact `move -> move -> wait -> wait`，并验证目标唯一 position/moves/tracker/
   bookkeeping 变化与 root context 恢复；world 仍只是测试 lambda。
 
-因此该 slice 仍不是 production two-player routing，也不允许提高 `players.max`。下一规则 slice 必须先定义
-human-human occupied-destination 的服务器权威结果，不能靠取消 creature check 允许两个 avatar 占用同一位置。
+因此该 slice 仍不是 production two-player routing，也不允许提高 `players.max`。后续规则 slice 必须定义
+human-human occupied-destination 的服务器权威结果，不能靠取消 creature check 允许两个 avatar 占用同一位置；
+该要求由下述 source 完成。
+
+Gate 3 source `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` 完成上述 human collision 实施细化，而不改变本 ADR 的 shared-turn、authority
+或 ownership 决策：
+
+- registry 在 exact absolute position 排除 mover 后解析另一 human；router 在 legacy movement side effect 前返回
+  internal typed `blocked_by_player` 与 blocker 的 exact participant key。
+- block 映射为 `rejected/invalid_state`、零 moves、零 action bookkeeping 和 scheduler `rejected`。repeated block 不推进
+  current slot；player 必须选择另一 command 或 wait，服务器不能把它伪造为 accepted no-op。
+- 两玩家争同一 empty tile 时，当前 ordering-first command 成功，后执行者被 block；连续两个 shared turn 的 owner
+  test 证明 first-player rotation 也轮换 contested winner。每 turn world 仍只执行 count lambda，并等待 exact
+  player-end receipt 后才能开始下一 turn。
+- v1 move-bump 不隐式 swap 或 PvP attack。blocker key 仅供 inner authority；未来 outer wire result 必须先做
+  visibility filtering，不能直接公开 session generation 或不可见玩家身份。
+
+该 source 没有 production multi-runtime caller、actual bubble、scene/save owner 或 wire/schema 变化，所以仍不允许
+提高 `players.max`。下一规则 slice 是 monster target/attack 与 death/game-over safe boundary；若未来引入 PvP、双方
+consent swap 或新的 wire-visible collision result，再单独评估是否需要新 ADR。
 
 ## 替代方案
 
@@ -149,8 +167,10 @@ human-human occupied-destination 的服务器权威结果，不能靠取消 crea
   world callback 仍是计数 lambda，不是 actual bubble gameplay evidence。
 - multi-runtime command router 测试覆盖 exact `first move -> second move -> first wait -> second wait`，目标唯一
   position/moves/tracker/action-bookkeeping/cache 变化、另一 avatar 与 root grab state 不变、root context 恢复，以及
-  non-current、malformed、grabbed 和 human-occupied move 的 rejected-without-advance。任何 status/action 不一致必须
-  fail-stop；verified adjacent empty-ground 正向 case 不能被描述为完整 movement 或 collision evidence。
+  non-current、malformed 和 grabbed move 的 rejected-without-advance。human collision 还必须覆盖 exact blocker、
+  root/secondary symmetric repeated block、零 moves/bookkeeping/cursor/fault、无 overlap，以及连续两 turn contested
+  empty tile 的 first-success/second-block 与 winner rotation。任何 status/action 不一致必须 fail-stop；这些 owner-level
+  cases 仍不能被描述为 production two-client、actual bubble 或完整 forced-movement collision evidence。
 - single-root production 集成已把真实 legacy bubble callback 放在 claim 后计数，并覆盖 failure 后的 typed
   fail-stop/shutdown；后续 two-runtime production integration 必须保留同一门禁。单测只观察到一次
   `claim_world()` 或 lambda 不足以证明 world phase exactly-once。

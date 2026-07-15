@@ -2,12 +2,13 @@
 
 - 更新日期：2026-07-15
 - 分支：`multiplayer/main`
-- 当前 implementation source：`3204f8f45606a20ea6ab0892369b9806f89c4353`
+- 当前 implementation source：`84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e`
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
 - 当前阶段：**Phase 3，第二玩家/shared scheduler**
 - 当前 active gate：**Gate 3，two-runtime owner 与共享规则矩阵**
 - 已关闭 gate：Gate 1 selected-root lifecycle contract；Gate 2 production single-root lifecycle
-- Gate 3 已关闭 slice：slice 1 inner barrier owner contract；slice 2 thin command router/basic move isolation
+- Gate 3 已关闭 slice：slice 1 inner barrier owner contract；slice 2 thin command router/basic move isolation；
+  slice 3 typed human collision/order authority
 - ADR 状态：ADR-0001 至 ADR-0011 均已接受
 - 配置约束：`players.max = 1`；Gate 3 owner/rule/process gates 关闭前不得提高
 - 当前验证策略：**Tier 1 Linux-first**；本批 Windows/Android 按策略未运行
@@ -59,7 +60,7 @@ Gate 3 的第二个 inner rule slice 由 source `3204f8f45606a20ea6ab0892369b980
 - router 只接受一致的 authoritative execution/disposition 组合：accepted action 根据目标 avatar 执行后的 moves
   映射为 `accepted_remains_eligible` 或 `accepted_finished`，无 action 的 rejected/duplicate 不推进 cursor；不一致
   组合返回无 disposition 并沿既有 adapter callback-failure path fail-stop；
-- multi-runtime move 暂时 fail-closed 为已审计的同层相邻空地子集。vehicle/mount/grab/activity、creature occupied、
+- multi-runtime move 暂时 fail-closed 为已审计的同层相邻空地子集。vehicle/mount/grab/activity、non-human creature occupied、
   field/trap/furniture/item、water/ramp/rough/sharp/unstable、小通道、door/open-air 和其他 legacy 特殊分支都在规则
   执行前拒绝；
 - `game::walk_move()`、`get_dangerous_tile()`、`grabbed_move()` 和 `on_move_effects()` 的直接玩家读取改为
@@ -68,10 +69,29 @@ Gate 3 的第二个 inner rule slice 由 source `3204f8f45606a20ea6ab0892369b980
 - owner-level case 以 exact `first move -> second move -> first wait -> second wait` 顺序执行真实共享 executor，验证
   只有目标 position、moves、tracker index、`nv_cached` 和全局 action counter 改变；另一 avatar、root grab sentinel、
   runtime owner 与 root active context 保持不变；
-- non-current、缺失 direction、grabbed 和 human-occupied move 均 rejected 且不改变 position/moves/bookkeeping、slot
-  或 fault state。world 仍只执行测试 lambda，再由 exact player-end receipt 回到 idle。
+- non-current、缺失 direction 和 grabbed move 均 rejected 且不改变 position/moves/bookkeeping、slot 或 fault state。
+  slice 2 的 generic human-occupied rejection 已由下述 typed collision contract 取代。world 仍只执行测试 lambda，
+  再由 exact player-end receipt 回到 idle。
 
-这两个 Gate 3 slices 仍只是 inner barrier/rule contracts。production 继续使用 **single-root** owner；没有 actual
+Gate 3 的第三个 inner rule slice 由 source `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` 收口：
+
+- `multiplayer_player_registry::find_other_at()` 在 exact absolute position 查询除 mover 以外的 registry-owned human，
+  不依赖 generic creature lookup 或 position bucket 的首元素恰好是谁；
+- router 在调用 legacy `avatar_action::move()`/`walk_move()` 前产生 internal typed
+  `multiplayer_multi_runtime_command_resolution::blocked_by_player`，并附 blocker 的 exact
+  `{ player_id, session_generation }` participant key。该 key 只属于 inner authority；未来 outer wire owner 必须先做
+  visibility filtering，不能原样泄露 generation 或不可见玩家身份；
+- authoritative block 映射为 `status=rejected`、`rejection=invalid_state`、`moves_spent=0`、
+  `action_taken=false` 和 scheduler `rejected`。它不交换位置、不触发 PvP/melee、不记录 action bookkeeping、不推进
+  current slot，也不把 owner 标成发生了 gameplay side effect；
+- symmetric owner case 让 root/secondary 双方各重复撞向相邻玩家两次，验证 exact blocker、slot、position、moves、
+  tracker/runtime identity、`nv_cached`、global action counter、root context 和 fault/side-effect state 均不变；每人随后
+  可提交 wait，barrier 正常进入 world 并以 exact player-end receipt 回到 idle；
+- contested-tile case 在连续两个 shared turn 中让 ordering-first player 先占据同一空格，另一 player 随后得到 typed
+  block。下一 turn 的 first-player rotation 令 winner 也精确轮换；每 turn 只执行一次 world count lambda，并保持
+  `player_end_pending`、repeat-world-call rejection 和 exact completion 顺序。
+
+这三个 Gate 3 slices 仍只是 inner barrier/rule contracts。production 继续使用 **single-root** owner；没有 actual
 two-runtime bubble、session/resume owner、第二 client routing 或 save transaction。`players.max` 必须保持 `1`。
 
 ## 当前 ownership 快照
@@ -80,11 +100,11 @@ two-runtime bubble、session/resume owner、第二 client routing 或 save trans
 | --- | --- | --- |
 | Transport/lobby | connection、token mirror、pending admission、typed ordered close/rejection、closing priority | 双连接 admission/routing 仍未开放 |
 | Session directory | stable identity/binding/generation、two-stage commit/confirmation、graceful pending、exact offline/reactivation | multi-runtime roster transition 尚未接入 production owner |
-| Registry/runtime | 地址稳定 avatar/runtime、active/offline/dead、active-player guard、plain-move tracker identity | human collision、复杂规则 selected-context 与 death policy |
+| Registry/runtime | 地址稳定 avatar/runtime、active/offline/dead、active-player guard、plain-move tracker identity、other-human exact-position lookup | monster/death、forced-movement collision 与复杂规则 selected-context |
 | Scheduler | immutable roster、round-robin、disconnect grace、forced-wait pending、world ticket、fault latch | production two-runtime roster/routing；inner move/wait fairness 已验证 |
-| Phase adapter | scoped action/wait/bookkeeping、world claim callback、post-effect fail-stop | human collision及第二 runtime 的其余规则矩阵 |
+| Phase adapter | scoped action/wait/bookkeeping、world claim callback、post-effect fail-stop、blocked collision 不记 action | 第二 runtime 的 monster/death 与其余规则矩阵 |
 | Multi-runtime barrier owner | immutable/pinned roster、persistent fairness、two-runtime wait/forced wait/plain move、explicit player-end pending receipt | 无 production caller、actual bubble、session/resume/root-selection/outer save owner |
-| Multi-runtime command router | exact-current owner callback、shared basic executor、typed disposition、verified adjacent empty-ground move | 无 outer revision/dedup/transport/admission；human collision与复杂 movement 未关闭 |
+| Multi-runtime command router | exact-current owner callback、shared basic executor、typed disposition、verified adjacent empty-ground move、typed human block/exact blocker/order conflict | 无 outer visibility/revision/dedup/transport/admission；monster/NPC 与复杂 movement 未关闭 |
 | Single-root owner | directory/scheduler/lifecycle/adapter、dormant/resume、safe save disposition | 固定拒绝 `maximum_players != 1`，不得直接扩容 |
 | Dedicated server | outer/active pump、completed-scene cache、typed fatal/no-save、真实 curses/headless loop | test-only 双连接开关和双 client smoke/soak 尚未实现 |
 
@@ -153,7 +173,79 @@ two-runtime bubble、session/resume owner、第二 client routing 或 save trans
 - world callback 仍是 owner-level count lambda；本 slice 没有 production caller，也不构成 actual bubble、two-client 或
   canonical save evidence。
 
+## Gate 3 第三个 human-collision/order-authority slice
+
+- `src/multiplayer_player_registry.h/.cpp` 新增 `find_other_at()`，从 exact absolute-position index 中排除 mover 后返回
+  另一 registry-owned avatar。它不会把 `find_at().front()` 等同于“唯一 occupant”，也不把 generic creature order
+  当作 human authority。
+- `src/multiplayer_multi_runtime_command_router.h/.cpp` 把 routed result 分类为 `executor_result`、
+  `unsupported_move` 或 `blocked_by_player`。human block 携带 exact blocker participant key；matching runtime 若无法
+  从 registry 解析，callback 不猜测 disposition，而是沿现有 adapter fail-stop 边界处理。
+- human collision 在 legacy action callback 前结束，所以不会进入 `move_effects()`、`walk_move()`、`place_player()`、
+  NPC menu、monster attack、swap 或 movement UI/side effects。blocking execution 是合法格式但当前 authoritative state
+  不允许的 command，因此用 `invalid_state`，而不是把它误写为 malformed command 或 accepted no-op。
+- `multiplayer_multi_runtime_command_router_blocks_adjacent_active_players_symmetrically` 覆盖 root/secondary 两个方向、
+  repeated block 不推进、随后 wait 可完成 barrier，以及 world/player-end exact closure。
+- `multiplayer_multi_runtime_command_router_rotates_contested_tile_winner` 覆盖两个 player 争同一 empty tile、first success/
+  second typed block、remaining-moves round、两 turn first/winner rotation、tracker uniqueness、每次 accepted action 唯一
+  bookkeeping，以及每 turn world lambda/receipt exact-once。
+- 本 slice 没有定义 swap 或 PvP；也没有审计 teleport、knockback、fling、vehicle、phasing 或其他绕过 router 的 forced
+  movement。production 仍无 multi-runtime caller，blocker key 也尚未进入 visibility-filtered wire result。
+
 ## 当前 source 验证证据
+
+### Gate 3 slice 3 Linux release、完整多人 suite 与格式
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+./build-scripts/check-multiplayer-build-env.sh linux
+
+make -j"$(nproc)" AUTO_BUILD_PREFIX=1 \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 ASTYLE=0 \
+  tests
+
+./tests/release-local-back-cata_test \
+  '[multiplayer][multi_runtime_command_router]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-human-collision-focused-final2
+
+./tests/release-local-back-cata_test '[multiplayer]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-human-collision-full-final2
+
+make \
+  ASTYLE_BINARY="$HOME/.cache/cdda-tools/astyle-3.1-3build1/root/usr/bin/astyle" \
+  astyle-check
+git diff --check
+```
+
+结果：
+
+- focused router：4 cases / 817 assertions，全过；
+- 完整 `[multiplayer]`：143 cases；141 passed + 2 个既有 `[!mayfail]` full-avatar move-swap identity 负面对照；
+  8,353 assertions 中 8,350 passed + 3 expected failures；exit 0；
+- AStyle 3.1 与 `git diff --check` 通过。
+
+### Gate 3 slice 3 Linux sanitizer
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+CXXFLAGS='-Wno-array-bounds -Wno-stringop-overread' \
+  make -j"$(nproc)" AUTO_BUILD_PREFIX=1 \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 ASTYLE=0 \
+  SANITIZE=address,undefined tests
+
+ASAN_OPTIONS='detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1:abort_on_error=1' \
+UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1' \
+./tests/release-local-back-sanitize-cata_test \
+  '[multiplayer][multi_runtime_command_router]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-human-collision-sanitize-final2
+```
+
+结果：4 cases / 817 assertions，全过；无 ASan、UBSan、LSan 或 stack-use-after-return finding。沿用 slice 2 已记录的
+两个 GCC 13 unchanged-source `-Werror` diagnostic suppressions；sanitizer flags 保持启用，这些 suppressions 不是
+sanitizer finding。
+
+本 slice 没有 production caller，且没有修改 single-root dedicated server/client route，因此不运行 Linux native-client
+PTY 或 headless process smoke。该省略是按风险选择，不是 production two-runtime evidence。
 
 ### Gate 3 slice 2 Linux release、完整多人 suite 与格式
 
@@ -604,20 +696,20 @@ gameplay command。
 
 ## 平台选择与未运行证据
 
-本批选择 Tier 1，因为 Gate 3 slice 2 是 backend-neutral internal rule/router、active-player walk seam 与 tests。收口后
+本批选择 Tier 1，因为 Gate 3 slice 3 只修改 backend-neutral internal registry/router policy 与 owner tests。收口后
 使用下述 diff 审计：
 
 ```bash
 git diff --name-status \
-  ccf8440933aec1ca3949f3d640e746b9095a616d..3204f8f45606a20ea6ab0892369b9806f89c4353
+  c2ed0fc84680db3c100cfd95304ca723fa693059..84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e
 ```
 
 审计未发现 Android/Windows-owned source、platform conditional、wire schema/version/capability、generated protocol、
-transport/crypto public boundary、shared source list、workflow、artifact 或 pinned toolchain 变化。新增 router header 和
-`game.h` 的 walk default parameter 都是 repo-internal C++ 调用 seam，不改变 wire/public DTO/serialization ABI，也没有
-平台分支。故本批不运行 Windows MSVC package、Android APK/NDK 或 emulator/device；这是按策略未运行，不是 blocker，
-也不构成 `3204f8f45606a20ea6ab0892369b9806f89c4353` 的平台证据。若 source commit 前又加入 platform conditional、公共 ABI/header、source
-list 或平台 owned code，必须重新分类并补第 20.6 节要求的最小 Tier 2 gate。
+transport/crypto public boundary、shared source list、workflow、artifact 或 pinned toolchain 变化。registry/router header
+新增的 lookup、resolution 和 blocker key 都是 repo-internal C++ authority seam，不改变 wire/public DTO/serialization ABI，
+也没有平台分支。故本批不运行 Windows MSVC package、Android APK/NDK 或 emulator/device；这是按策略未运行，不是
+blocker，也不构成 `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` 的平台证据。后续若修改 platform conditional、公共
+ABI/header、source list 或平台 owned code，必须重新分类并补第 20.6 节要求的最小 Tier 2 gate。
 
 最近兼容的历史证据：
 
@@ -638,9 +730,10 @@ list 或平台 owned code，必须重新分类并补第 20.6 节要求的最小 
   回归。
 - production game-over/death 当前进入 typed fatal/no-save；monster targeting、player death 和可证明的 death save
   boundary 属 Gate 3。
-- audited adjacent empty-ground plain-walk chain 已改为读取 active avatar，但 human occupied destination 仍故意拒绝；
-  monster/NPC attack、door/furniture/vehicle/grab/phasing/swim、field/trap/effect 等复杂 movement branch 未批准。human
-  collision、field/scent/NPC、tether/group shift、messages/safe-mode/stats/player-scoped cache isolation 仍未关闭。
+- adjacent semantic move 的 human occupied destination 已关闭为 typed authoritative block，但没有批准 implicit swap/PvP，
+  也没有证明 teleport/knockback/fling/vehicle/phasing 或直接 `place_player()` 等 forced-movement path 的全局 collision
+  invariant。monster/NPC attack、door/furniture/vehicle/grab/phasing/swim、field/trap/effect 等复杂 movement branch 仍未
+  批准；monster/death、field/scent/NPC、tether/group shift、messages/safe-mode/stats/player-scoped cache isolation 未关闭。
 - 当前远程动作只有 wait 和八方向平面 move；其他动作必须 typed unsupported，不能进入 blocking UI。
 - scene 仍为 full snapshot；items、fields、vehicles、overlays、messages、sound、avatar replica/panels 和完整 visibility
   leak matrix 属 Phase 4/后续 gate。
@@ -650,22 +743,24 @@ list 或平台 owned code，必须重新分类并补第 20.6 节要求的最小 
 
 ## 下一门禁与首个动作
 
-当前 active gate 是 Gate 3。inner owner-contract 与 basic move/wait isolation 分别由 source
-`2eccb92087991966423c18b63f6ef707462b1428` 和 `3204f8f45606a20ea6ab0892369b9806f89c4353` 关闭；下一步仍不得修改 single-root owner 的
-`maximum_players == 1` 约束。当前 slice 是 human-human collision 与 occupied-destination authority，首个调查命令：
+当前 active gate 是 Gate 3。inner owner-contract、basic move/wait isolation 和 typed human collision/order authority
+分别由 source `2eccb92087991966423c18b63f6ef707462b1428`、
+`3204f8f45606a20ea6ab0892369b9806f89c4353` 和 `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` 关闭；下一步仍不得修改 single-root owner 的
+`maximum_players == 1` 约束。当前 slice 是 monster target/attack 与 death/game-over safe boundary，首个调查命令：
 
 ```bash
-rg -n 'creature_at<.*avatar|creature_at\(|attacking|monster \*const mon_ptr|npc \*const np_|walk_move\(|place_player\(|swap_critters' \
-  src/avatar_action.cpp \
+rg -n 'get_player_character\(\)|get_avatar\(\)|active_avatar\(\)|monster::plan\(|rate_target\(|attack_target\(|attitude_to\(|check_dead_state\(|is_dead_state\(|is_game_over\(|QUIT_DIED|QUIT_WATCH|cleanup_at_end\(|cleanup_dead\(|mark_multiplayer_player_dead\(' \
+  src/monmove.cpp src/monster.cpp src/monster.h \
+  src/do_turn.cpp src/game.cpp src/game.h \
   src/creature_tracker.cpp \
-  src/creature_tracker.h \
-  src/game.cpp \
-  src/multiplayer_multi_runtime_command_router.* \
-  tests/multiplayer_multi_runtime_command_router_test.cpp \
-  tests/multiplayer_player_slot_test.cpp
+  src/multiplayer_player_registry.* src/multiplayer_player_runtime.* \
+  src/multiplayer_multi_runtime_barrier_owner.* \
+  tests/multiplayer_*
 
-sed -n '350,445p' src/avatar_action.cpp
-sed -n '300,340p' src/creature_tracker.cpp
+sed -n '350,750p' src/monmove.cpp
+sed -n '1620,1735p;2180,2370p' src/monster.cpp
+sed -n '3049,3137p;4245,4280p' src/game.cpp
+sed -n '100,165p;620,665p;769,905p' src/do_turn.cpp
 ```
 
 Gate 3 的 ordered slices：
@@ -674,8 +769,9 @@ Gate 3 的 ordered slices：
    owner-level two-runtime wait-only integration；外部配置继续拒绝 `players.max > 1`。
 2. **已关闭，source `3204f8f45606a20ea6ab0892369b9806f89c4353`：** thin multi-runtime command router、verified adjacent empty-ground
    move，以及 round-robin move/move/wait/wait 的 position/moves/action-bookkeeping isolation。
-3. **当前：** human collision。
-4. monster target/attack 与 death/game-over safe boundary。
+3. **已关闭，source `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e`：** adjacent human occupied destination 的 typed
+   `blocked_by_player`、exact blocker、symmetric block 与 contested-tile winner rotation；无 implicit swap/PvP。
+4. **当前：** monster target/attack 与 death/game-over safe boundary。
 5. field/scent/NPC。
 6. tether/group shift。
 7. messages/safe-mode/stats/player-scoped cache isolation。

@@ -63,8 +63,9 @@ remote 路径不执行 renderer recovery、music/SFX、autosave、截图、block
   lifecycle 和 adapter；command replay/cache 与 completed-scene revision 仍属于该单 root session。它不是
   round-robin multi-player owner。
 - 本次审计发现 `game::walk_move()` 直接使用固定 `game::u`。Gate 3 source `3204f8f45606a20ea6ab0892369b9806f89c4353` 后续只把已审计的
-  plain-walk 直接链改为读取 `active_avatar()`；human-human collision、复杂 movement、monster/death/field/scent/NPC
-  target、tether/group-centered shift 和 player-scoped message/state 隔离仍不是纯调度器能够补齐的能力。
+  plain-walk 直接链改为读取 `active_avatar()`；source `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` 又在该链之前关闭 adjacent semantic
+  move 的 human-human occupied destination。复杂/forced movement、monster target/attack、death/game-over、
+  field/scent/NPC、tether/group-centered shift 和 player-scoped message/state 隔离仍不是纯调度器能够补齐的能力。
 
 复核没有推翻 ADR-0002，但证明五个 trace range 不能直接作为实现边界。Gate 2 已把保持单人行为的 owned action/
 world seams 和 phase adapter 接入 production single-root routing；五个 label 仍不能机械变成逐玩家 ownership。
@@ -178,8 +179,37 @@ entry 与既有 `multiplayer_execute_basic_command()` 组合起来，但不接�
 - 所有 participant terminal 后 world callback 仍只是一次测试 lambda，随后 exact process-local player-end receipt 才
   返回 idle。它不是 actual legacy bubble 或 production two-client evidence。
 
-production 仍由 single-root owner 路由，`players.max` 保持 `1`。下一 slice 必须先定义 human-human
-occupied-destination 的服务器权威语义与 typed result，不能简单删除当前 creature preflight 造成 avatar 重叠。
+production 仍由 single-root owner 路由，`players.max` 保持 `1`。下述第三个 inner rule slice 只关闭 adjacent
+semantic-command path 的 human-human occupied destination；它不使 legacy `walk_move()`/`place_player()` 成为全局
+collision boundary。
+
+## Gate 3 第三个 human-collision/order-authority inner rule contract
+
+源码审计确认 `avatar_action::move()` 的 generic creature test 会把 human 标记为 attacking，但后续只有 monster 和 NPC
+typed branches；若只删除 router 的 creature preflight，另一 avatar 会落入 `walk_move()`/`place_player()`。后两者没有
+Character occupancy authority，且 legacy movement 在 setpos 前已经可能改变 moves、stamina、facing、activity、noise、
+cache 或进入 UI/monster-displacement 分支。因此 human collision 必须在 legacy callback 前裁决，而不能靠移动后的
+overlap repair。
+
+Gate 3 source `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` 增加以下窄 contract：
+
+- `multiplayer_player_registry::find_other_at()` 从 exact absolute-position index 排除 mover，再解析 registry-owned
+  blocker runtime；它不把 generic creature order 或 position bucket 的首元素当作唯一 human identity。
+- router 返回 internal typed `blocked_by_player` 与 exact blocker participant key；execution 是
+  `rejected/invalid_state`、零 moves、零 action，scheduler disposition 是 `rejected`。adapter 因此不调用
+  `record_turn_player_action()`，current slot、root context 和 owner no-side-effect state 保持。
+- symmetric case 证明 root/secondary 双向 repeated block 不改变双方 position/moves/tracker/runtime/cache/bookkeeping，
+  随后 wait 仍能完成 barrier。contested empty-tile case 证明 ordering-first success、second block，以及下一 turn 的
+  first-player rotation 同时轮换 winner。
+- blocker key 只供 inner authority；未来 outer result 必须 visibility-filter。该 slice 不提供 implicit swap/PvP、
+  production two-client route、actual bubble、scene publish 或 canonical save proof；world 仍是 count lambda 加 exact
+  player-end receipt。
+
+因此五个 trace label 仍不是 ownership boundary，`walk_move()`/`place_player()` 也不是已批准的全局 human collision
+guard。teleport、knockback、fling、vehicle/phasing 等 forced movement 必须在其自己的 authority slice 中验证或拒绝。
+当前下一 slice 是 monster target/attack 与 death/game-over safe boundary；其中 `monster::plan()` 的单
+`get_player_character()` seed，以及 `game::is_game_over()` 的 fixed `u/uquit`、blocking death UI 和 global cleanup 都须
+先重定 ownership，不能让最后一个 active-player guard 隐式决定 world target 或终止整个 server。
 
 ## Phase 0 基线
 
@@ -246,3 +276,6 @@ rg -n 'get_avatar\(\)|get_player_character\(\)|get_player_view\(\)' src
 4. world phase 不得让“最后一个活动玩家”隐式决定 monster target、NPC anchor、scent、group shift 或可见消息。
 5. 每次移动边界时保留 phase-order 测试，并增加“每 turn 真实 callback 调用次数”和失败路径断言；性能采样不得
    成为发布构建的无条件时钟开销。
+6. adjacent semantic move 的 human block 必须在 legacy movement side effects 前完成；该 router guarantee 不能外推到
+   forced movement。monster target/death 也必须显式遍历 registry-owned humans 和逐玩家 lifecycle，不能继续把
+   `get_player_character()`、`game::u` 或 global `uquit` 当作多人 authority。
