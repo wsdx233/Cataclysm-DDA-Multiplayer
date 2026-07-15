@@ -181,6 +181,35 @@ bool multiplayer_turn_scheduler::resume_barrier_participant(
     return true;
 }
 
+bool multiplayer_turn_scheduler::rebind_replayed_barrier_participant(
+    const multiplayer_turn_participant_key &exact_current )
+{
+    const std::optional<std::size_t> found = find_exact_participant( exact_current );
+    if( faulted_ || stage_ != multiplayer_turn_scheduler_stage::player_actions || !found ||
+        participants_[*found].state != multiplayer_turn_participant_state::disconnected_grace ) {
+        return false;
+    }
+
+    participants_[*found].state = multiplayer_turn_participant_state::awaiting_command;
+    return true;
+}
+
+bool multiplayer_turn_scheduler::repair_disconnected_barrier_generation(
+    const multiplayer_turn_participant_key &expected_participant,
+    const std::uint64_t committed_session_generation )
+{
+    const std::optional<std::size_t> found = find_exact_participant( expected_participant );
+    if( faulted_ || stage_ != multiplayer_turn_scheduler_stage::player_actions || !found ||
+        participants_[*found].state != multiplayer_turn_participant_state::disconnected_grace ||
+        !multiplayer_is_next_session_generation( expected_participant.session_generation,
+                committed_session_generation ) ) {
+        return false;
+    }
+
+    participants_[*found].key.session_generation = committed_session_generation;
+    return true;
+}
+
 bool multiplayer_turn_scheduler::apply_disconnect_timeout(
     const multiplayer_turn_participant_key &participant,
     const multiplayer_disconnect_timeout_policy policy )

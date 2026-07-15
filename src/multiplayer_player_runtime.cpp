@@ -205,10 +205,29 @@ bool multiplayer_player_runtime::transition_session_generation(
 
 bool multiplayer_player_runtime::disconnect()
 {
-    if( impl_->status != multiplayer_player_status::active ) {
+    return transition_offline_at_generation( impl_->session_generation );
+}
+
+bool multiplayer_player_runtime::transition_offline_at_generation(
+    const std::uint64_t expected_generation )
+{
+    if( impl_->status != multiplayer_player_status::active ||
+        impl_->session_generation != expected_generation ) {
         return false;
     }
     impl_->status = multiplayer_player_status::offline;
+    return true;
+}
+
+bool multiplayer_player_runtime::reactivate_session_generation(
+    const std::uint64_t expected_generation )
+{
+    if( impl_->status != multiplayer_player_status::offline ||
+        impl_->session_generation != expected_generation ||
+        !multiplayer_is_valid_session_generation( expected_generation ) ) {
+        return false;
+    }
+    impl_->status = multiplayer_player_status::active;
     return true;
 }
 

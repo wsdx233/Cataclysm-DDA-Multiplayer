@@ -63,6 +63,10 @@ const char *multiplayer_session_directory_status_message(
             return "resume retry does not match the last committed admission";
         case multiplayer_session_directory_status::stale_connection:
             return "session connection tuple is stale";
+        case multiplayer_session_directory_status::duplicate:
+            return "session lifecycle transition is already complete";
+        case multiplayer_session_directory_status::invalid_lifecycle_state:
+            return "session lifecycle transition is invalid in the current state";
     }
     return "unknown session directory status";
 }
@@ -81,7 +85,9 @@ multiplayer_protocol_rejection multiplayer_session_admission_rejection(
                multiplayer_protocol_rejection::permission_denied;
     }
     if( status == multiplayer_session_directory_status::already_connected ||
-        status == multiplayer_session_directory_status::runtime_unavailable ) {
+        status == multiplayer_session_directory_status::runtime_unavailable ||
+        status == multiplayer_session_directory_status::duplicate ||
+        status == multiplayer_session_directory_status::invalid_lifecycle_state ) {
         return multiplayer_protocol_rejection::invalid_state;
     }
     if( status == multiplayer_session_directory_status::stale_session_generation ||
@@ -97,6 +103,11 @@ multiplayer_protocol_rejection multiplayer_session_admission_rejection(
 class multiplayer_session_directory::impl
 {
     public:
+        enum class unpublished_cleanup_mode : std::uint8_t {
+            keep_runtime_active,
+            restore_runtime_offline
+        };
+
         struct resume_fingerprint {
             std::uint64_t expected_generation = 0;
             std::uint64_t last_server_revision = 0;
@@ -109,6 +120,8 @@ class multiplayer_session_directory::impl
             std::uint64_t generation = 0;
             std::uint64_t version = 0;
             std::optional<multiplayer_session_binding> binding;
+            std::optional<multiplayer_session_binding> graceful_release_pending;
+            std::optional<unpublished_cleanup_mode> unpublished_cleanup;
             std::optional<resume_fingerprint> last_resume;
         };
 
@@ -181,15 +194,23 @@ multiplayer_session_admission_plan multiplayer_session_directory::plan_admission
     if( request.character_id != std::to_string( runtime->player().getID().get_value() ) ) {
         return rejected_plan( request, multiplayer_session_directory_status::identity_mismatch );
     }
-    if( runtime->status() == multiplayer_player_status::dead ) {
+    if( runtime->status() != multiplayer_player_status::active &&
+        runtime->status() != multiplayer_player_status::offline ) {
         return rejected_plan( request, multiplayer_session_directory_status::runtime_unavailable );
     }
 
     const bool connection_or_session_in_use = std::any_of(
     impl_->entries.begin(), impl_->entries.end(), [&request]( const auto & item ) {
-        return item.first != request.player_id && item.second.binding &&
-               ( item.second.binding->connection == request.connection ||
-                 item.second.binding->session == request.session );
+        if( item.first == request.player_id ) {
+            return false;
+        }
+        const auto conflicts = [&request](
+        const std::optional<multiplayer_session_binding> &binding ) {
+            return binding && ( binding->connection == request.connection ||
+                                binding->session == request.session );
+        };
+        return conflicts( item.second.binding ) ||
+               conflicts( item.second.graceful_release_pending );
     } );
     if( connection_or_session_in_use ) {
         return rejected_plan( request, multiplayer_session_directory_status::already_connected );
@@ -234,7 +255,7 @@ multiplayer_session_admission_plan multiplayer_session_directory::plan_admission
         entry.generation != runtime->session_generation() ) {
         return rejected_plan( request, multiplayer_session_directory_status::runtime_unavailable );
     }
-    if( entry.binding ) {
+    if( entry.binding || entry.graceful_release_pending ) {
         return rejected_plan( request, multiplayer_session_directory_status::already_connected );
     }
 
@@ -322,23 +343,38 @@ bool multiplayer_session_directory::commit_admission(
             return false;
         }
     } else if( found->second.version != authoritative_plan.directory_version ||
-               found->second.binding ||
+               found->second.binding || found->second.graceful_release_pending ||
+               found->second.unpublished_cleanup ||
                found->second.runtime.get() != runtime.get() ||
                found->second.generation != runtime->session_generation() ) {
         return false;
     }
 
+    const bool restore_runtime_offline_on_unpublished =
+        runtime->status() == multiplayer_player_status::offline;
     if( authoritative_plan.advances_generation ) {
         const std::uint64_t expected_old =
             authoritative_plan.committed_session_generation - 1;
-        if( !runtime->transition_session_generation( expected_old,
-                authoritative_plan.committed_session_generation ) ) {
+        if( !impl_->registry.active_context_is_clear() ||
+            !runtime->transition_session_generation( expected_old,
+                    authoritative_plan.committed_session_generation ) ) {
             return false;
         }
-    } else if( runtime->session_generation() !=
-               authoritative_plan.committed_session_generation ||
-               runtime->status() != multiplayer_player_status::active ) {
-        return false;
+    } else {
+        if( runtime->session_generation() !=
+            authoritative_plan.committed_session_generation ) {
+            return false;
+        }
+        if( runtime->status() == multiplayer_player_status::offline ) {
+            if( !authoritative_plan.replays_committed_generation ||
+                !impl_->registry.active_context_is_clear() ||
+                !runtime->reactivate_session_generation(
+                    authoritative_plan.committed_session_generation ) ) {
+                return false;
+            }
+        } else if( runtime->status() != multiplayer_player_status::active ) {
+            return false;
+        }
     }
 
     if( found == impl_->entries.end() ) {
@@ -357,6 +393,9 @@ bool multiplayer_session_directory::commit_admission(
         authoritative_plan.request.character_id,
         authoritative_plan.committed_session_generation
     };
+    entry.unpublished_cleanup = restore_runtime_offline_on_unpublished ?
+                                impl::unpublished_cleanup_mode::restore_runtime_offline :
+                                impl::unpublished_cleanup_mode::keep_runtime_active;
     if( authoritative_plan.request.kind == multiplayer_session_admission_kind::resume &&
         !authoritative_plan.replays_committed_generation ) {
         entry.last_resume = impl::resume_fingerprint {
@@ -380,15 +419,22 @@ multiplayer_session_directory_status multiplayer_session_directory::record_sessi
         return multiplayer_session_directory_status::not_simulation_thread;
     }
     const auto found = impl_->entries.find( binding.player_id );
-    if( found == impl_->entries.end() || !found->second.binding ||
-        found->second.binding->connection != binding.connection ||
-        found->second.binding->session != binding.session ||
-        found->second.binding->character_id != binding.character_id ||
-        found->second.binding->session_generation != binding.session_generation ) {
+    if( found == impl_->entries.end() ||
+        ( ( !found->second.binding || *found->second.binding != binding ) &&
+          ( !found->second.graceful_release_pending ||
+            *found->second.graceful_release_pending != binding ) ) ) {
         return multiplayer_session_directory_status::stale_connection;
     }
+    bool changed = false;
     if( found->second.last_resume ) {
         found->second.last_resume.reset();
+        changed = true;
+    }
+    if( found->second.unpublished_cleanup ) {
+        found->second.unpublished_cleanup.reset();
+        changed = true;
+    }
+    if( changed ) {
         ++found->second.version;
     }
     return multiplayer_session_directory_status::success;
@@ -397,20 +443,147 @@ multiplayer_session_directory_status multiplayer_session_directory::record_sessi
 multiplayer_session_directory_status multiplayer_session_directory::record_disconnected(
     const multiplayer_session_binding &binding )
 {
-    cata_assert( impl_->on_simulation_thread() );
+    if( !impl_->on_simulation_thread() ) {
+        return multiplayer_session_directory_status::not_simulation_thread;
+    }
+    const auto found = impl_->entries.find( binding.player_id );
+    if( found != impl_->entries.end() && found->second.graceful_release_pending ) {
+        if( *found->second.graceful_release_pending != binding ) {
+            return multiplayer_session_directory_status::stale_connection;
+        }
+        found->second.graceful_release_pending.reset();
+        ++found->second.version;
+        return multiplayer_session_directory_status::success;
+    }
+    if( found == impl_->entries.end() || !found->second.binding ||
+        *found->second.binding != binding ) {
+        return multiplayer_session_directory_status::stale_connection;
+    }
+    found->second.binding.reset();
+    found->second.unpublished_cleanup.reset();
+    ++found->second.version;
+    return multiplayer_session_directory_status::success;
+}
+
+multiplayer_session_directory_status
+multiplayer_session_directory::record_graceful_release_pending(
+    const multiplayer_session_binding &binding )
+{
+    if( !impl_->on_simulation_thread() ) {
+        return multiplayer_session_directory_status::not_simulation_thread;
+    }
+    const auto found = impl_->entries.find( binding.player_id );
+    if( found == impl_->entries.end() ) {
+        return multiplayer_session_directory_status::stale_connection;
+    }
+    impl::entry &entry = found->second;
+    if( entry.graceful_release_pending ) {
+        return *entry.graceful_release_pending == binding ?
+               multiplayer_session_directory_status::duplicate :
+               multiplayer_session_directory_status::stale_connection;
+    }
+    if( !entry.binding || *entry.binding != binding ) {
+        return multiplayer_session_directory_status::stale_connection;
+    }
+
+    const multiplayer_player_id player_id =
+        multiplayer_player_id::from_string( binding.player_id );
+    const shared_ptr_fast<multiplayer_player_runtime> runtime =
+        impl_->registry.find_by_player_id( player_id );
+    if( !player_id.is_valid() || runtime == nullptr || !impl_->registry.owns( runtime ) ||
+        entry.runtime.get() != runtime.get() || entry.character_id != binding.character_id ||
+        entry.generation != binding.session_generation ||
+        runtime->session_generation() != binding.session_generation ||
+        runtime->status() != multiplayer_player_status::active ) {
+        return multiplayer_session_directory_status::invalid_lifecycle_state;
+    }
+
+    entry.graceful_release_pending = binding;
+    entry.binding.reset();
+    entry.unpublished_cleanup.reset();
+    ++entry.version;
+    return multiplayer_session_directory_status::success;
+}
+
+multiplayer_session_directory_status multiplayer_session_directory::record_runtime_offline(
+    const multiplayer_session_runtime_key &key )
+{
+    if( !impl_->on_simulation_thread() ) {
+        return multiplayer_session_directory_status::not_simulation_thread;
+    }
+    if( key.player_id.empty() || key.character_id.empty() ||
+        !multiplayer_is_valid_session_generation( key.session_generation ) ) {
+        return multiplayer_session_directory_status::invalid_request;
+    }
+    const multiplayer_player_id player_id = multiplayer_player_id::from_string( key.player_id );
+    if( !player_id.is_valid() ) {
+        return multiplayer_session_directory_status::invalid_request;
+    }
+    const auto found = impl_->entries.find( key.player_id );
+    if( found == impl_->entries.end() ) {
+        return multiplayer_session_directory_status::player_not_found;
+    }
+    impl::entry &entry = found->second;
+    if( entry.character_id != key.character_id ) {
+        return multiplayer_session_directory_status::identity_mismatch;
+    }
+    if( entry.generation != key.session_generation ) {
+        return multiplayer_session_directory_status::stale_session_generation;
+    }
+    const shared_ptr_fast<multiplayer_player_runtime> runtime =
+        impl_->registry.find_by_player_id( player_id );
+    if( runtime == nullptr || !impl_->registry.owns( runtime ) ||
+        entry.runtime.get() != runtime.get() ||
+        runtime->session_generation() != key.session_generation ) {
+        return multiplayer_session_directory_status::runtime_unavailable;
+    }
+    if( entry.binding || !impl_->registry.active_context_is_clear() ) {
+        return multiplayer_session_directory_status::invalid_lifecycle_state;
+    }
+    if( runtime->status() == multiplayer_player_status::offline ) {
+        return multiplayer_session_directory_status::duplicate;
+    }
+    if( runtime->status() != multiplayer_player_status::active ||
+        !runtime->transition_offline_at_generation( key.session_generation ) ) {
+        return multiplayer_session_directory_status::invalid_lifecycle_state;
+    }
+    ++entry.version;
+    return multiplayer_session_directory_status::success;
+}
+
+multiplayer_session_directory_status multiplayer_session_directory::record_admission_unpublished(
+    const multiplayer_session_binding &binding )
+{
     if( !impl_->on_simulation_thread() ) {
         return multiplayer_session_directory_status::not_simulation_thread;
     }
     const auto found = impl_->entries.find( binding.player_id );
     if( found == impl_->entries.end() || !found->second.binding ||
-        found->second.binding->connection != binding.connection ||
-        found->second.binding->session != binding.session ||
-        found->second.binding->character_id != binding.character_id ||
-        found->second.binding->session_generation != binding.session_generation ) {
+        *found->second.binding != binding || !found->second.unpublished_cleanup ) {
         return multiplayer_session_directory_status::stale_connection;
     }
-    found->second.binding.reset();
-    ++found->second.version;
+    impl::entry &entry = found->second;
+    const multiplayer_player_id player_id =
+        multiplayer_player_id::from_string( binding.player_id );
+    const shared_ptr_fast<multiplayer_player_runtime> runtime =
+        impl_->registry.find_by_player_id( player_id );
+    if( !player_id.is_valid() || runtime == nullptr || !impl_->registry.owns( runtime ) ||
+        entry.runtime.get() != runtime.get() ||
+        entry.character_id != binding.character_id ||
+        entry.generation != binding.session_generation ||
+        runtime->session_generation() != binding.session_generation ||
+        runtime->status() != multiplayer_player_status::active ) {
+        return multiplayer_session_directory_status::invalid_lifecycle_state;
+    }
+    if( *entry.unpublished_cleanup ==
+        impl::unpublished_cleanup_mode::restore_runtime_offline &&
+        ( !impl_->registry.active_context_is_clear() ||
+          !runtime->transition_offline_at_generation( binding.session_generation ) ) ) {
+        return multiplayer_session_directory_status::invalid_lifecycle_state;
+    }
+    entry.binding.reset();
+    entry.unpublished_cleanup.reset();
+    ++entry.version;
     return multiplayer_session_directory_status::success;
 }
 

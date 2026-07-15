@@ -135,6 +135,13 @@ class multiplayer_turn_scheduler
         bool resume_barrier_participant(
             const multiplayer_turn_participant_key &expected_participant,
             std::uint64_t resumed_session_generation );
+        /** Rebinds an exact same-generation replay without advancing generation. */
+        bool rebind_replayed_barrier_participant(
+            const multiplayer_turn_participant_key &exact_current );
+        /** Repairs a committed +1 generation while preserving disconnected grace. */
+        bool repair_disconnected_barrier_generation(
+            const multiplayer_turn_participant_key &expected_participant,
+            std::uint64_t committed_session_generation );
         /** Timeout policy only applies to the current disconnected slot. */
         bool apply_disconnect_timeout(
             const multiplayer_turn_participant_key &participant,

@@ -233,6 +233,143 @@ TEST_CASE( "multiplayer_turn_scheduler_disconnect_resume_and_timeout_are_barrier
     CHECK_FALSE( removal_scheduler.has_participant( alpha.player_id ) );
 }
 
+TEST_CASE( "multiplayer_turn_scheduler_rebinds_only_an_exact_disconnected_replay",
+           "[multiplayer][scheduler]" )
+{
+    multiplayer_turn_scheduler scheduler;
+    const multiplayer_turn_participant_key alpha = participant( 1 );
+    const multiplayer_turn_participant_key beta = participant( 2 );
+    const multiplayer_turn_participant_key missing = participant( 3 );
+    REQUIRE( scheduler.begin_turn( 1, { alpha, beta } ) );
+
+    CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( alpha ) );
+    REQUIRE( scheduler.mark_barrier_disconnected( alpha ) );
+    CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( missing ) );
+    CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( { alpha.player_id, 2 } ) );
+    REQUIRE( scheduler.rebind_replayed_barrier_participant( alpha ) );
+    REQUIRE( scheduler.participant_key( alpha.player_id ) );
+    CHECK( *scheduler.participant_key( alpha.player_id ) == alpha );
+    CHECK( scheduler.participant_state( alpha.player_id ) ==
+           multiplayer_turn_participant_state::awaiting_command );
+    CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( alpha ) );
+
+    REQUIRE( scheduler.mark_barrier_disconnected( alpha ) );
+    REQUIRE( scheduler.apply_disconnect_timeout(
+                 alpha, multiplayer_disconnect_timeout_policy::automatic_wait ) );
+    CHECK( scheduler.participant_state( alpha.player_id ) ==
+           multiplayer_turn_participant_state::automatic_wait_pending );
+    CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( alpha ) );
+    REQUIRE( scheduler.record_automatic_wait_executed( alpha ) );
+    CHECK( scheduler.stage() == multiplayer_turn_scheduler_stage::player_actions );
+    CHECK( scheduler.participant_state( alpha.player_id ) ==
+           multiplayer_turn_participant_state::finished );
+    CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( alpha ) );
+
+    REQUIRE( scheduler.record_action_result(
+                 beta, multiplayer_turn_action_disposition::accepted_finished ) );
+    CHECK( scheduler.stage() == multiplayer_turn_scheduler_stage::world_ready );
+    CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( alpha ) );
+    const std::optional<multiplayer_world_ticket> ticket = scheduler.claim_world();
+    REQUIRE( ticket );
+    CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( alpha ) );
+    REQUIRE( scheduler.record_world_completed( *ticket ) );
+    CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( alpha ) );
+}
+
+TEST_CASE( "multiplayer_turn_scheduler_repairs_disconnected_generation_without_resuming",
+           "[multiplayer][scheduler]" )
+{
+    multiplayer_turn_scheduler scheduler;
+    const multiplayer_turn_participant_key alpha = participant( 1 );
+    const multiplayer_turn_participant_key missing = participant( 2 );
+    const multiplayer_turn_participant_key repaired = { alpha.player_id, 2 };
+
+    CHECK_FALSE( scheduler.repair_disconnected_barrier_generation( alpha, 2 ) );
+    REQUIRE( scheduler.begin_turn( 1, { alpha } ) );
+    CHECK_FALSE( scheduler.repair_disconnected_barrier_generation( alpha, 2 ) );
+    REQUIRE( scheduler.mark_barrier_disconnected( alpha ) );
+
+    CHECK_FALSE( scheduler.repair_disconnected_barrier_generation( missing, 2 ) );
+    CHECK_FALSE( scheduler.repair_disconnected_barrier_generation(
+    { alpha.player_id, 2 }, 3 ) );
+    CHECK_FALSE( scheduler.repair_disconnected_barrier_generation( alpha, 1 ) );
+    CHECK_FALSE( scheduler.repair_disconnected_barrier_generation( alpha, 3 ) );
+    REQUIRE( scheduler.repair_disconnected_barrier_generation( alpha, 2 ) );
+
+    REQUIRE( scheduler.participant_key( alpha.player_id ) );
+    CHECK( *scheduler.participant_key( alpha.player_id ) == repaired );
+    CHECK( scheduler.participant_state( alpha.player_id ) ==
+           multiplayer_turn_participant_state::disconnected_grace );
+    REQUIRE( scheduler.current_slot() );
+    CHECK( scheduler.current_slot()->participant == repaired );
+    CHECK( scheduler.current_slot()->state ==
+           multiplayer_turn_participant_state::disconnected_grace );
+
+    CHECK_FALSE( scheduler.apply_disconnect_timeout(
+                     alpha, multiplayer_disconnect_timeout_policy::automatic_wait ) );
+    REQUIRE( scheduler.apply_disconnect_timeout(
+                 repaired, multiplayer_disconnect_timeout_policy::automatic_wait ) );
+    CHECK_FALSE( scheduler.repair_disconnected_barrier_generation( repaired, 3 ) );
+    REQUIRE( scheduler.record_automatic_wait_executed( repaired ) );
+    CHECK( scheduler.stage() == multiplayer_turn_scheduler_stage::world_ready );
+    CHECK_FALSE( scheduler.repair_disconnected_barrier_generation( repaired, 3 ) );
+
+    const std::optional<multiplayer_world_ticket> ticket = scheduler.claim_world();
+    REQUIRE( ticket );
+    CHECK_FALSE( scheduler.repair_disconnected_barrier_generation( repaired, 3 ) );
+    REQUIRE( scheduler.record_world_completed( *ticket ) );
+    CHECK_FALSE( scheduler.repair_disconnected_barrier_generation( repaired, 3 ) );
+}
+
+TEST_CASE( "multiplayer_turn_scheduler_resume_and_timeout_races_have_one_winner",
+           "[multiplayer][scheduler]" )
+{
+    multiplayer_turn_scheduler scheduler;
+    const multiplayer_turn_participant_key alpha = participant( 1 );
+    REQUIRE( scheduler.begin_turn( 1, { alpha } ) );
+    REQUIRE( scheduler.mark_barrier_disconnected( alpha ) );
+
+    SECTION( "next-generation resume wins before timeout" ) {
+        REQUIRE( scheduler.resume_barrier_participant( alpha, 2 ) );
+        const multiplayer_turn_participant_key resumed = { alpha.player_id, 2 };
+        CHECK_FALSE( scheduler.apply_disconnect_timeout(
+                         alpha, multiplayer_disconnect_timeout_policy::automatic_wait ) );
+        CHECK_FALSE( scheduler.apply_disconnect_timeout(
+                         resumed, multiplayer_disconnect_timeout_policy::automatic_wait ) );
+        CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( alpha ) );
+        CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( resumed ) );
+        REQUIRE( scheduler.participant_key( alpha.player_id ) );
+        CHECK( *scheduler.participant_key( alpha.player_id ) == resumed );
+        CHECK( scheduler.participant_state( alpha.player_id ) ==
+               multiplayer_turn_participant_state::awaiting_command );
+    }
+
+    SECTION( "same-generation replay rebind wins before timeout" ) {
+        REQUIRE( scheduler.rebind_replayed_barrier_participant( alpha ) );
+        CHECK_FALSE( scheduler.apply_disconnect_timeout(
+                         alpha, multiplayer_disconnect_timeout_policy::automatic_wait ) );
+        CHECK_FALSE( scheduler.resume_barrier_participant( alpha, 2 ) );
+        CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( alpha ) );
+        REQUIRE( scheduler.participant_key( alpha.player_id ) );
+        CHECK( *scheduler.participant_key( alpha.player_id ) == alpha );
+        CHECK( scheduler.participant_state( alpha.player_id ) ==
+               multiplayer_turn_participant_state::awaiting_command );
+    }
+
+    SECTION( "timeout wins before either resume path" ) {
+        REQUIRE( scheduler.apply_disconnect_timeout(
+                     alpha, multiplayer_disconnect_timeout_policy::automatic_wait ) );
+        CHECK_FALSE( scheduler.resume_barrier_participant( alpha, 2 ) );
+        CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( alpha ) );
+        CHECK( scheduler.participant_state( alpha.player_id ) ==
+               multiplayer_turn_participant_state::automatic_wait_pending );
+        REQUIRE( scheduler.record_automatic_wait_executed( alpha ) );
+        CHECK( scheduler.stage() == multiplayer_turn_scheduler_stage::world_ready );
+        CHECK_FALSE( scheduler.resume_barrier_participant( alpha, 2 ) );
+        CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( alpha ) );
+    }
+}
+
 TEST_CASE( "multiplayer_turn_scheduler_rotates_by_stable_player_successor_across_roster_churn",
            "[multiplayer][scheduler]" )
 {
@@ -346,6 +483,8 @@ TEST_CASE( "multiplayer_turn_scheduler_execution_fault_permanently_blocks_transi
                      multiplayer_turn_action_disposition::accepted_finished ) );
     CHECK_FALSE( scheduler.mark_barrier_disconnected( current ) );
     CHECK_FALSE( scheduler.resume_barrier_participant( current, 2 ) );
+    CHECK_FALSE( scheduler.rebind_replayed_barrier_participant( current ) );
+    CHECK_FALSE( scheduler.repair_disconnected_barrier_generation( current, 2 ) );
     CHECK_FALSE( scheduler.apply_disconnect_timeout(
                      current, multiplayer_disconnect_timeout_policy::automatic_wait ) );
     CHECK_FALSE( scheduler.record_automatic_wait_executed( current ) );

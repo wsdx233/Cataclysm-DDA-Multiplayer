@@ -30,7 +30,9 @@ enum class multiplayer_session_directory_status : std::uint8_t {
     stale_session_generation,
     generation_exhausted,
     conflicting_resume_replay,
-    stale_connection
+    stale_connection,
+    duplicate,
+    invalid_lifecycle_state
 };
 
 const char *multiplayer_session_directory_status_message(
@@ -78,6 +80,24 @@ struct multiplayer_session_binding {
     explicit operator bool() const {
         return connection != 0;
     }
+
+    friend bool operator==( const multiplayer_session_binding &lhs,
+                            const multiplayer_session_binding &rhs ) {
+        return lhs.connection == rhs.connection && lhs.session == rhs.session &&
+               lhs.player_id == rhs.player_id && lhs.character_id == rhs.character_id &&
+               lhs.session_generation == rhs.session_generation;
+    }
+
+    friend bool operator!=( const multiplayer_session_binding &lhs,
+                            const multiplayer_session_binding &rhs ) {
+        return !( lhs == rhs );
+    }
+};
+
+struct multiplayer_session_runtime_key {
+    std::string player_id;
+    std::string character_id;
+    std::uint64_t session_generation = 0;
 };
 
 /**
@@ -107,6 +127,12 @@ class multiplayer_session_directory
         multiplayer_session_directory_status record_session_confirmed(
             const multiplayer_session_binding &binding );
         multiplayer_session_directory_status record_disconnected(
+            const multiplayer_session_binding &binding );
+        multiplayer_session_directory_status record_graceful_release_pending(
+            const multiplayer_session_binding &binding );
+        multiplayer_session_directory_status record_runtime_offline(
+            const multiplayer_session_runtime_key &key );
+        multiplayer_session_directory_status record_admission_unpublished(
             const multiplayer_session_binding &binding );
 
         std::optional<multiplayer_session_binding> session_for_player(

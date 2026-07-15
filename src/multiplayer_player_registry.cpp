@@ -229,6 +229,11 @@ void multiplayer_player_registry::leave_active_context()
     }
 }
 
+bool multiplayer_player_registry::active_context_is_clear() const noexcept
+{
+    return active_context_depth == 0;
+}
+
 void multiplayer_player_registry::rebuild_indexes() const
 {
     if( indexed_players.size() == players.size() &&

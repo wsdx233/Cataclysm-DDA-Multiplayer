@@ -8,6 +8,7 @@
 #include "avatar.h"
 #include "game.h"
 #include "memory_fast.h"
+#include "multiplayer_player_context.h"
 #include "multiplayer_player_registry.h"
 #include "multiplayer_player_runtime.h"
 #include "multiplayer_session_directory.h"
@@ -50,6 +51,14 @@ multiplayer_session_admission_request admission_request(
     request.last_server_revision = last_server_revision;
     request.last_client_sequence = last_client_sequence;
     return request;
+}
+
+multiplayer_session_runtime_key runtime_key( const multiplayer_player_runtime &runtime )
+{
+    return {
+        runtime.player_id().str(), character_id_string( runtime.player() ),
+        runtime.session_generation()
+    };
 }
 
 class registered_directory_player
@@ -265,6 +274,289 @@ TEST_CASE( "multiplayer_session_directory_admits_disconnects_and_replays_exact_g
              multiplayer_session_directory_status::success );
 }
 
+TEST_CASE( "multiplayer_session_directory_offline_transition_requires_an_exact_safe_point",
+           "[multiplayer][session_directory][player_bridge]" )
+{
+    registered_directory_player player;
+    REQUIRE( player );
+    const shared_ptr_fast<multiplayer_player_runtime> runtime = player.runtime();
+    REQUIRE( runtime );
+
+    multiplayer_session_directory directory( g->multiplayer_players(), 1 );
+    const multiplayer_session_admission_plan authentication = directory.plan_admission(
+                admission_request( multiplayer_session_admission_kind::authentication,
+                                   1, 601, session_id( 51 ), *runtime ) );
+    REQUIRE( authentication );
+    REQUIRE( directory.commit_admission( authentication ) );
+    const std::optional<multiplayer_session_binding> binding =
+        directory.session_for_player( runtime->player_id().str() );
+    REQUIRE( binding );
+    CHECK( *binding == *binding );
+
+    const multiplayer_session_runtime_key exact_key = runtime_key( *runtime );
+    CHECK( directory.record_runtime_offline( exact_key ) ==
+           multiplayer_session_directory_status::invalid_lifecycle_state );
+    CHECK( runtime->status() == multiplayer_player_status::active );
+    REQUIRE( directory.record_disconnected( *binding ) ==
+             multiplayer_session_directory_status::success );
+
+    multiplayer_session_runtime_key invalid_player = exact_key;
+    invalid_player.player_id = "not-a-player-id";
+    CHECK( directory.record_runtime_offline( invalid_player ) ==
+           multiplayer_session_directory_status::invalid_request );
+
+    multiplayer_session_runtime_key missing_player = exact_key;
+    missing_player.player_id = multiplayer_player_id::random().str();
+    CHECK( directory.record_runtime_offline( missing_player ) ==
+           multiplayer_session_directory_status::player_not_found );
+
+    multiplayer_session_runtime_key wrong_character = exact_key;
+    wrong_character.character_id += "-stale";
+    CHECK( directory.record_runtime_offline( wrong_character ) ==
+           multiplayer_session_directory_status::identity_mismatch );
+
+    multiplayer_session_runtime_key wrong_generation = exact_key;
+    ++wrong_generation.session_generation;
+    CHECK( directory.record_runtime_offline( wrong_generation ) ==
+           multiplayer_session_directory_status::stale_session_generation );
+
+    multiplayer_session_directory_status worker_status =
+        multiplayer_session_directory_status::success;
+    std::thread worker( [&]() {
+        worker_status = directory.record_runtime_offline( exact_key );
+    } );
+    worker.join();
+    CHECK( worker_status == multiplayer_session_directory_status::not_simulation_thread );
+    CHECK( runtime->status() == multiplayer_player_status::active );
+
+    {
+        multiplayer_active_player_guard guard( *g, runtime->player_owner() );
+        REQUIRE( guard.is_engaged() );
+        CHECK( directory.record_runtime_offline( exact_key ) ==
+               multiplayer_session_directory_status::invalid_lifecycle_state );
+        CHECK( runtime->status() == multiplayer_player_status::active );
+    }
+
+    REQUIRE( directory.record_runtime_offline( exact_key ) ==
+             multiplayer_session_directory_status::success );
+    CHECK( runtime->status() == multiplayer_player_status::offline );
+    CHECK( directory.record_runtime_offline( exact_key ) ==
+           multiplayer_session_directory_status::duplicate );
+}
+
+TEST_CASE( "multiplayer_session_directory_graceful_release_loses_commandability_but_stays_active",
+           "[multiplayer][session_directory]" )
+{
+    registered_directory_player player;
+    REQUIRE( player );
+    const shared_ptr_fast<multiplayer_player_runtime> runtime = player.runtime();
+    REQUIRE( runtime );
+
+    multiplayer_session_directory directory( g->multiplayer_players(), 1 );
+    const multiplayer_session_admission_plan authentication = directory.plan_admission(
+                admission_request( multiplayer_session_admission_kind::authentication,
+                                   1, 651, session_id( 56 ), *runtime ) );
+    REQUIRE( authentication );
+    REQUIRE( directory.commit_admission( authentication ) );
+    const std::optional<multiplayer_session_binding> binding =
+        directory.session_for_player( runtime->player_id().str() );
+    REQUIRE( binding );
+
+    multiplayer_session_binding stale = *binding;
+    stale.session = session_id( 57 );
+    CHECK( directory.record_graceful_release_pending( stale ) ==
+           multiplayer_session_directory_status::stale_connection );
+    CHECK( directory.matches_connected( *binding ) );
+    CHECK( runtime->status() == multiplayer_player_status::active );
+
+    REQUIRE( directory.record_graceful_release_pending( *binding ) ==
+             multiplayer_session_directory_status::success );
+    CHECK_FALSE( directory.session_for_player( runtime->player_id().str() ) );
+    CHECK_FALSE( directory.matches_connected( *binding ) );
+    CHECK( directory.connected_count() == 0 );
+    CHECK( runtime->status() == multiplayer_player_status::active );
+    CHECK( runtime->session_generation() == binding->session_generation );
+    CHECK( directory.record_graceful_release_pending( *binding ) ==
+           multiplayer_session_directory_status::duplicate );
+    REQUIRE( directory.record_session_confirmed( *binding ) ==
+             multiplayer_session_directory_status::success );
+
+    const multiplayer_session_admission_request blocked_resume = admission_request(
+                multiplayer_session_admission_kind::resume, 2, 652, session_id( 58 ), *runtime,
+                binding->session_generation, 1, 1 );
+    CHECK( directory.plan_admission( blocked_resume ).status ==
+           multiplayer_session_directory_status::already_connected );
+
+    REQUIRE( directory.record_runtime_offline( runtime_key( *runtime ) ) ==
+             multiplayer_session_directory_status::success );
+    CHECK( runtime->status() == multiplayer_player_status::offline );
+    CHECK( directory.record_graceful_release_pending( *binding ) ==
+           multiplayer_session_directory_status::duplicate );
+
+    REQUIRE( directory.record_disconnected( *binding ) ==
+             multiplayer_session_directory_status::success );
+    CHECK( directory.record_disconnected( *binding ) ==
+           multiplayer_session_directory_status::stale_connection );
+    CHECK( runtime->status() == multiplayer_player_status::offline );
+}
+
+TEST_CASE( "multiplayer_session_directory_reactivates_the_same_offline_runtime",
+           "[multiplayer][session_directory]" )
+{
+    registered_directory_player player;
+    REQUIRE( player );
+    const shared_ptr_fast<multiplayer_player_runtime> runtime = player.runtime();
+    REQUIRE( runtime );
+    multiplayer_player_runtime *const runtime_address = runtime.get();
+    avatar *const avatar_address = &runtime->player();
+
+    multiplayer_session_directory directory( g->multiplayer_players(), 1 );
+    const multiplayer_session_admission_plan authentication = directory.plan_admission(
+                admission_request( multiplayer_session_admission_kind::authentication,
+                                   1, 701, session_id( 61 ), *runtime ) );
+    REQUIRE( authentication );
+    REQUIRE( directory.commit_admission( authentication ) );
+    const std::optional<multiplayer_session_binding> generation_one =
+        directory.session_for_player( runtime->player_id().str() );
+    REQUIRE( generation_one );
+    REQUIRE( directory.record_disconnected( *generation_one ) ==
+             multiplayer_session_directory_status::success );
+    REQUIRE( directory.record_runtime_offline( runtime_key( *runtime ) ) ==
+             multiplayer_session_directory_status::success );
+    REQUIRE( runtime->status() == multiplayer_player_status::offline );
+
+    constexpr std::uint64_t revision = 41;
+    constexpr std::uint64_t sequence = 43;
+    const multiplayer_session_admission_request resume = admission_request(
+                multiplayer_session_admission_kind::resume, 2, 702, session_id( 62 ), *runtime,
+                1, revision, sequence );
+    const multiplayer_session_admission_plan resume_plan = directory.plan_admission( resume );
+    REQUIRE( resume_plan );
+    CHECK( resume_plan.advances_generation );
+    CHECK( resume_plan.committed_session_generation == 2 );
+    REQUIRE( directory.commit_admission( resume_plan ) );
+    CHECK( runtime.get() == runtime_address );
+    CHECK( &runtime->player() == avatar_address );
+    CHECK( runtime->status() == multiplayer_player_status::active );
+    CHECK( runtime->session_generation() == 2 );
+
+    const std::optional<multiplayer_session_binding> generation_two =
+        directory.session_for_player( runtime->player_id().str() );
+    REQUIRE( generation_two );
+    REQUIRE( directory.record_disconnected( *generation_two ) ==
+             multiplayer_session_directory_status::success );
+    REQUIRE( directory.record_runtime_offline( runtime_key( *runtime ) ) ==
+             multiplayer_session_directory_status::success );
+    REQUIRE( runtime->status() == multiplayer_player_status::offline );
+
+    multiplayer_session_admission_request replay = resume;
+    replay.admission_id = 3;
+    replay.connection = 703;
+    replay.session = session_id( 63 );
+    const multiplayer_session_admission_plan replay_plan = directory.plan_admission( replay );
+    REQUIRE( replay_plan );
+    CHECK_FALSE( replay_plan.advances_generation );
+    CHECK( replay_plan.replays_committed_generation );
+    CHECK( replay_plan.committed_session_generation == 2 );
+    REQUIRE( directory.commit_admission( replay_plan ) );
+    CHECK( runtime.get() == runtime_address );
+    CHECK( &runtime->player() == avatar_address );
+    CHECK( runtime->status() == multiplayer_player_status::active );
+    CHECK( runtime->session_generation() == 2 );
+}
+
+TEST_CASE( "multiplayer_session_directory_unpublished_dormant_admission_restores_offline_replay",
+           "[multiplayer][session_directory]" )
+{
+    registered_directory_player player;
+    REQUIRE( player );
+    const shared_ptr_fast<multiplayer_player_runtime> runtime = player.runtime();
+    REQUIRE( runtime );
+    multiplayer_player_runtime *const runtime_address = runtime.get();
+
+    multiplayer_session_directory directory( g->multiplayer_players(), 1 );
+    const multiplayer_session_admission_plan authentication = directory.plan_admission(
+                admission_request( multiplayer_session_admission_kind::authentication,
+                                   1, 801, session_id( 71 ), *runtime ) );
+    REQUIRE( authentication );
+    REQUIRE( directory.commit_admission( authentication ) );
+    const std::optional<multiplayer_session_binding> generation_one =
+        directory.session_for_player( runtime->player_id().str() );
+    REQUIRE( generation_one );
+    REQUIRE( directory.record_disconnected( *generation_one ) ==
+             multiplayer_session_directory_status::success );
+    REQUIRE( directory.record_runtime_offline( runtime_key( *runtime ) ) ==
+             multiplayer_session_directory_status::success );
+
+    constexpr std::uint64_t revision = 47;
+    constexpr std::uint64_t sequence = 53;
+    const multiplayer_session_admission_request resume = admission_request(
+                multiplayer_session_admission_kind::resume, 2, 802, session_id( 72 ), *runtime,
+                1, revision, sequence );
+    const multiplayer_session_admission_plan resume_plan = directory.plan_admission( resume );
+    REQUIRE( resume_plan );
+    REQUIRE( directory.commit_admission( resume_plan ) );
+    REQUIRE( runtime->status() == multiplayer_player_status::active );
+    REQUIRE( runtime->session_generation() == 2 );
+    const std::optional<multiplayer_session_binding> unpublished =
+        directory.session_for_player( runtime->player_id().str() );
+    REQUIRE( unpublished );
+
+    multiplayer_session_binding wrong_binding = *unpublished;
+    wrong_binding.connection = 899;
+    CHECK( directory.record_admission_unpublished( wrong_binding ) ==
+           multiplayer_session_directory_status::stale_connection );
+    CHECK( directory.matches_connected( *unpublished ) );
+    CHECK( runtime->status() == multiplayer_player_status::active );
+
+    REQUIRE( directory.record_admission_unpublished( *unpublished ) ==
+             multiplayer_session_directory_status::success );
+    CHECK_FALSE( directory.session_for_player( runtime->player_id().str() ) );
+    CHECK( runtime->status() == multiplayer_player_status::offline );
+    CHECK( runtime->session_generation() == 2 );
+
+    multiplayer_session_admission_request replay = resume;
+    replay.admission_id = 3;
+    replay.connection = 803;
+    replay.session = session_id( 73 );
+    const multiplayer_session_admission_plan replay_plan = directory.plan_admission( replay );
+    REQUIRE( replay_plan );
+    CHECK_FALSE( replay_plan.advances_generation );
+    CHECK( replay_plan.replays_committed_generation );
+    CHECK( replay_plan.committed_session_generation == 2 );
+    REQUIRE( directory.commit_admission( replay_plan ) );
+    CHECK( runtime.get() == runtime_address );
+    CHECK( runtime->status() == multiplayer_player_status::active );
+    CHECK( runtime->session_generation() == 2 );
+}
+
+TEST_CASE( "multiplayer_session_directory_unpublished_cleanup_preserves_active_origin",
+           "[multiplayer][session_directory]" )
+{
+    registered_directory_player player;
+    REQUIRE( player );
+    const shared_ptr_fast<multiplayer_player_runtime> runtime = player.runtime();
+    REQUIRE( runtime );
+
+    multiplayer_session_directory directory( g->multiplayer_players(), 1 );
+    const multiplayer_session_admission_plan authentication = directory.plan_admission(
+                admission_request( multiplayer_session_admission_kind::authentication,
+                                   1, 811, session_id( 81 ), *runtime ) );
+    REQUIRE( authentication );
+    REQUIRE( directory.commit_admission( authentication ) );
+    const std::optional<multiplayer_session_binding> unpublished =
+        directory.session_for_player( runtime->player_id().str() );
+    REQUIRE( unpublished );
+
+    REQUIRE( directory.record_admission_unpublished( *unpublished ) ==
+             multiplayer_session_directory_status::success );
+    CHECK_FALSE( directory.session_for_player( runtime->player_id().str() ) );
+    CHECK( runtime->status() == multiplayer_player_status::active );
+    CHECK( runtime->session_generation() == unpublished->session_generation );
+    CHECK( directory.record_admission_unpublished( *unpublished ) ==
+           multiplayer_session_directory_status::stale_connection );
+}
+
 TEST_CASE( "multiplayer_session_directory_rejects_cross_player_connection_and_session_reuse",
            "[multiplayer][session_directory]" )
 {
@@ -381,13 +673,28 @@ TEST_CASE( "multiplayer_session_directory_stops_before_the_signed_save_generatio
         make_shared_fast<multiplayer_player_runtime>(
             owner, multiplayer_player_runtime::achievement_callback{},
             multiplayer_player_runtime::achievement_callback{},
-            multiplayer_player_id::random(), maximum_generation - 1 );
+            multiplayer_player_id::random(), maximum_generation - 2 );
     multiplayer_player_registry registry;
     REQUIRE( registry.register_player( runtime ) );
+    REQUIRE( registry.begin_session( runtime->player_id() ) );
+    REQUIRE( runtime->session_generation() == maximum_generation - 1 );
 
     multiplayer_session_directory directory( registry, 1 );
+    const multiplayer_session_admission_plan bootstrap = directory.plan_admission(
+                admission_request( multiplayer_session_admission_kind::authentication,
+                                   1, 200, session_id( 10 ), *runtime ) );
+    REQUIRE( bootstrap );
+    CHECK( bootstrap.committed_session_generation == maximum_generation - 1 );
+    CHECK_FALSE( bootstrap.advances_generation );
+    REQUIRE( directory.commit_admission( bootstrap ) );
+    const std::optional<multiplayer_session_binding> bootstrap_binding =
+        directory.session_for_player( runtime->player_id().str() );
+    REQUIRE( bootstrap_binding );
+    REQUIRE( directory.record_disconnected( *bootstrap_binding ) ==
+             multiplayer_session_directory_status::success );
+
     const multiplayer_session_admission_request final_authentication = admission_request(
-                multiplayer_session_admission_kind::authentication, 1, 201, session_id( 11 ),
+                multiplayer_session_admission_kind::authentication, 2, 201, session_id( 11 ),
                 *runtime );
     const multiplayer_session_admission_plan final_plan =
         directory.plan_admission( final_authentication );
@@ -403,7 +710,7 @@ TEST_CASE( "multiplayer_session_directory_stops_before_the_signed_save_generatio
              multiplayer_session_directory_status::success );
 
     const multiplayer_session_admission_request exhausted_authentication = admission_request(
-                multiplayer_session_admission_kind::authentication, 2, 202, session_id( 12 ),
+                multiplayer_session_admission_kind::authentication, 3, 202, session_id( 12 ),
                 *runtime );
     const multiplayer_session_admission_plan exhausted_plan =
         directory.plan_admission( exhausted_authentication );

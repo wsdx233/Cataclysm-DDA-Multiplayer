@@ -119,6 +119,8 @@ class multiplayer_player_runtime
         bool begin_session();
         bool transition_session_generation( std::uint64_t expected_old,
                                             std::uint64_t next_generation );
+        bool transition_offline_at_generation( std::uint64_t expected_generation );
+        bool reactivate_session_generation( std::uint64_t expected_generation );
         bool disconnect();
         bool mark_dead();
 

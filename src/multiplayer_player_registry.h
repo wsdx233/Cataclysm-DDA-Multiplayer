@@ -14,6 +14,7 @@ class avatar;
 class multiplayer_active_player_guard;
 class multiplayer_player_id;
 class multiplayer_player_runtime;
+class multiplayer_session_directory;
 
 /**
  * Owns the human player runtimes represented in the shared reality bubble.
@@ -55,6 +56,7 @@ class multiplayer_player_registry
     private:
         void enter_active_context();
         void leave_active_context();
+        bool active_context_is_clear() const noexcept;
         void rebuild_indexes() const;
 
         std::vector<shared_ptr_fast<multiplayer_player_runtime>> players;
@@ -66,6 +68,7 @@ class multiplayer_player_registry
         std::size_t active_context_depth = 0;
 
         friend class multiplayer_active_player_guard;
+        friend class multiplayer_session_directory;
 };
 
 #endif // CATA_SRC_MULTIPLAYER_PLAYER_REGISTRY_H

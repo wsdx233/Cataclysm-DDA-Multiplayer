@@ -1181,7 +1181,7 @@ int run_dedicated_server( const multiplayer_server_config &config,
                                 plan.request.player_id, plan.request.character_id,
                                 plan.committed_session_generation
                             };
-                            if( session_directory.record_disconnected( failed_binding ) !=
+                            if( session_directory.record_admission_unpublished( failed_binding ) !=
                                 multiplayer_session_directory_status::success ) {
                                 error = "failed to release an unpublishable multiplayer admission";
                                 runtime_failed = true;
