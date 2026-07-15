@@ -72,8 +72,30 @@ Gate 1/2 已把这些 slices 接入 production single-root server：
 - post-side-effect fault、open-turn stop 或 canonical state 不可证明时进入 typed fatal/no-save；clean completed boundary
   或 dormant 才允许 canonical save。真实 Linux process 已证明 open-turn SIGTERM 不修改 save 哈希。
 
-这些证据仍只覆盖 single-root production routing。配置继续拒绝 `players.max > 1`；two-runtime owner、公平 command
-routing、monster/death 和其他共享规则矩阵属于 Phase 3 Gate 3，本注记不代表两玩家 server 或 Phase 3 退出标准完成。
+Gate 3 source `2eccb92087991966423c18b63f6ef707462b1428` 进一步新增独立的
+`multiplayer_multi_runtime_barrier_owner`，但把职责明确限制为 simulation-thread 上的 **inner barrier contract**：
+
+- `begin_turn()` 在改变 scheduler 前先验证完整 roster snapshot；每个 participant 必须是 exact generation、active、
+  registry-owned runtime，并解析和持有地址稳定的 runtime/avatar shared owner。该 owner 在每次 exact-current action、
+  zero-action terminal、forced wait 和 world claim 前重新解析 registry，核对同一裸地址、同一 shared control block、
+  player identity、generation、lifecycle 和 registry ownership，直到外层 player-end completion 被接受后才释放
+  pinned owners。
+- owner 私有持有跨 turn 持久存在的公平 scheduler，并为每个 open barrier 创建一个 adapter。owner-level integration
+  case 让两个 runtime 在连续 turn 中执行普通 wait 与 disconnect timeout 后的真实 forced wait，保留 round-robin 首位
+  轮换、exact-current routing、目标 guard 内唯一 action bookkeeping 和 root context 恢复语义。
+- scheduler world callback 成功后不会直接允许下一 turn，而是进入显式 `player_end_pending`。process-local opaque
+  completion receipt 绑定 owner、shared turn 和 epoch；exact receipt 只应用一次，重复 exact receipt 返回 duplicate，
+  但 duplicate 只在 owner 完全 idle 时成立。上一 turn receipt 在新 active turn 中返回 invalid 且不推进；新 pending
+  boundary 上的 default/forged、stale 或 cross-owner receipt 会 fail-stop。
+- wrong-thread work 被拒绝；exact-current runtime/avatar owner identity 丢失、callback/wait/world failure，或外层 effect 与
+  completion record 分叉会永久 latch fault。owner 同时记录 gameplay/world side effect 是否可能已经发生，供未来外层
+  lifecycle/save owner 选择 typed fatal/no-save，而不是重试不确定的非幂等工作。
+
+该 slice 尚不拥有 transport、session directory、resume/replay/repair、selected-root 选择、逐玩家 begin/end、scene 或
+canonical save transaction。它的 world 仍只是测试 lambda，没有调用 actual legacy bubble；opaque receipt 只证明调用方
+报告的 player-end 顺序，不证明外层 lifecycle 已提交或 canonical save point 安全。production server 仍使用
+single-root owner，配置继续拒绝 `players.max > 1`。因此这不是 production two-player routing、Gate 3 关闭或 Phase 3
+退出证据；monster/death 和其余共享规则矩阵仍待后续 slices 完成。
 
 ## 替代方案
 
@@ -103,8 +125,12 @@ routing、monster/death 和其他共享规则矩阵属于 Phase 3 Gate 3，本�
   `record_automatic_wait_executed()` 不能作为 gameplay 执行证据。
 - phase-adapter 单元测试覆盖 exact slot/generation/ownership/root context、active-avatar safe-mode permission、真实
   forced pause、stale/missing/inactive runtime、callback/wait/world failure、post-side-effect scheduler-record fault 和
-  replacement-adapter 拒绝；当前
-  two-runtime wait-only test 的 world callback 是计数 lambda，不是 actual bubble gameplay evidence。
+  replacement-adapter 拒绝。
+- multi-runtime barrier owner 测试覆盖完整 roster 的 preflight、pinned runtime/avatar owner identity 重查、非 current
+  command 不执行 callback、连续 turn 的 two-runtime wait/forced-wait 公平轮换、zero-action terminal transition、
+  `player_end_pending` 对下一 turn/world 的阻塞，以及 opaque completion receipt 的 exact/duplicate/default-forged/stale/
+  cross-owner 处理。exact-current identity 丢失和外层 completion record divergence 必须永久 fail-stop。当前 owner-level
+  world callback 仍是计数 lambda，不是 actual bubble gameplay evidence。
 - single-root production 集成已把真实 legacy bubble callback 放在 claim 后计数，并覆盖 failure 后的 typed
   fail-stop/shutdown；后续 two-runtime production integration 必须保留同一门禁。单测只观察到一次
   `claim_world()` 或 lambda 不足以证明 world phase exactly-once。

@@ -2,11 +2,12 @@
 
 - 更新日期：2026-07-15
 - 分支：`multiplayer/main`
-- 当前 implementation source：`2e9236c7bf91782ad3f15daa5d8aa0e3929f355a`
+- 当前 implementation source：`2eccb92087991966423c18b63f6ef707462b1428`
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
 - 当前阶段：**Phase 3，第二玩家/shared scheduler**
 - 当前 active gate：**Gate 3，two-runtime owner 与共享规则矩阵**
 - 已关闭 gate：Gate 1 selected-root lifecycle contract；Gate 2 production single-root lifecycle
+- Gate 3 已关闭 slice：slice 1 inner barrier owner contract
 - ADR 状态：ADR-0001 至 ADR-0011 均已接受
 - 配置约束：`players.max = 1`；Gate 3 owner/rule/process gates 关闭前不得提高
 - 当前验证策略：**Tier 1 Linux-first**；本批 Windows/Android 按策略未运行
@@ -35,7 +36,23 @@ directory、turn scheduler、selected-root lifecycle 和 phase adapter：
 - owner 的 safe-boundary disposition 控制 shutdown/save。open turn 或 post-side-effect canonical state 不可证明时
   typed fatal/no-save；clean completed boundary 或 dormant 才允许 canonical save。
 
-这些结论只证明 production **single-root** lifecycle，不是 two-player routing。`players.max` 必须保持 `1`。
+Gate 3 的首个 inner owner-contract slice 已由 source
+`2eccb92087991966423c18b63f6ef707462b1428` 收口：
+
+- 新增 `multiplayer_multi_runtime_barrier_owner`，容量固定为 2 至 4，但每 turn immutable roster 可包含 1 至 capacity
+  个 exact active runtime；整个 roster 在 scheduler mutation 前完成 player ID/generation/registry ownership preflight；
+- owner pin runtime/avatar shared owners，并在 exact action、zero-action terminal、forced wait 和 world 前复核同一 raw
+  pointer 与 shared control block，same-key replacement、runtime loss 或 root-context mismatch 都在 callback/world 前
+  fail-stop；
+- 一个 persistent scheduler 跨 turn 保留公平首位轮换；two-runtime owner test 执行真实 semantic wait 与 disconnect
+  automatic forced wait，并验证每次 bookkeeping 恰好一次及 root avatar/runtime 恢复；
+- scheduler world 成功后进入显式 `player_end_pending`。process-local opaque receipt 绑定 owner/shared-turn/epoch，exact
+  receipt 只应用一次，duplicate 只在 owner 完全 idle 时成立；旧 receipt 在新 active turn 中不能推进；
+- callback/world/outer record divergence 永久 latch fault，并保留 gameplay side-effect uncertainty。exact receipt 只证明
+  caller-reported player-end 顺序，不证明 outer lifecycle 或 canonical save safety。
+
+这仍只是 inner barrier contract。production 继续使用 **single-root** owner；没有 actual two-runtime bubble、session/
+resume owner、第二 client routing 或 save transaction。`players.max` 必须保持 `1`。
 
 ## 当前 ownership 快照
 
@@ -46,10 +63,11 @@ directory、turn scheduler、selected-root lifecycle 和 phase adapter：
 | Registry/runtime | 地址稳定 avatar/runtime、active/offline/dead、active-player guard | 多 runtime 的安全 selected-context 切换与 death policy |
 | Scheduler | immutable roster、round-robin、disconnect grace、forced-wait pending、world ticket、fault latch | production two-runtime roster 与公平 command routing |
 | Phase adapter | scoped action/wait/bookkeeping、world claim callback、post-effect fail-stop | 第二 runtime 的完整规则矩阵 |
+| Multi-runtime barrier owner | immutable/pinned roster、persistent fairness、two-runtime wait/forced wait、explicit player-end pending receipt | 无 production caller、actual bubble、session/resume/root-selection/outer save owner |
 | Single-root owner | directory/scheduler/lifecycle/adapter、dormant/resume、safe save disposition | 固定拒绝 `maximum_players != 1`，不得直接扩容 |
 | Dedicated server | outer/active pump、completed-scene cache、typed fatal/no-save、真实 curses/headless loop | test-only 双连接开关和双 client smoke/soak 尚未实现 |
 
-## Gate 2 本批变化
+## 已关闭的 Gate 2 变化摘要
 
 ### Owned turn 与 scheduler
 
@@ -82,9 +100,82 @@ directory、turn scheduler、selected-root lifecycle 和 phase adapter：
   决策。合法 command 与 malformed control 同批到达时，合法 frame 可完成 tuple confirmation，但不会进入 scene/
   queue/gameplay；terminal disconnected event 消费后清除 closing state。
 
+## Gate 3 首个 inner owner slice
+
+- 新增 `src/multiplayer_multi_runtime_barrier_owner.h/.cpp`。该类只拥有一个 shared-turn barrier，不拥有 transport、
+  directory、selected-root、逐玩家 begin/end、scene、save 或 production loop。
+- `begin_turn()` 先验证整个 roster，再一次性保存 exact participant keys 和 runtime shared owners；invalid preflight 不
+  消耗 shared-turn ID。per-turn roster 可少于 capacity，允许未来多人服务器只剩一个在线 runtime 时继续使用同一 owner。
+- exact current action、zero-action terminal、automatic wait 与 world 全 roster 在任何规则回调前复核 pinned runtime/
+  avatar owner identity、generation、active status 和 registry ownership。同 key replacement 不会把旧 barrier 的 action
+  或 world 路由到新对象。
+- owner 私有持有 persistent scheduler，每个 open barrier 只创建一个 adapter。两 turn 的真实 two-runtime wait case
+  证明首位精确轮换、semantic/automatic wait 各 bookkeeping 一次、active-player guard 选择目标 runtime，并恢复 root。
+- world success 只产生 process-local opaque completion receipt 并进入 `player_end_pending`；next turn、第二次 world 和
+  roster pin release 都等待 exact external player-end record。receipt 不可持久化或跨 owner replacement 异步排队；若
+  未来 outer owner 需要该能力，先改成独立 durable owner tag。
+- 旧 adapter-level two-runtime wait-only case 已移除，等价且更强的 owner-level integration 现在是唯一证据位置。
+
 ## 当前 source 验证证据
 
-### Linux build、release tests 与格式
+### Gate 3 Linux release、完整多人 suite 与格式
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+./build-scripts/check-multiplayer-build-env.sh linux
+
+make -j"$(nproc)" AUTO_BUILD_PREFIX=1 \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 ASTYLE=0 \
+  tests release-local-back-cataclysm
+
+./tests/release-local-back-cata_test \
+  '[multiplayer][multi_runtime_barrier_owner]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-gate3-owner-pinned-final
+
+./tests/release-local-back-cata_test \
+  '[multiplayer][multi_runtime_barrier_owner],[multiplayer][phase_adapter],[multiplayer][scheduler]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-gate3-barrier-owner-focused-final2
+
+./tests/release-local-back-cata_test '[multiplayer]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-gate3-barrier-owner-full-final
+
+./release-local-back-cataclysm --version
+make \
+  ASTYLE_BINARY="$HOME/.cache/cdda-tools/astyle-3.1-3build1/root/usr/bin/astyle" \
+  astyle-check
+git diff --check
+```
+
+结果：
+
+- Linux environment gate 与 GCC 13 release source/tests、curses client/server binary 构建成功；client version smoke
+  报告 exact `-tiles, -sound`。
+- owner focused：14 cases / 379 assertions，全过。
+- owner + phase adapter + scheduler：40 cases / 1,351 assertions，全过。
+- 完整 `[multiplayer]`：138 cases；136 passed + 2 个既有 `[!mayfail]` full-avatar move-swap identity 负面对照；
+  7,522 assertions 中 7,519 passed + 3 expected failures；exit 0。
+- AStyle 3.1 与 `git diff --check` 通过。
+
+### Gate 3 Linux sanitizer
+
+```bash
+source build-scripts/activate-multiplayer-build-env.sh
+make -j"$(nproc)" AUTO_BUILD_PREFIX=1 \
+  COMPILER=g++-13 RELEASE=1 LOCALIZE=0 BACKTRACE=0 PCH=0 ASTYLE=0 \
+  SANITIZE=address,undefined tests
+
+ASAN_OPTIONS='detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1:abort_on_error=1' \
+UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1' \
+./tests/release-local-back-sanitize-cata_test \
+  '[multiplayer][multi_runtime_barrier_owner],[multiplayer][phase_adapter],[multiplayer][scheduler]' \
+  --rng-seed 0 --user-dir /tmp/cdda-mp-gate3-barrier-owner-sanitize-final2
+```
+
+结果：40 cases / 1,351 assertions，全过；无 ASan、UBSan、LSan 或 stack-use-after-return finding。该 inner source
+没有 production/network caller，因此本 slice 不增加 headless process smoke；真实双 client process gate 留到 test-only
+routing 接通时。
+
+### Gate 2 历史 Linux build、release tests 与格式
 
 本批使用当前 workspace Linux toolchain；实现工作树在无后续 source 修改的情况下提交为
 `2e9236c7bf91782ad3f15daa5d8aa0e3929f355a`。Gate 2 process/full-suite binary 在提交动作前生成，内嵌 build ID 因此
@@ -144,7 +235,7 @@ g++-13 -std=c++17 -O2 -Wall -Wextra -Werror \
 
 结果：编译成功，无 warning。
 
-### Linux sanitizer
+### Gate 2 历史 Linux sanitizer
 
 ```bash
 source build-scripts/activate-multiplayer-build-env.sh
@@ -159,7 +250,7 @@ UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1' \
 sanitizer batch 也覆盖 phase adapter/scheduler；最终 localized close-priority 和 owner-commandability 修复后，以上
 affected final-source sanitizer 重新运行并绿色。
 
-### Linux headless process smoke
+### Gate 2 历史 Linux headless process smoke
 
 配置根：`build/multiplayer-gate2-headless-final2-20260715`，loopback port `43205`，
 `disconnect_grace_seconds = 3`。
@@ -218,7 +309,7 @@ rg -q '"event":"shutdown"' "$root/server.stdout"
 - 等待超过 grace 后 SIGTERM，server exit 0，记录 `save_completed(revision=4)` 和 `shutdown`；无
   `save_refused`/`runtime_failed`。
 
-### Linux native curses client PTY
+### Gate 2 历史 Linux native curses client PTY
 
 配置根：`build/multiplayer-gate2-ui-final-20260715`，backend port `43215`。
 
@@ -275,7 +366,7 @@ rg -q '"event":"shutdown"' "$root/server.stdout"
 local quit；command statuses `0,2,0`，scene sync events `3`，client/server 均 exit 0；server clean save/shutdown，无
 fatal/no-save event。
 
-### Open-turn fatal/no-save process gate
+### Gate 2 历史 open-turn fatal/no-save process gate
 
 配置根：`build/multiplayer-gate2-open-turn-nosave-final-20260715`，loopback port `43225`。真实 curses client 在 private
 PTY 连接后不输入 action；server 观察到 `player_authenticated` 且无 `command_result`，随后收到 SIGTERM。
@@ -347,16 +438,16 @@ gameplay command。
 
 ## 平台选择与未运行证据
 
-本批选择 Tier 1，因为 source diff 是 backend-neutral internal gameplay/session/lifecycle implementation。审计命令：
+本批选择 Tier 1，因为 Gate 3 source diff 是 backend-neutral internal scheduler/owner policy 与 tests。审计命令：
 
 ```bash
 git diff --name-status \
-  cbd19b48d652be735a3c83fe841d2d7c831aecba..2e9236c7bf91782ad3f15daa5d8aa0e3929f355a
+  541beb321a25dd13ad7371ce20ca40a2565be53d..2eccb92087991966423c18b63f6ef707462b1428
 ```
 
 审计未发现 Android/Windows-owned source、platform conditional、wire schema/version/capability、generated protocol、
-transport/crypto public boundary、shared source list、workflow、artifact 或 pinned toolchain 变化。`game.h` 的新增类型和
-method 是 repo-internal owned-turn seam，不改变外部 wire/serialization ABI，也没有平台分支。故本批未运行 Windows
+transport/crypto public boundary、shared source list、workflow、artifact 或 pinned toolchain 变化。新增 header 只暴露
+repo-internal barrier owner contract，不改变 wire/serialization ABI，也没有平台分支。故本批未运行 Windows
 MSVC package、Android APK/NDK 或 emulator/device；这是按策略未运行，不是 blocker，也不构成当前 source 的平台证据。
 
 最近兼容的历史证据：
@@ -365,18 +456,21 @@ MSVC package、Android APK/NDK 或 emulator/device；这是按策略未运行，
   `success`；Windows/Android jobs 精确 skipped。
 - protocol minor `1` public-boundary source `eb990c4ad9975915336f3acd65431b47d123e842` 的 baseline run
   `29385561653` 对 Windows/Android actual production source 编译绿色。它只覆盖未变化的 protocol boundary，不证明
-  当前 Gate 2 source 在这些平台编译或运行。
+  当前 Gate 3 source 在这些平台编译或运行。
 
 ## 已知限制
 
-- `players.max = 1`；没有 production two-runtime owner、第二 client routing 或 shared round-robin process evidence。
+- `players.max = 1`；现有 multi-runtime owner 只是 inner barrier contract，没有 production outer session owner、第二
+  client routing、actual two-runtime bubble 或 shared round-robin process evidence。
+- multi-runtime owner 尚未组合 directory resume/replay/repair、selected-root re-selection、逐玩家 begin/end、scene
+  publish 或 canonical save transaction。process-local completion receipt 只允许在 owner 存活期同步使用。
 - production wait/move 都消耗完整 standard move budget。owner exact test 已覆盖
   `accepted_remains_eligible -> second command`；未来任何自然保留 moves 的 executor 启用前，必须增加真实 process
   回归。
 - production game-over/death 当前进入 typed fatal/no-save；monster targeting、player death 和可证明的 death save
   boundary 属 Gate 3。
 - `game::walk_move()` 等路径仍有固定 `game::u` 假设；human collision、field/scent/NPC、tether/group shift、messages/
-  safe-mode/stats/player-state isolation 未关闭。
+  safe-mode/stats/player-scoped cache isolation 未关闭。
 - 当前远程动作只有 wait 和八方向平面 move；其他动作必须 typed unsupported，不能进入 blocking UI。
 - scene 仍为 full snapshot；items、fields、vehicles、overlays、messages、sound、avatar replica/panels 和完整 visibility
   leak matrix 属 Phase 4/后续 gate。
@@ -386,30 +480,34 @@ MSVC package、Android APK/NDK 或 emulator/device；这是按策略未运行，
 
 ## 下一门禁与首个动作
 
-当前 active gate 是 Gate 3。第一步不是修改 single-root owner 的 `maximum_players == 1` 约束，而是调查现有
-two-runtime scheduler/adapter 测试，定义一个独立 multi-runtime owner contract：
+当前 active gate 是 Gate 3。首个 inner owner-contract sub-gate 已由 source
+`2eccb92087991966423c18b63f6ef707462b1428` 关闭；下一步仍不得修改 single-root owner 的
+`maximum_players == 1` 约束。当前 slice 是 round-robin wait/move 与 basic position/moves/action-bookkeeping
+isolation，首个调查命令：
 
 ```bash
-rg -n 'two.runtime|two_runtime|maximum_players|begin_turn|execute_current_player|current_slot|round.robin' \
-  tests/multiplayer_* \
-  src/multiplayer_single_root_owner.* \
-  src/multiplayer_turn_scheduler.* \
-  src/multiplayer_turn_phase_adapter.*
+rg -n 'multiplayer_execute_(wait|move)|accepted_remains_eligible|record_turn_player_action|position|moves' \
+  src/multiplayer_command_executor.* \
+  src/multiplayer_multi_runtime_barrier_owner.* \
+  tests/multiplayer_command_executor_test.cpp \
+  tests/multiplayer_multi_runtime_barrier_owner_test.cpp \
+  tests/multiplayer_player_slot_test.cpp
 
-sed -n '1,280p' src/multiplayer_single_root_owner.h
-sed -n '1,360p' src/multiplayer_turn_scheduler.h
+sed -n '1,260p' src/multiplayer_command_executor.cpp
+sed -n '320,520p' tests/multiplayer_multi_runtime_barrier_owner_test.cpp
 ```
 
 Gate 3 的 ordered slices：
 
-1. 新建/定义 multi-runtime owner contract，并把现有 in-process two-runtime wait-only barrier 提升为 owner-level
-   integration test；外部配置继续拒绝 `players.max > 1`。
-2. round-robin wait/move 与 player-state isolation。
+1. **已关闭，source `2eccb92087991966423c18b63f6ef707462b1428`：** 独立 multi-runtime inner barrier owner 与
+   owner-level two-runtime wait-only integration；外部配置继续拒绝 `players.max > 1`。
+2. **当前：** round-robin wait/move 与 basic position/moves/action-bookkeeping isolation。
 3. human collision。
 4. monster target/attack 与 death/game-over safe boundary。
 5. field/scent/NPC。
 6. tether/group shift。
-7. 仅在上述 owner/rule gates 绿色后，增加 test-only 双连接 routing 和 Linux two-client smoke/soak；之后才评估开放
+7. messages/safe-mode/stats/player-scoped cache isolation。
+8. 仅在上述 owner/rule gates 绿色后，增加 test-only 双连接 routing 和 Linux two-client smoke/soak；之后才评估开放
    `players.max > 1`。
 
 每个编辑循环只运行 Linux incremental build 和 changed-area focused tests。只有 coherent authority/lifecycle slice

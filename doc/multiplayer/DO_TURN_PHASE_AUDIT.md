@@ -67,7 +67,7 @@ remote 路径不执行 renderer recovery、music/SFX、autosave、截图、block
 
 复核没有推翻 ADR-0002，但证明五个 trace range 不能直接作为实现边界。Gate 2 已把保持单人行为的 owned action/
 world seams 和 phase adapter 接入 production single-root routing；五个 label 仍不能机械变成逐玩家 ownership。
-two-runtime owner 与上述规则缺口未关闭前保持 `players.max = 1`。
+production two-runtime outer owner 与上述规则缺口未关闭前保持 `players.max = 1`。
 
 ## Phase 3 纯 scheduler policy 切片
 
@@ -119,8 +119,41 @@ player-end proof，以及两个 registry runtime 的 wait-only barrier。单远�
 Gate 2 source `2e9236c7bf91782ad3f15daa5d8aa0e3929f355a` 已把 adapter、actual claimed bubble、exact directory generation、
 offline/dormant reactivation 和 process-level save/shutdown recovery 接入 production single-root server。真实 Linux
 headless 和 curses PTY 覆盖 auth/resume/duplicate/fresh command，open-turn SIGTERM 证明 fatal/no-save 且 save 哈希不变。
-下一步是独立的 multi-runtime owner 与规则矩阵；不能通过把 single-root owner 的 `maximum_players == 1` 检查删除来
-跳过这些门禁。
+当前独立 multi-runtime inner owner 已由下述 source slice 建立；下一步是规则矩阵。不能通过把 single-root owner 的
+`maximum_players == 1` 检查删除来跳过这些门禁。
+
+## Gate 3 首个 multi-runtime barrier owner inner contract
+
+Gate 3 source `2eccb92087991966423c18b63f6ef707462b1428` 新增
+`multiplayer_multi_runtime_barrier_owner`，把原先直接组合 scheduler/adapter 的 two-runtime wait-only case 提升到
+owner-level contract。它不是新的 production session owner，也没有把五个 trace label 提升为 ownership boundary：
+
+- owner 只能在 simulation thread 构造和推进，容量为 2 至 4，但一个 turn 的 immutable roster 可以是 1 至 capacity
+  个当前在线 participant。`begin_turn()` 在 scheduler mutation 前验证整个 roster 的唯一 player ID、exact generation、
+  active lifecycle 和 registry ownership，并 pin 每个地址稳定 runtime 及其 avatar shared owner，直到外层 player-end
+  completion 被精确接受。
+- 每次 exact-current semantic action、zero-action terminal、authoritative forced wait 和 world claim 前，owner 都从
+  registry 重新解析 runtime，核对 pinned/runtime/avatar owner 的裸地址与 shared control block、player identity、
+  generation、active status 和 registry ownership。非 current 或 stale expected command 在 callback 前拒绝；若
+  exact-current identity 已失效则 fail-stop，而不是把命令误路由给 replacement runtime。
+- 一个持久 scheduler 跨 turn 保留公平首位轮换；每个 open barrier 只有一个 adapter。owner-level cases 让两个 registry
+  runtime 在连续 turn 中分别执行真实 wait 和 disconnect timeout 后的 forced wait，并检查每次 action bookkeeping 恰好
+  一次、active runtime/avatar 指向目标玩家且 callback 返回后恢复原 root context。
+- scheduler world 成功后 owner 进入额外的 `player_end_pending`，继续 pin roster/runtime owners，并阻止第二次 world 或
+  下一 turn。opaque completion receipt 绑定 owner、shared turn 和 epoch；exact receipt 应用一次，重复 exact receipt 为
+  duplicate 仅在 owner 完全 idle 时成立；上一 turn receipt 在新 active turn 中返回 invalid 且不推进，新 pending
+  boundary 上的 stale、default/forged 或 cross-owner receipt 会 latch external-player-end fault。
+- callback、forced wait、world、context/identity recheck 或外层 completion record 失败会永久 latch fault；owner 记录
+  gameplay/world side effect 是否可能已经发生。该标志只供未来 outer lifecycle/save owner 作 fail-stop 与 no-save
+  判断，inner owner 自身不宣称 canonical state 或存档安全。
+
+本 slice 的 world callback 仍是测试 lambda，不是 actual `process_legacy_single_player_bubble_turn()`。它还没有接入
+production transport/session directory，也没有实现 multi-runtime resume/replay/repair、selected-root re-selection、
+逐玩家 begin/end、outer lifecycle commit、scene publish 或 canonical save proof。production `do_turn()` 仍由
+single-root owner 驱动 actual bubble，`players.max` 必须保持 `1`；因此该 inner contract 不表示 two-player routing、
+Gate 3 关闭或 Phase 3 完成。下一步仍需在 outer multi-runtime owner 中组合这些边界，再按 round-robin wait/move 与
+basic position/moves/action-bookkeeping isolation、collision、monster/death、field/scent/NPC、tether/group shift 和
+messages/safe-mode/stats/player-scoped cache isolation 的顺序关闭规则矩阵。
 
 ## Phase 0 基线
 

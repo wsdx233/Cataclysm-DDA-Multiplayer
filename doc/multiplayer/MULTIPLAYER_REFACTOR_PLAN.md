@@ -389,6 +389,13 @@ completed lifecycle boundary 之后；open-turn stop 或不可证明的 post-sid
 这已关闭 single-root production lifecycle，但尚未证明 two-runtime production routing 或完整多人规则，因此
 `players.max` 保持 `1`。
 
+Gate 3 source `2eccb92087991966423c18b63f6ef707462b1428` 新增独立的
+`multiplayer_multi_runtime_barrier_owner` inner contract：它在任何 scheduler mutation 前验证完整 immutable roster，
+pin exact runtime/avatar shared owner，并在 exact action、zero-action terminal、forced wait 和 world 前复核同一 owner
+identity；一个 persistent scheduler 跨 turn 保留公平首位轮换。scheduler world 成功后还必须经过显式
+`player_end_pending` 和 exact process-local receipt 才能开始下一 turn。该 owner 尚未组合 transport/session directory、
+selected-root 切换、actual legacy bubble、outer lifecycle 或 canonical save，因此不改变 production single-root 路径。
+
 ### 8.2 公平顺序
 
 - 每个 turn 只执行每名玩家一个命令，然后轮到下一名仍有 moves 的玩家。
@@ -487,9 +494,10 @@ profiling/test 观测点，不是上述目标函数的现成所有权边界。Ph
 lifecycle completion。回归测试覆盖 action/world exact-once、zero-action terminal transition、伪造或重放 completion
 proof 的 fail-stop，以及现有 moves replenishment 顺序；`check_safe_mode_allowed()` 读取当前 active avatar。
 
-这些边界关闭了 single-root compatibility route，但 trace label 仍只是观察点。Gate 3 应先把已有 two-runtime
-wait-only contract 提升到新的 multi-runtime owner，而不是把 `multiplayer_single_root_owner` 放宽到 `max > 1`；随后按
-规则矩阵逐项迁移当前只对 `u` 生效的逻辑，不能按 trace label 机械切块。
+这些边界关闭了 single-root compatibility route，但 trace label 仍只是观察点。Gate 3 source
+`2eccb92087991966423c18b63f6ef707462b1428` 已把已有 two-runtime wait-only contract 提升到独立 inner
+multi-runtime owner，且没有放宽 `multiplayer_single_root_owner`。下一步按规则矩阵逐项迁移当前只对 `u` 生效的逻辑，
+不能按 trace label 机械切块，也不能把 inner owner 直接当作 production session owner。
 
 迁移时要逐项处理当前只对 `u` 执行的逻辑，至少包括：
 
@@ -941,7 +949,8 @@ cataclysm --server server.json
 
 Phase 3 的纯 scheduler policy 切片不改变配置能力。只有它接入 production session directory、forced/scoped
 auto-wait、真实 phase/world callback，并关闭两玩家 collision、monster/death、field/scent/NPC、tether/group-shift
-和 player-state isolation 门禁后，parser 才能接受 `players.max > 1`；在此之前必须继续拒绝。Phase 5 的 generation
+和 messages/safe-mode/stats/player-scoped cache isolation 门禁后，parser 才能接受 `players.max > 1`；在此之前必须
+继续拒绝。Phase 5 的 generation
 save 和人物导入完成前，必须拒绝 `keep_generations > 1`、`portable_lease` 和 `copy_in`，不能让配置伪装为已生效。
 对应阶段完成后再扩大合法范围，最终私服推荐值仍是 2 至 4 名玩家、多个 save generations 和
 `portable_lease`。
@@ -1516,9 +1525,12 @@ session ownership、two-phase admission、selected-root lifecycle、scheduler/ad
   fatal/no-save，clean boundary/dormant 才允许 canonical save。Linux full `[multiplayer]`、定向 sanitizer、headless
   process、native curses PTY 和 open-turn save-hash regression 已记录；本 gate 未改变 wire/schema/platform-owned
   code，因此按第 20.6 节未运行 Windows/Android。
-- **Gate 3：two-runtime owner 与规则矩阵。** 先把当前已绿色的 in-process two-runtime wait-only case 提升为
-  owner-level integration test，但继续拒绝外部 `players.max > 1`；再依次关闭 round-robin move、human collision、
-  monster/death、field/scent/NPC、tether/group shift，以及 messages/safe-mode/stats/player-state isolation。全部 owner/
+- **Gate 3：two-runtime owner 与规则矩阵。** 首个 inner owner-contract sub-gate 已由 source
+  `2eccb92087991966423c18b63f6ef707462b1428` 关闭：in-process two-runtime wait-only case 已提升为 owner-level
+  integration，immutable roster 的 pinned runtime/avatar identity、persistent fairness、explicit player-end pending receipt
+  和 fail-stop 已有 Linux release/sanitizer 证据，但仍继续拒绝外部 `players.max > 1`。下一步依次关闭
+  round-robin wait/move 与 basic position/moves/action-bookkeeping isolation、human collision、monster/death、
+  field/scent/NPC、tether/group shift，以及 messages/safe-mode/stats/player-scoped cache isolation。全部 owner/
   rule gates 绿色后，先开放仅供 integration/process test 使用的双连接 routing 并完成 Linux 双 client smoke/soak；
   该测试开关不得作为用户配置发布。只有这些证据也绿色后，才评估允许用户配置 `players.max > 1`。
 
