@@ -89,6 +89,11 @@ The last hosted-green selector source `804101995c175057856529be24439b0d7e87a49a`
 one-time terminal-green CI-contract package matrix recorded in `STATUS.md` and the build baseline. That closes the
 workflow/selector milestone only; routine backend-neutral Phase 3 work remains Linux-first.
 
+Current authoritative-session source `eb990c4ad9975915336f3acd65431b47d123e842` has terminal-green Linux production
+run `29385561675` and protocol public-boundary baseline run `29385561653`. The latter selected only Windows/Android
+actual-source package fallback and skipped Linux package; this closes the one-time Tier 2 minor-`1` boundary, not the
+Phase 3 exit or a requirement for future internal `.cpp` changes.
+
 Completed Phase 0 gates:
 
 - Local branch: `multiplayer/main`; baseline tag: `multiplayer-upstream-baseline-d84b90d`; fork remote:
@@ -106,25 +111,18 @@ Completed Phase 0 gates:
 
 The active work, in order, is:
 
-1. Push the authoritative session-directory source and record the smallest hosted MSVC/NDK gates that actually compile
-   protocol minor `1` production source; the Linux release/full multiplayer/sanitizer, real headless/native-client
-   process smokes, generated-schema check and AStyle gate are already green in `STATUS.md`. This is a one-time public
-   wire boundary, not a new rule that every backend-neutral Phase 3 commit needs a full platform matrix. Until
-   lightweight production-source targets exist, the baseline workflow's Windows/Android package jobs are the available
-   actual-source fallback; only their relevant compile result is evidence for this Tier 2 boundary, not a new package/
-   runtime acceptance requirement.
-2. Implement the selected active-root lifecycle design: keep the stable selected root activatable through required
+1. Implement the selected active-root lifecycle design: keep the stable selected root activatable through required
    forced wait and world completion, then transition it offline/dormant without running new turns; resume reactivates
    the same runtime before command execution. Connect transport disconnected, barrier disconnected and runtime offline
    as separate states; do not mark ADR-0010 accepted until these gates pass.
-3. Keep `players.max = 1` while wiring the scheduler/adapter into the production command loop and putting the actual
+2. Keep `players.max = 1` while wiring the scheduler/adapter into the production command loop and putting the actual
    `process_legacy_single_player_bubble_turn()` call behind the world claim. Map a latched execution fault to typed
    fatal shutdown; if a non-idempotent side effect may already have happened, stop without writing a new canonical
    save. Only failures proven to precede gameplay side effects may use normal save. Then run the Linux headless-server/
    native-client PTY regression.
    Replace or bypass legacy `execute_turn_player_action()` bookkeeping when the adapter owns an action; wrapping the
    adapter inside the current `do_turn_remote()` bool callback would record the action twice.
-4. Promote the already-green in-process two-runtime wait-only case into the production owner, then close movement,
+3. Promote the already-green in-process two-runtime wait-only case into the production owner, then close movement,
    collision, monster/death, field/scent/NPC, tether/group-shift and player-state isolation gates before enabling a
    second client. Do not pull portable characters, multiple save generations or Phase 4 durable restart resume into
    these entry slices.

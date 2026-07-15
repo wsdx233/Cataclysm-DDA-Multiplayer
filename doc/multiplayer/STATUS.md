@@ -4,8 +4,8 @@
 - 分支：`multiplayer/main`
 - 当前阶段：**Phase 3，authoritative production session directory/two-stage admission 已接入单玩家路径；下一门禁是 active-root offline/dormant 与 production scheduler/world claim**
 - 上游基线：`d84b90dd2aee090ca28c8dad5cdf1fab6dea151a`
-- 当前 source 基线：`bd5f534c942ba1706ada9902b5e6cef3f952c924`；本工作树将提交 authoritative session
-  directory、protocol minor `1` 与 two-stage auth/resume，精确提交号在推送后的 handoff follow-up 补录
+- 当前 source 基线：`eb990c4ad9975915336f3acd65431b47d123e842`（authoritative session
+  directory、protocol minor `1` 与 two-stage auth/resume）
 - Phase 2 最终完整 hosted platform gate 提交：`86336ea847bea45f727fd97d74a811a32712518c`
   （canonical build-ID hardening）
 - 当前 Phase 3 slice：simulation-thread `multiplayer_session_directory` 已替换 `active_remote_session`，lobby 使用
@@ -14,6 +14,9 @@
 - 当前 Windows 定向修复：`c9b28086e973fa497d5bd9f9a37e64a9ac22e464`；hosted MSVC package 已完整成功
 - 当前 hosted-green selector source：`804101995c175057856529be24439b0d7e87a49a`；transport routine path 已收敛
   到 Linux，automatic classification failure 不再隐式运行全矩阵
+- 当前 session-directory hosted gate：baseline run `29385561653` 与 Linux production run
+  `29385561675` 均为 terminal `success`；Windows/Android 只作本次 protocol public boundary 的
+  actual-source Tier 2 fallback
 - 当前下一行动：实现 ADR-0010 已选定的 selected-root/lifecycle decoupling，把 transport disconnect、barrier
   disconnect、forced wait、terminal record 与 runtime offline/dormant 接成状态表；随后在 `players.max = 1` 下接入
   production scheduler/adapter 和 actual claimed bubble
@@ -34,6 +37,12 @@ mirror 后完整消费。fresh auth 未确认 token、
 终态 `session_expired`、active/pending retry 和 ordered rejection capacity 状态表已有测试。该结论仍不包含 barrier
 timeout/offline、production scheduler/world claim、durable token checkpoint 或第二玩家，ADR-0010 继续“待验证”，
 `players.max` 保持 `1`。
+
+source `eb990c4ad9975915336f3acd65431b47d123e842` 的两条 hosted runs 已关闭本批边界证据：
+baseline run `29385561653` 与 Linux production run `29385561675` 均为 terminal `success`。baseline selector
+精确跳过 Linux package，只启动临时 actual-source fallback 的 Windows MSVC 与 Android package jobs；
+transport selector 只启动 Linux production，standalone Windows/Android probes 精确跳过。因此这是一次性
+Tier 2 public-wire compile 证据，不是 Phase 3 exit、Android lifecycle 或“后续每次都跑全平台”的先例。
 
 Phase 2 的服务器侧单远程玩家纵向切片保持完成。本批又实现了可复用的生产客户端 transport/state machine、桌面/Android connection UI、本地 input → semantic wait/move、visibility-filtered scene → 本地 curses/tiles renderer、heartbeat/manual reconnect、断线 resume、exactly-once replay 和按 simulation FIFO 完成的 typed clean session release。最终 source 的普通 release 与 ASan/UBSan binary 都已通过真实 Linux PTY auth、scene、wait、强制断线、resume、未确认命令重放、move 和 clean quit。
 
@@ -119,9 +128,8 @@ Android job 在与该 Windows 修复无关的 x86_64 debug build 阶段耗尽 ho
   轻量 production portability target 建立前，这是本次 Tier 2 编译证据的 CI fallback。即使 job 实际完成 package，
   也不把 package/resource/runtime 行为扩大为本批验收目标。本次没有 phase exit、release 或跨 minor 互通承诺，
   因而不是 Tier 3 protocol-compatibility milestone。
-- 本地未运行 Windows/Android build，按策略等待 hosted actual-source gate；这在 gate 完成前是明确未验证项，不是
-  Linux 功能失败。缓存 AStyle 3.1 的最终 `astyle-check`、`git diff --check` 与 generated-schema
-  check 已通过。
+- 本地没有重复运行 Windows/Android build；推送后的 hosted actual-source gate 已 terminal
+  `success`。缓存 AStyle 3.1 的最终 `astyle-check`、`git diff --check` 与 generated-schema check 也已通过。
 - gameplay/phase-adapter slice 属于 **routine backend-neutral shared implementation**，选择 Tier 1：Linux GCC
   release build、focused phase-adapter/scheduler/command/turn tests、完整 `[multiplayer]` 和定向
   ASan/UBSan/LSan。adapter 尚未接 production runtime，因此本 slice 不要求 PTY loopback。
@@ -406,8 +414,44 @@ python3 tools/multiplayer/network_client_ui_smoke.py \
   exactly-once duplicate，east move accepted，clean quit；command statuses 精确为 `0, 2, 0`，transcript 9,235 bytes。
 - 本批按风险没有再跑 sanitizer PTY：相同 production path 已由 release 两种 process smoke 覆盖，内存生命周期由
   25-case sanitizer 集合覆盖。没有 Android lifecycle 变更，因此不重跑 Phase 2 emulator/device 剧本。
-- 缓存 AStyle 3.1 binary 的最终 `astyle-check` 已通过。Windows/Android actual-source portability 仍等待本次
-  protocol/schema push 的定向 hosted gate，当前不能记为已验证。
+- 缓存 AStyle 3.1 binary 的最终 `astyle-check` 已通过。Windows/Android actual-source portability
+  由下述 hosted gate 关闭。
+
+### Authoritative session directory public boundary：hosted Tier 2 已绿色
+
+source `eb990c4ad9975915336f3acd65431b47d123e842` 的 baseline run
+[`29385561653`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29385561653) 从
+`2026-07-15T03:02:51Z` 运行至 `03:41:22Z`，terminal `success`。selector job `87257955175` 成功并
+精确跳过 Linux curses package；因 protocol implementation/generated header/schema 是本次 public boundary，
+只启动了当前可用的 Windows/Android actual-source package fallback：
+
+- Windows x64 MSVC tiles+sound job
+  [`87258227728`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29385561653/job/87258227728)
+  为 terminal `success`（`03:05:00Z`–`03:27:29Z`）；`Build package`、native smoke 和 provenance 全部成功。
+  artifact `8331645754`，size `314281245`，digest
+  `1fc1f71158cc8c46d3ad2239db06779fa6f5c7ba031b2b412237a6269a01d65e`。
+- Android job
+  [`87258227735`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29385561653/job/87258227735)
+  为 terminal `success`（`03:05:00Z`–`03:41:21Z`）；arm64 unsigned release、x86_64 debug compile gate、package/
+  resource/provenance smoke 全部成功。arm64 artifact `8331840045`，size `180840533`，digest
+  `883fc5a3c91fcc40deb0d3b0325e461a9b213ebf37abf8d8aa10a11e8b14b751`；x86_64 artifact
+  `8331840920`，size `286403755`，digest
+  `503ab5e251cd65499f19ed008c9e0848a6a9def1e4eb4585379edad4c461a758`。
+
+同一 source 的 Linux production run
+[`29385561675`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29385561675) 从
+`2026-07-15T03:02:51Z` 运行至 `03:41:07Z`，terminal `success`。selector job `87257955192` 只选择
+Linux，standalone transport-only Windows/Android probes 精确 `skipped`。Primary Linux job
+[`87257984217`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29385561675/job/87257984217)
+为 terminal `success`（`03:03:08Z`–`03:41:06Z`），通过 pinned FlatBuffers generation、GCC 13/Clang 18
+transport，production GCC build/完整 `[multiplayer]`，真实 headless command/resume smoke 和 native-client UI
+resume smoke。artifact `8331837770`，size `147797`，digest
+`c52b3d14df1d21e96f9ca945c29cfabd00f75f938cad258608f08a2391e1f218`。
+
+这两条 runs 关闭 protocol minor `1` 和 authoritative session-directory 批次的 hosted boundary。Windows/
+Android package 是轻量 production portability target 建立前的 CI fallback；它们证明 changed production source
+被 MSVC/NDK/Gradle 目标实际编译，不新增 Windows UI 或 Android emulator/device lifecycle 结论，也不把
+后续 internal lifecycle/scheduler `.cpp` 变更升级为日常全平台 package 门禁。
 
 ### Phase 3 phase adapter/source seams：Tier 1 Linux（当前 source state）
 
@@ -960,9 +1004,9 @@ git diff --check
 
 ## 下一门禁和首个动作
 
-Phase 2 已关闭；Phase 3 authoritative session directory/two-stage admission 已有本地 Linux release、完整
-`[multiplayer]`、sanitizer 与真实 process smoke。推送本工作树后仍须记录 protocol minor `1` 的 Windows/Android
-actual-source Tier 2 terminal 结果；当前 workflow 的 package job 只是轻量 target 建立前的编译 fallback。下一代码
+Phase 2 已关闭；Phase 3 authoritative session directory/two-stage admission 的本地 Linux release、完整
+`[multiplayer]`、sanitizer、真实 process smoke 与 protocol minor `1` Windows/Android actual-source Tier 2
+证据均已绿色；当前 package job 仍只是轻量 target 建立前的编译 fallback。下一代码
 门禁是 **selected root lifecycle 的 offline/dormant 状态表**，不是重做 session directory，也不是立即启用第二 client
 或 move。首个要检查的文件和命令是：
 

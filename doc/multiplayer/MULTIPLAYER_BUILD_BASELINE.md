@@ -610,4 +610,37 @@ Linux Tier 1；Windows/Android transport artifacts 只证明 isolated spike/tool
 外推为 adapter 的平台 portability 或 production routing evidence。后续普通 backend-neutral source 提交继续默认
 只跑 Linux，平台或里程碑触发时再升级 Tier 2/3。
 
+### Authoritative session directory / protocol minor 1 hosted gate
+
+source `eb990c4ad9975915336f3acd65431b47d123e842` 的 Linux production run
+[`29385561675`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29385561675) 与 baseline run
+[`29385561653`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29385561653) 均为 terminal
+`success`。这一批修改 `ResumeRequest` schema/generated header 和 protocol minor，因此按 Tier 2 public
+boundary 增加实际编译 changed production source 的 MSVC/Android evidence；它不是 phase exit、release 或跨
+minor 互通承诺。
+
+transport selector job `87257955192` 只启动 Linux production，standalone Windows/Android transport probes 均
+`skipped`。Primary Linux job
+[`87257984217`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29385561675/job/87257984217)
+为 terminal `success`；pinned FlatBuffers generation、GCC 13/Clang 18 transport、production GCC build/完整
+`[multiplayer]`、headless command/resume 与 native-client UI resume smokes 全部通过。
+
+baseline selector job `87257955175` 精确跳过 Linux curses package，只启动了当前轻量 production
+portability target 建立前的 Windows/Android actual-source package fallback。平台 artifacts 为：
+
+| Artifact | Artifact ID | Size (bytes) | GitHub artifact digest |
+| --- | ---: | ---: | --- |
+| Linux production/provenance | `8331837770` | `147797` | `c52b3d14df1d21e96f9ca945c29cfabd00f75f938cad258608f08a2391e1f218` |
+| Windows x64 MSVC tiles+sound | `8331645754` | `314281245` | `1fc1f71158cc8c46d3ad2239db06779fa6f5c7ba031b2b412237a6269a01d65e` |
+| Android arm64 release | `8331840045` | `180840533` | `883fc5a3c91fcc40deb0d3b0325e461a9b213ebf37abf8d8aa10a11e8b14b751` |
+| Android x86_64 debug compile evidence | `8331840920` | `286403755` | `503ab5e251cd65499f19ed008c9e0848a6a9def1e4eb4585379edad4c461a758` |
+
+Windows job
+[`87258227728`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29385561653/job/87258227728)
+和 Android job
+[`87258227735`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29385561653/job/87258227735)
+均为 terminal `success`，并通过各自 package/provenance smoke。这些结果关闭本次 public compile boundary，但
+不增加 Windows UI 或 Android emulator/device lifecycle 运行结论，也不要求后续 internal session/scheduler
+`.cpp` 改动日常重跑 package matrix。
+
 本地生成物位于仓库默认的忽略目录中，不作为源码提交。规范产物和 hash 以 fork 上的 `multiplayer-baseline` workflow 为准。
