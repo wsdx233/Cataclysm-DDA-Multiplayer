@@ -122,6 +122,25 @@
     "flags": [ "SEES", "PATH_AVOID_DANGER" ]
   },
   {
+    "id": "mon_test_multiplayer_attitude_targeter",
+    "type": "MONSTER",
+    "copy-from": "mon_test_multiplayer_targeter",
+    "species": [ "CYBORG" ]
+  },
+  {
+    "id": "mon_test_multiplayer_keep_distance_targeter",
+    "type": "MONSTER",
+    "copy-from": "mon_test_multiplayer_attitude_targeter",
+    "tracking_distance": 3,
+    "extend": { "flags": [ "KEEP_DISTANCE" ] }
+  },
+  {
+    "id": "mon_test_multiplayer_trigger_targeter",
+    "type": "MONSTER",
+    "copy-from": "mon_test_multiplayer_attitude_targeter",
+    "anger_triggers": [ "PLAYER_CLOSE" ]
+  },
+  {
     "id": "mon_test_zombie",
     "type": "MONSTER",
     "name": { "str": "zombie" },

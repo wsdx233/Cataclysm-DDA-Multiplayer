@@ -31,6 +31,8 @@ static const efftype_id effect_no_sight( "no_sight" );
 static const ter_str_id ter_t_grass( "t_grass" );
 static const ter_str_id ter_t_wall( "t_wall" );
 static const trait_id trait_DEBUG_CLOAK( "DEBUG_CLOAK" );
+static const trait_id trait_EXODII_WRATH( "EXODII_WRATH" );
+static const trait_id trait_TERRIFYING( "TERRIFYING" );
 
 namespace
 {
@@ -507,6 +509,176 @@ TEST_CASE( "multiplayer_monster_basic_attack_hits_selected_secondary",
     CHECK( secondary.player().get_hp() < move_secondary_hp_before );
     CHECK( context.root.get_hp() == root_hp_before );
     CHECK_FALSE( secondary.player().is_dead_state() );
+    context.check_root_context();
+}
+
+TEST_CASE( "multiplayer_monster_human_attitude_is_target_specific",
+           "[multiplayer][monster_target][monster_attitude]" )
+{
+    multiplayer_monster_test_context context;
+    map &here = get_map();
+    const tripoint_bub_ms monster_position( 60, 60, 0 );
+    context.root.setpos( here, tripoint_bub_ms( 61, 60, 0 ) );
+    scoped_secondary_player secondary( tripoint_bub_ms( 65, 60, 0 ) );
+    secondary.player().set_mutation( trait_EXODII_WRATH );
+    monster &cyborg = spawn_test_monster( "mon_test_multiplayer_attitude_targeter",
+                                          monster_position, false );
+    cyborg.aggro_character = false;
+    context.refresh_visibility();
+
+    REQUIRE( cyborg.sees( here, context.root ) );
+    REQUIRE( cyborg.sees( here, secondary.player() ) );
+    REQUIRE( cyborg.attitude( &context.root ) == MATT_IGNORE );
+    REQUIRE( cyborg.attitude( &secondary.player() ) == MATT_ATTACK );
+
+    // NOLINTNEXTLINE(cata-determinism)
+    restore_on_out_of_scope restore_rng( rng_get_engine() );
+    rng_set_engine_seed( 424242U );
+    // NOLINTNEXTLINE(cata-determinism)
+    const cata_default_random_engine engine_before_plan = rng_get_engine();
+    cyborg.plan();
+    CHECK( cyborg.get_dest() == secondary.player().pos_abs() );
+    CHECK( cyborg.attack_target() == &secondary.player() );
+    CHECK( rng_get_engine() == engine_before_plan );
+
+    const int root_hp_before = context.root.get_hp();
+    cyborg.set_moves( 1000 );
+    const int moves_before = cyborg.get_moves();
+    cyborg.set_dest( context.root.pos_abs() );
+    CHECK_FALSE( cyborg.attack_at( context.root.pos_bub() ) );
+    CHECK( context.root.get_hp() == root_hp_before );
+    CHECK( cyborg.get_moves() == moves_before );
+    context.check_root_context();
+}
+
+TEST_CASE( "multiplayer_monster_flee_disposition_belongs_to_selected_human",
+           "[multiplayer][monster_target][monster_attitude]" )
+{
+    multiplayer_monster_test_context context;
+    map &here = get_map();
+    const tripoint_bub_ms monster_position( 60, 60, 0 );
+    context.root.setpos( here, tripoint_bub_ms( 61, 60, 0 ) );
+    context.root.set_mutation( trait_TERRIFYING );
+    scoped_secondary_player secondary( tripoint_bub_ms( 65, 60, 0 ) );
+    secondary.player().set_mutation( trait_EXODII_WRATH );
+    monster &cyborg = spawn_test_monster( "mon_test_multiplayer_attitude_targeter",
+                                          monster_position, false );
+    cyborg.aggro_character = true;
+    cyborg.anger = 20;
+    cyborg.morale = 5;
+    context.refresh_visibility();
+
+    REQUIRE( cyborg.attitude( &context.root ) == MATT_FOLLOW );
+    REQUIRE( cyborg.is_fleeing( context.root ) );
+    REQUIRE( cyborg.attitude( &secondary.player() ) == MATT_ATTACK );
+    REQUIRE_FALSE( cyborg.is_fleeing( secondary.player() ) );
+
+    const tripoint_abs_ms expected_away =
+        cyborg.pos_abs() - context.root.pos_abs() + cyborg.pos_abs();
+    cyborg.plan();
+    CHECK( cyborg.get_dest() == expected_away );
+    CHECK( cyborg.attack_target() == nullptr );
+    context.check_root_context();
+}
+
+TEST_CASE( "multiplayer_monster_flee_threat_precedes_closer_attack_target",
+           "[multiplayer][monster_target][monster_attitude]" )
+{
+    multiplayer_monster_test_context context;
+    map &here = get_map();
+    const tripoint_bub_ms monster_position( 60, 60, 0 );
+    context.root.setpos( here, tripoint_bub_ms( 61, 60, 0 ) );
+    scoped_secondary_player secondary( tripoint_bub_ms( 63, 60, 0 ) );
+    secondary.player().set_mutation( trait_TERRIFYING );
+    monster &cyborg = spawn_test_monster( "mon_test_multiplayer_attitude_targeter",
+                                          monster_position, false );
+    cyborg.aggro_character = true;
+    cyborg.anger = 20;
+    cyborg.morale = 5;
+    context.refresh_visibility();
+
+    REQUIRE( cyborg.attitude( &context.root ) == MATT_ATTACK );
+    REQUIRE_FALSE( cyborg.is_fleeing( context.root ) );
+    REQUIRE( cyborg.attitude( &secondary.player() ) == MATT_FOLLOW );
+    REQUIRE( cyborg.is_fleeing( secondary.player() ) );
+
+    const tripoint_abs_ms expected_away =
+        cyborg.pos_abs() - secondary.player().pos_abs() + cyborg.pos_abs();
+    cyborg.plan();
+    CHECK( cyborg.get_dest() == expected_away );
+    CHECK( cyborg.attack_target() == nullptr );
+    context.check_root_context();
+}
+
+TEST_CASE( "multiplayer_monster_keep_distance_uses_candidate_position",
+           "[multiplayer][monster_target][monster_attitude]" )
+{
+    multiplayer_monster_test_context context;
+    map &here = get_map();
+    const tripoint_bub_ms monster_position( 60, 60, 0 );
+    context.root.setpos( here, tripoint_bub_ms( 61, 60, 0 ) );
+    scoped_secondary_player secondary( tripoint_bub_ms( 65, 60, 0 ) );
+    secondary.player().set_mutation( trait_EXODII_WRATH );
+    monster &cyborg = spawn_test_monster( "mon_test_multiplayer_keep_distance_targeter",
+                                          monster_position, false );
+    cyborg.aggro_character = false;
+    cyborg.anger = 20;
+    cyborg.morale = 0;
+    cyborg.set_dest( context.root.pos_abs() );
+    context.refresh_visibility();
+
+    REQUIRE( cyborg.attitude( &context.root ) == MATT_IGNORE );
+    REQUIRE( cyborg.attitude( &secondary.player() ) == MATT_ATTACK );
+    cyborg.plan();
+    CHECK( cyborg.get_dest() == secondary.player().pos_abs() );
+    CHECK( cyborg.attack_target() == &secondary.player() );
+    context.check_root_context();
+}
+
+TEST_CASE( "multiplayer_monster_visible_human_triggers_run_before_target_filtering",
+           "[multiplayer][monster_target][monster_attitude]" )
+{
+    multiplayer_monster_test_context context;
+    map &here = get_map();
+    const tripoint_bub_ms monster_position( 60, 60, 0 );
+    context.root.setpos( here, tripoint_bub_ms( 61, 60, 0 ) );
+    scoped_secondary_player secondary( tripoint_bub_ms( 65, 60, 0 ) );
+    monster &cyborg = spawn_test_monster( "mon_test_multiplayer_trigger_targeter",
+                                          monster_position, false );
+    cyborg.aggro_character = false;
+    cyborg.anger = 20;
+    cyborg.morale = 0;
+    context.refresh_visibility();
+
+    REQUIRE( cyborg.attitude( &context.root ) == MATT_IGNORE );
+    REQUIRE( cyborg.attitude( &secondary.player() ) == MATT_IGNORE );
+    cyborg.plan();
+    CHECK( cyborg.anger == 25 );
+    context.check_root_context();
+}
+
+TEST_CASE( "single_avatar_monster_neutral_attack_routing_is_unchanged",
+           "[multiplayer][monster_target][monster_attitude]" )
+{
+    multiplayer_monster_test_context context;
+    map &here = get_map();
+    const tripoint_bub_ms monster_position( 60, 60, 0 );
+    context.root.setpos( here, tripoint_bub_ms( 61, 60, 0 ) );
+    monster &cyborg = spawn_test_monster( "mon_test_multiplayer_attitude_targeter",
+                                          monster_position, false );
+    cyborg.aggro_character = false;
+    context.refresh_visibility();
+
+    REQUIRE( g->multiplayer_players().living_world_avatar_count() == 1 );
+    REQUIRE( cyborg.attitude( &context.root ) == MATT_IGNORE );
+    cyborg.set_dest( context.root.pos_abs() );
+    CHECK( cyborg.attack_target() == &context.root );
+
+    const int root_hp_before = context.root.get_hp();
+    context.root.set_dodges_left( 0 );
+    cyborg.set_moves( 1000 );
+    CHECK( cyborg.attack_at( context.root.pos_bub() ) );
+    CHECK( context.root.get_hp() < root_hp_before );
     context.check_root_context();
 }
 

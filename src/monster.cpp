@@ -1919,9 +1919,15 @@ monster_attitude monster::attitude( const Character *u ) const
         return MATT_FOLLOW;
     }
 
-    if( has_flag( mon_flag_KEEP_DISTANCE ) &&
-        rl_dist( pos_abs(), get_dest() ) < type->tracking_distance ) {
-        return MATT_FLEE;
+    if( has_flag( mon_flag_KEEP_DISTANCE ) ) {
+        tripoint_abs_ms keep_distance_target = get_dest();
+        if( g != nullptr && u != nullptr && u->is_avatar() &&
+            g->multiplayer_players().living_world_avatar_count() > 1 ) {
+            keep_distance_target = u->pos_abs();
+        }
+        if( rl_dist( pos_abs(), keep_distance_target ) < type->tracking_distance ) {
+            return MATT_FLEE;
+        }
     }
 
     return MATT_ATTACK;

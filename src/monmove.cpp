@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "avatar.h"
 #include "behavior.h"
@@ -573,9 +574,16 @@ void monster::plan()
     Character &player_character = get_player_character();
     const bool single_world_avatar =
         g->multiplayer_players().living_world_avatar_count() == 1;
+    struct visible_human_candidate {
+        avatar *target;
+        float rating;
+    };
+    std::vector<visible_human_candidate> visible_human_candidates;
+    const float initial_human_rating_limit = mon_plan.dist;
     avatar *best_human_target = nullptr;
     float best_human_rating = FLT_MAX;
     int best_human_target_count = 0;
+    bool best_human_target_is_flee_threat = false;
     for( const shared_ptr_fast<multiplayer_player_runtime> &runtime :
          g->multiplayer_players().all() ) {
         if( runtime == nullptr || !runtime->is_living_world_avatar() ) {
@@ -596,25 +604,56 @@ void monster::plan()
         const float rating = rate_target( candidate,
                                           single_world_avatar ? mon_plan.dist : FLT_MAX,
                                           mon_plan.smart_planning );
-        if( rating < best_human_rating ) {
-            best_human_rating = rating;
-            best_human_target = &candidate;
-            best_human_target_count = 1;
-        } else if( rating == best_human_rating ) {
-            ++best_human_target_count;
-            if( best_human_target_count == 1 || one_in( best_human_target_count ) ) {
+        visible_human_candidates.push_back( { &candidate, rating } );
+    }
+    const auto select_human_candidate = [&]( const bool require_actionable_attitude ) {
+        best_human_target = nullptr;
+        best_human_rating = FLT_MAX;
+        best_human_target_count = 0;
+        best_human_target_is_flee_threat = false;
+        for( const visible_human_candidate &entry : visible_human_candidates ) {
+            avatar &candidate = *entry.target;
+            const bool candidate_is_flee_threat = is_fleeing( candidate );
+            if( require_actionable_attitude && attitude( &candidate ) != MATT_ATTACK &&
+                !candidate_is_flee_threat ) {
+                continue;
+            }
+            if( require_actionable_attitude && best_human_target != nullptr &&
+                candidate_is_flee_threat != best_human_target_is_flee_threat ) {
+                if( !candidate_is_flee_threat ) {
+                    continue;
+                }
+                best_human_rating = entry.rating;
                 best_human_target = &candidate;
+                best_human_target_count = 1;
+                best_human_target_is_flee_threat = true;
+                continue;
+            }
+            if( entry.rating < best_human_rating ) {
+                best_human_rating = entry.rating;
+                best_human_target = &candidate;
+                best_human_target_count = 1;
+                best_human_target_is_flee_threat = candidate_is_flee_threat;
+            } else if( entry.rating == best_human_rating ) {
+                ++best_human_target_count;
+                if( best_human_target_count == 1 || one_in( best_human_target_count ) ) {
+                    best_human_target = &candidate;
+                    best_human_target_is_flee_threat = candidate_is_flee_threat;
+                }
             }
         }
-    }
-    // If we can see a living player, move toward the best target or flee from them.
-    if( best_human_target != nullptr ) {
+    };
+    // Select one visible observer for shared anger/morale triggers.  Multi-avatar target
+    // eligibility is evaluated only after those once-per-plan mutations have completed.
+    select_human_candidate( false );
+    const bool observed_human = best_human_target != nullptr;
+    if( observed_human ) {
         mon_plan.dist = best_human_rating;
-        mon_plan.fleeing = mon_plan.fleeing || is_fleeing( *best_human_target );
+        mon_plan.fleeing = mon_plan.fleeing || best_human_target_is_flee_threat;
         mon_plan.target = best_human_target;
         // Direct position visibility deliberately excludes the tracking shortcut, so a lock
         // cannot refresh itself after line of sight is lost or transfer to another avatar.
-        if( has_flag( mon_flag_LOCKS_ON ) &&
+        if( single_world_avatar && has_flag( mon_flag_LOCKS_ON ) &&
             sees_avatar_position( here, *best_human_target ) ) {
             refresh_monster_lock_on( *this, *best_human_target );
         }
@@ -636,7 +675,26 @@ void monster::plan()
             anger_mating_season( mon_plan );
         }
         anger_cub_threatened( mon_plan );
-    } else if( friendly != 0 && !mon_plan.docile ) {
+    }
+
+    if( !single_world_avatar && observed_human ) {
+        select_human_candidate( true );
+        if( best_human_target != nullptr ) {
+            mon_plan.dist = best_human_rating;
+            mon_plan.fleeing = best_human_target_is_flee_threat;
+            mon_plan.target = best_human_target;
+            if( has_flag( mon_flag_LOCKS_ON ) &&
+                sees_avatar_position( here, *best_human_target ) ) {
+                refresh_monster_lock_on( *this, *best_human_target );
+            }
+        } else {
+            mon_plan.dist = initial_human_rating_limit;
+            mon_plan.fleeing = false;
+            mon_plan.target = nullptr;
+        }
+    }
+
+    if( !observed_human && friendly != 0 && !mon_plan.docile ) {
         for( monster &tmp : g->all_monsters() ) {
             if( tmp.friendly == 0 && tmp.attitude_to( *this ) == Attitude::HOSTILE &&
                 seen_levels.test( tmp.posz() + OVERMAP_DEPTH ) ) {
@@ -708,7 +766,9 @@ void monster::plan()
         }
     }
 
-    mon_plan.fleeing = mon_plan.fleeing || ( mood == MATT_FLEE );
+    if( single_world_avatar || mon_plan.target == nullptr || !mon_plan.target->is_avatar() ) {
+        mon_plan.fleeing = mon_plan.fleeing || ( mood == MATT_FLEE );
+    }
     // Throttle monster thinking, if there are no apparent threats, stop paying attention.
     constexpr int max_turns_for_rate_limiting = 1800;
     constexpr double max_turns_to_skip = 600.0;
@@ -771,6 +831,16 @@ void monster::plan()
                 mon_plan.target = driver;
                 mon_plan.dist = rate_target( *driver, mon_plan.dist, mon_plan.smart_planning );
             }
+        }
+    }
+
+    if( !single_world_avatar && mon_plan.target != nullptr ) {
+        if( Character *final_character_target = mon_plan.target->as_character() ) {
+            mon_plan.fleeing = is_fleeing( *final_character_target );
+        } else if( mon_plan.target->is_monster() ) {
+            // Human-specific fear must not survive a later monster-target replacement.
+            // Non-character fear policy remains the legacy global monster mood.
+            mon_plan.fleeing = mood == MATT_FLEE;
         }
     }
 
@@ -2062,6 +2132,10 @@ bool monster::attack_at( const tripoint_bub_ms &p )
         g->multiplayer_players().find_living_world_avatar_at( here.get_abs( p ) );
     if( target_player != nullptr &&
         ( p.z() == pos_bub().z() || here.on_matching_stairs( pos_bub(), p ) ) ) {
+        if( g->multiplayer_players().living_world_avatar_count() > 1 &&
+            attitude_to( *target_player ) != Attitude::HOSTILE ) {
+            return false;
+        }
         if( sees( here, *target_player ) ) {
             return melee_attack( *target_player );
         } else {
