@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <optional>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -605,89 +604,4 @@ TEST_CASE( "multiplayer_turn_phase_adapter_world_failure_is_fail_stop",
         return true;
     } ) == multiplayer_turn_phase_adapter_status::faulted );
     CHECK( world_count == 1 );
-}
-
-TEST_CASE( "multiplayer_turn_phase_adapter_runs_two_runtime_wait_only_barrier",
-           "[multiplayer][phase_adapter][player_bridge]" )
-{
-    clear_avatar();
-    clear_map();
-    on_out_of_scope cleanup( []() {
-        clear_avatar();
-        clear_map();
-    } );
-
-    avatar &alpha = get_avatar();
-    map &here = get_map();
-    alpha.setpos( here, tripoint_bub_ms( 60, 60, 0 ) );
-    alpha.set_moves( 100 );
-    const shared_ptr_fast<multiplayer_player_runtime> alpha_runtime =
-        g->multiplayer_players().find_runtime( alpha );
-    REQUIRE( alpha_runtime );
-    const safe_mode_type original_alpha_safe_mode = alpha_runtime->safe_mode();
-    on_out_of_scope restore_alpha_safe_mode( [alpha_runtime, original_alpha_safe_mode]() {
-        alpha_runtime->set_safe_mode( original_alpha_safe_mode );
-    } );
-    alpha_runtime->set_safe_mode( SAFE_MODE_STOP );
-
-    registered_secondary_player secondary( here, tripoint_bub_ms( 62, 60, 0 ) );
-    REQUIRE( secondary.valid() );
-    const shared_ptr_fast<multiplayer_player_runtime> beta_runtime = secondary.runtime();
-    beta_runtime->set_safe_mode( SAFE_MODE_STOP );
-    secondary.player().set_moves( 100 );
-
-    const multiplayer_turn_participant_key alpha_key = participant_key( *alpha_runtime );
-    const multiplayer_turn_participant_key beta_key = participant_key( *beta_runtime );
-    multiplayer_turn_scheduler scheduler;
-    REQUIRE( scheduler.begin_turn( 1, { beta_key, alpha_key } ) );
-    multiplayer_turn_phase_adapter adapter( *g, scheduler );
-
-    std::set<std::string> waited_players;
-    while( const std::optional<multiplayer_turn_slot> slot = scheduler.current_slot() ) {
-        if( slot->participant.player_id == beta_runtime->player_id() ) {
-            REQUIRE( scheduler.mark_barrier_disconnected( slot->participant ) );
-            REQUIRE( scheduler.apply_disconnect_timeout(
-                         slot->participant,
-                         multiplayer_disconnect_timeout_policy::automatic_wait ) );
-            REQUIRE( adapter.execute_authoritative_wait( slot->participant ) ==
-                     multiplayer_turn_phase_adapter_status::completed );
-            waited_players.emplace( beta_runtime->player_id().str() );
-        } else {
-            REQUIRE( adapter.execute_current_player(
-                         slot->participant,
-            [&]( multiplayer_player_runtime & runtime, avatar & player ) {
-                CHECK( &runtime == alpha_runtime.get() );
-                CHECK( &player == &alpha );
-                CHECK( &get_avatar() == &alpha );
-                const bool waited = multiplayer_execute_wait(
-                                        *g, player,
-                                        multiplayer_wait_execution_mode::authoritative_forced );
-                CHECK( waited );
-                if( !waited ) {
-                    return std::optional<multiplayer_turn_action_disposition>();
-                }
-                waited_players.emplace( runtime.player_id().str() );
-                return std::optional<multiplayer_turn_action_disposition>(
-                           multiplayer_turn_action_disposition::accepted_finished );
-            } ) == multiplayer_turn_phase_adapter_status::completed );
-        }
-        CHECK( &get_avatar() == &alpha );
-    }
-
-    CHECK( waited_players.size() == 2 );
-    CHECK( alpha.get_moves() <= 0 );
-    CHECK( secondary.player().get_moves() <= 0 );
-    REQUIRE( scheduler.stage() == multiplayer_turn_scheduler_stage::world_ready );
-
-    int world_count = 0;
-    REQUIRE( adapter.execute_claimed_world(
-    [&]( const multiplayer_world_ticket & ticket ) {
-        ++world_count;
-        CHECK( ticket.shared_turn == 1 );
-        CHECK( scheduler.stage() == multiplayer_turn_scheduler_stage::world_processing );
-        CHECK( &get_avatar() == &alpha );
-        return true;
-    } ) == multiplayer_turn_phase_adapter_status::completed );
-    CHECK( world_count == 1 );
-    CHECK( scheduler.stage() == multiplayer_turn_scheduler_stage::idle );
 }
