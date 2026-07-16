@@ -1,6 +1,6 @@
 # CDDA 多人 fork 当前状态
 
-- 更新日期：2026-07-15
+- 更新日期：2026-07-16
 - 分支：`multiplayer/main`
 - 当前 implementation source：`53a81955f54f5517e58f5ab1b2e92c76d0ff034b`
 - 当前 workflow sources：`d83d94e96caf37862d2152b1adcce697367ec350`、
@@ -323,8 +323,33 @@ workflow source `ba041c23b219b14df8918093f40c82fd761451cf` 修复自动成本路
 4A source 明确路由到 automatic Linux production gate。actionlint 1.7.12、PyYAML mapping assertions、两个 selector
 run block 的 `bash -n` 和临时 Git history 动态测试通过：TEST_DATA-only transport 输出
 `linux=true windows=false android=false`，TEST_DATA + `Makefile` baseline 输出
-`linux=true windows=false android=false`。workflow source 自身变化仍按 CI-contract 触发一次 Windows/Android gate；
-新 hosted runs terminal 前只能记录为 pending，不能声称修复已 hosted 接受。
+`linux=true windows=false android=false`。workflow source 自身变化按 CI-contract 触发的一次 hosted acceptance 已闭合：
+
+- baseline run
+  [`29442770727`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29442770727) 在 head
+  `1d933557efc7b49ddc4b48b5fe53317edc5f3ab3` terminal `success`；selector、四类 resources、Linux curses、
+  Windows MSVC、Android arm64 release 与 x86_64 debug compile 全绿；
+- transport run
+  [`29442770679`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29442770679) terminal
+  `success`；Primary Linux job `87445680688` 的 production build、完整 `[multiplayer]`、修复后的 headless
+  command/resume smoke、native-client UI resume smoke、GCC/Clang/provenance 全绿；Windows/Android isolated probes
+  也成功；
+- step 11 `Run actual headless server command/resume smoke` 从 `19:40:41Z` 至 `19:41:08Z` 成功，直接关闭
+  run `29437215518` 的 shutdown race。workflow boundary 现为 hosted accepted，且没有放宽 exit/save assertions。
+
+当前 package artifacts：
+
+| Artifact | Artifact ID | Size (bytes) | GitHub artifact digest |
+| --- | ---: | ---: | --- |
+| Linux curses x64 | `8354182079` | `183493239` | `6159db4b6c4465df8ca37080f4a659f1c99f6304c32ac77cf70177331dac04d4` |
+| Windows x64 MSVC tiles+sound | `8355056979` | `314393672` | `affaca0f139d8a7be1df6b3a2d18293f072eab479dddf79ba6f6ee5d6dcb5a2d` |
+| Android arm64 release | `8355286691` | `180995077` | `d1a2263a116c82ac8df7b88e0cc4f93bfde708a1be40a26c93f1e56557c40cdd` |
+| Android x86_64 debug compile | `8355287581` | `286795695` | `815dcbc5a2bc7c1a46a1e1cb18c2786d7f5da93cf4205f2c0ba636f9a87d3ef2` |
+
+transport artifacts 为 Linux `8355239754` / digest
+`835844b4fe74ec76c356d12aaae9acb2607ca05ec6e9038090b150db7b552449`、Windows isolated `8354149121` /
+`3c548f6872c539cf76ddeb21d9c1209ed3ff94ab4281caf50c983480820487e4`、Android isolated `8354144995` /
+`3b394273d8cea72b117a5e6e173c1390576619cc93346398d15e9fdc9b4b1807`。
 
 ## 当前 source 验证证据
 
@@ -974,9 +999,11 @@ git diff --name-status \
 
 审计未发现 Android/Windows-owned source、platform conditional、wire schema/version/capability、public DTO/
 serialization、external ABI、shared source list、workflow、artifact 或 pinned toolchain 变化；只有
-`src/monmove.cpp`、`src/monster.cpp`、multiplayer monster tests 和 TEST_DATA fixture。因此 gameplay batch 不要求
-Windows MSVC package、Android APK/NDK 或 emulator/device；这是按策略未运行，不是 blocker，也不构成
-`53a81955...` 的 Windows/Android 编译或运行证据。
+`src/monmove.cpp`、`src/monster.cpp`、multiplayer monster tests 和 TEST_DATA fixture。因此 gameplay batch 的规范门禁
+只要求 Linux Tier 1，不要求专门追加 Windows/Android。由于同一推送还包含 workflow CI-contract boundary，baseline
+run `29442770727` 实际在 current head 编译并打包了 Windows MSVC 与 Android arm64/x86_64；这构成当前 source 的
+compile/package evidence，但不是 Windows/Android multiplayer gameplay runtime、emulator/device lifecycle 或
+4A.2a.1 two-runtime behavior 证据，也不把后续 internal gameplay slice 改成日常全平台门禁。
 
 workflow diff 单独为：
 
@@ -987,8 +1014,10 @@ git diff --name-status \
 
 它只修改两个 GitHub Actions workflow：`d83d94e...` 修复 Linux headless safe-boundary wait，`ba041c2...` 修复
 TEST_DATA/package selector 与 monster Linux gate 路由。actionlint、selector syntax/dynamic assertions 和本地真实
-headless/client reproduction 已通过；由于 workflow 自身是 CI-contract boundary，push 后按规则会运行一次相应 hosted
-gates。在 terminal 结果写回前，该 boundary 保持 hosted pending，不能与 gameplay Tier 1 证据合并宣称。
+headless/client reproduction 已通过；workflow 自身的 CI-contract boundary 由 baseline run `29442770727` 与
+transport run `29442770679` terminal `success` 关闭。该 hosted matrix 证明 workflow/package/process contract；
+gameplay acceptance 仍按其独立的 Linux Tier 1 reachability 解释，不能把 isolated transport probes 外推为
+monster source portability。
 
 前一 Gate 3 slice 3 的平台判定沿用下述历史 diff 审计：
 
@@ -1004,12 +1033,13 @@ transport/crypto public boundary、shared source list、workflow、artifact 或 
 blocker，也不构成 `84d8ca056bf72ed9776890f7ca4212a3bfdf7c2e` 的平台证据。后续若修改 platform conditional、公共
 ABI/header、source list 或平台 owned code，必须重新分类并补第 20.6 节要求的最小 Tier 2 gate。
 
-最近兼容的历史证据：
+当前/最近兼容的 hosted 证据：
 
-- source `a7225e28f91a1bc52992d05b67b93d35aaaa712a` 的 baseline run `29437215379` terminal
-  `success`，selector/resource/Linux/Windows/Android package jobs 全绿。它只说明未变化的平台/产物边界有兼容
-  evidence，不证明 `53a81955...` 已在 Windows/Android 编译或运行；同 source transport run `29437215518` 的
-  safe-boundary workflow failure 与修复状态见上文。
+- current head `1d933557efc7b49ddc4b48b5fe53317edc5f3ab3` 的 baseline run `29442770727` 与 transport run
+  `29442770679` 均 terminal `success`。baseline package jobs 实际编译当前 production source；transport 的
+  Windows/Android jobs仍只编译 isolated spike，Linux job 实际运行 current production tests/process smokes。
+- source `a7225e28f91a1bc52992d05b67b93d35aaaa712a` 的 baseline run `29437215379` 是修复前最近 compatible
+  package evidence；同 source transport run `29437215518` 的 safe-boundary failure 已由 current run 取代。
 - Gate 1 source `cbd19b48d652be735a3c83fe841d2d7c831aecba` 的 Linux production run `29392575820` terminal
   `success`；Windows/Android jobs 精确 skipped。
 - protocol minor `1` public-boundary source `eb990c4ad9975915336f3acd65431b47d123e842` 的 baseline run
@@ -1068,17 +1098,8 @@ ABI/header、source list 或平台 owned code，必须重新分类并补第 20.6
 - `multiplayer_player_runtime::mark_dead()` 已有状态转换，但当前 game wrapper 拒绝标记 active runtime；4B 在修改前要
   明确 transition owner 和 exact safe point，不能先用全局 game-over 流程拼接。
 
-当前首个操作是完成 workflow boundary 的 hosted acceptance：推送本批后取得 baseline/transport run ID，等待两者
-terminal，并把 job/result/artifact 或失败根因写回 `STATUS.md` 与 build baseline。首个命令：
-
-```bash
-git push origin multiplayer/main
-curl -fsSL --retry 3 \
-  'https://api.github.com/repos/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs?branch=multiplayer%2Fmain&per_page=10' | \
-  jq '.workflow_runs[] | {id, name, status, conclusion, head_sha, html_url}'
-```
-
-hosted boundary 关闭后的首个 gameplay 动作才是 4A.2a.2：用现有写入/读取点补全 ADR-0012 的 A 挑衅/B 未挑衅、
+workflow boundary 已由 runs `29442770727`/`29442770679` 关闭。当前首个 gameplay 动作是 4A.2a.2：用现有
+写入/读取点补全 ADR-0012 的 A 挑衅/B 未挑衅、
 active/offline/dead、join/remove 和 save/load 矩阵，再选择保留 global 或引入稳定 `character_id` provocation。
 首个代码审计命令：
 

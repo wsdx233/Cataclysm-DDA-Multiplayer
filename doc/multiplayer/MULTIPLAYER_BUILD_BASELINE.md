@@ -705,7 +705,33 @@ source `ba041c23b219b14df8918093f40c82fd761451cf` 将 `data/mods/TEST_DATA/**` �
 排除，并把 TEST_DATA、`monmove`/`monster`/`monattack`/`mattack_actors` 路由到 automatic Linux production
 workflow。本地 actionlint 1.7.12、PyYAML mapping、Bash syntax 和临时 Git history selector 测试通过；
 TEST_DATA-only transport 精确选择 Linux，TEST_DATA 与 `Makefile` 同批不会把 Linux package 扩大到 Windows/Android。
-由于两个 workflow 自身发生变化，本批 push 仍会触发一次 CI-contract hosted gate；只有 terminal 结果写回后才可
-将 `d83d94e...`/`ba041c2...` 标为 hosted accepted。
+两个 workflow 自身变化触发的一次性 CI-contract hosted gate 已关闭：current head
+`1d933557efc7b49ddc4b48b5fe53317edc5f3ab3` 的 baseline run
+[`29442770727`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29442770727) 与 transport run
+[`29442770679`](https://github.com/wsdx233/Cataclysm-DDA-Multiplayer/actions/runs/29442770679) 均 terminal
+`success`。
+
+baseline selector/resources/Linux/Windows/Android jobs 全绿；package artifacts 为：
+
+| Artifact | Artifact ID | Size (bytes) | GitHub artifact digest |
+| --- | ---: | ---: | --- |
+| Linux curses x64 | `8354182079` | `183493239` | `6159db4b6c4465df8ca37080f4a659f1c99f6304c32ac77cf70177331dac04d4` |
+| Windows x64 MSVC tiles+sound | `8355056979` | `314393672` | `affaca0f139d8a7be1df6b3a2d18293f072eab479dddf79ba6f6ee5d6dcb5a2d` |
+| Android arm64 release | `8355286691` | `180995077` | `d1a2263a116c82ac8df7b88e0cc4f93bfde708a1be40a26c93f1e56557c40cdd` |
+| Android x86_64 debug compile | `8355287581` | `286795695` | `815dcbc5a2bc7c1a46a1e1cb18c2786d7f5da93cf4205f2c0ba636f9a87d3ef2` |
+
+transport Primary Linux job `87445680688` 通过 production build、完整 `[multiplayer]`、修复后的 actual headless
+command/resume smoke、native-client UI resume smoke、GCC/Clang 和 provenance；step 11 于
+`2026-07-15T19:40:41Z` 至 `19:41:08Z` 成功，关闭旧 shutdown race。transport artifacts 为：
+
+| Artifact | Artifact ID | Size (bytes) | GitHub artifact digest |
+| --- | ---: | ---: | --- |
+| Linux production/provenance | `8355239754` | `147911` | `835844b4fe74ec76c356d12aaae9acb2607ca05ec6e9038090b150db7b552449` |
+| Windows isolated spike | `8354149121` | `54056` | `3c548f6872c539cf76ddeb21d9c1209ed3ff94ab4281caf50c983480820487e4` |
+| Android isolated spike | `8354144995` | `1705304` | `3b394273d8cea72b117a5e6e173c1390576619cc93346398d15e9fdc9b4b1807` |
+
+baseline packages 实际编译 current production source，因此是当前 compile/package evidence；Windows/Android
+transport artifacts 仍只证明 isolated spike。该 one-time workflow matrix 不改变后续 internal gameplay 的
+Linux-first/Tier 1 节奏。
 
 本地生成物位于仓库默认的忽略目录中，不作为源码提交。规范产物和 hash 以 fork 上的 `multiplayer-baseline` workflow 为准。

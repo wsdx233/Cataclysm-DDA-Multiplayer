@@ -130,12 +130,16 @@ source is client-reachable, but the process smoke proves only Linux native binar
 single-avatar behavior is covered by in-process regressions, and multi-runtime behavior remains test-only. Gate 2
 retains its open-turn save-hash evidence. These gameplay diffs do not change wire/schema/version,
 serialization, external ABI, platform conditionals, shared build lists, pinned toolchains or Windows/Android-owned code,
-so Windows/Android remain intentionally unrun. The latest compatible hosted package evidence is successful baseline
-run `29437215379` for source `a7225e28f91a1bc52992d05b67b93d35aaaa712a`; it is not current 4A.2a.1 platform
-evidence. Workflow sources `d83d94e96caf37862d2152b1adcce697367ec350` and
+so the gameplay slice itself required only Linux Tier 1. The one-time workflow-boundary acceptance nevertheless built
+the current source in successful baseline run `29442770727` at head
+`1d933557efc7b49ddc4b48b5fe53317edc5f3ab3`: Linux curses, Windows MSVC and Android arm64/x86_64 packages all passed.
+This is current compile/package evidence, not Windows/Android multiplayer gameplay runtime evidence. Workflow sources
+`d83d94e96caf37862d2152b1adcce697367ec350` and
 `ba041c23b219b14df8918093f40c82fd761451cf` wait for the headless disconnect grace boundary and route monster
-source/tests/`TEST_DATA` through Linux production gates while excluding test fixtures from package selection. Their
-hosted acceptance must be recorded only after the new runs are terminal. Routine Phase 3 work remains Linux-first.
+source/tests/`TEST_DATA` through Linux production gates while excluding test fixtures from package selection. Transport
+run `29442770679` passed the full Linux production suite, repaired headless command/resume smoke, native-client resume
+smoke and both isolated portability probes. Routine Phase 3 work remains Linux-first; this one-time matrix does not make
+future internal gameplay commits all-platform gates.
 
 The active work, in order, is:
 
